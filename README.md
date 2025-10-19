@@ -2,7 +2,7 @@
 
 Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP und MySQL. Dieses Repository enthält das Basis-Modul mit Dashboard, Kalender, Zimmerkategorien und integriertem Update-Workflow.
 
-## Features Basis-Modul (Version 1.0.5)
+## Features Basis-Modul (Version 1.0.6)
 
 - **Dashboard** mit tagesbasiertem Zimmerkalender (Zimmer auf Y-Achse, Tage auf X-Achse) und Schnellstatistik.
 - **Zimmerkategorien-Verwaltung** inklusive Bearbeiten/Löschen und **Zimmerstamm** mit CRUD-Funktionen – alles direkt in MySQL gespeichert.
@@ -15,7 +15,7 @@ Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP un
 
 1. Repository klonen und Abhängigkeiten bereitstellen:
    ```bash
-   git clone https://github.com/your-org/modPMS.git
+   git clone https://github.com/rinkelzz/modpms.git
    cd modPMS
    ```
 2. Das Projektverzeichnis als Webroot (z. B. Apache/Nginx) konfigurieren oder über den integrierten PHP-Server starten:
@@ -31,7 +31,7 @@ Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP un
 ## Update-Mechanismus
 
 - Die aktuelle Version wird in `config/app.php` geführt. Bitte bei jedem Release anpassen (z. B. 1.0.2, 1.0.3 …).
-- Über den Bereich **Systemupdates** im Dashboard lässt sich per Button ein `git fetch/reset/pull` starten.
+- Über den Bereich **Systemupdates** im Dashboard lässt sich per Button ein `git fetch/reset/pull` starten. Die Remote-URL wird dabei automatisch auf `https://github.com/rinkelzz/modpms` gesetzt.
 - Voraussetzung ist, dass das System unter einem Git-Checkout läuft und der Webserver Benutzer ausreichende Rechte für `git` besitzt.
 
 ## Nächste Module

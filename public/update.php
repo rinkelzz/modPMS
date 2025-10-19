@@ -20,8 +20,19 @@ if (!isset($_POST['token'], $_SESSION['update_token']) || !hash_equals($_SESSION
     exit;
 }
 
+unset($_SESSION['update_token']);
+
 $config = require __DIR__ . '/../config/app.php';
-$updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch']);
+$branch = $config['repository']['branch'];
+
+if (isset($_POST['branch']) && is_string($_POST['branch'])) {
+    $candidate = trim($_POST['branch']);
+    if ($candidate !== '') {
+        $branch = $candidate;
+    }
+}
+
+$updater = new SystemUpdater(dirname(__DIR__), $branch, $config['repository']['url']);
 
 $result = $updater->performUpdate();
 

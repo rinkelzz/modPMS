@@ -14,6 +14,14 @@ require_once __DIR__ . '/../src/SystemUpdater.php';
 
 session_start();
 
+try {
+    $updateToken = bin2hex(random_bytes(32));
+} catch (Throwable $exception) {
+    $updateToken = bin2hex(hash('sha256', uniqid('', true), true));
+}
+
+$_SESSION['update_token'] = $updateToken;
+
 $alert = null;
 if (isset($_SESSION['alert'])) {
     $alert = $_SESSION['alert'];
@@ -323,7 +331,7 @@ if ($pdo !== null && isset($_GET['editRoom']) && $roomFormData['id'] === null) {
 $calendar = new Calendar();
 $days = $calendar->daysOfMonth();
 
-$updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch']);
+$updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], $config['repository']['url']);
 
 ?>
 <!doctype html>
@@ -551,6 +559,16 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch']);
             </div>
             <div class="card-body">
               <form method="post" action="update.php" class="d-flex flex-column gap-3">
+                <input type="hidden" name="token" value="<?= htmlspecialchars($updateToken, ENT_QUOTES, 'UTF-8') ?>">
+                <div>
+                  <label class="form-label">Repository</label>
+                  <p class="form-control-plaintext mb-0">
+                    <?php $repositoryLabel = rtrim(str_replace(['https://', 'http://'], '', $config['repository']['url']), '/'); ?>
+                    <a href="<?= htmlspecialchars($config['repository']['url']) ?>" target="_blank" rel="noopener">
+                      <?= htmlspecialchars($repositoryLabel) ?>
+                    </a>
+                  </p>
+                </div>
                 <div>
                   <label for="branch" class="form-label">Branch</label>
                   <input type="text" class="form-control" id="branch" name="branch" value="<?= htmlspecialchars($config['repository']['branch']) ?>">

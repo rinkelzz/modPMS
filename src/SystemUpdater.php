@@ -6,11 +6,13 @@ class SystemUpdater
 {
     private string $projectRoot;
     private string $branch;
+    private ?string $remoteUrl;
 
-    public function __construct(string $projectRoot, string $branch = 'main')
+    public function __construct(string $projectRoot, string $branch = 'main', ?string $remoteUrl = null)
     {
         $this->projectRoot = $projectRoot;
         $this->branch = $branch;
+        $this->remoteUrl = $remoteUrl;
     }
 
     public function gitAvailable(): bool
@@ -39,11 +41,26 @@ class SystemUpdater
             ];
         }
 
-        $commands = [
+        $commands = [];
+
+        if ($this->remoteUrl !== null && $this->remoteUrl !== '') {
+            $remoteUrl = $this->sanitizeRemoteUrl($this->remoteUrl);
+
+            if ($remoteUrl === null) {
+                return [
+                    'success' => false,
+                    'message' => 'Ungültige Repository-URL für Updates.',
+                ];
+            }
+
+            $commands[] = sprintf('git remote set-url origin %s', escapeshellarg($remoteUrl));
+        }
+
+        $commands = array_merge($commands, [
             'git fetch --all',
             sprintf('git reset --hard origin/%s', $branch),
             sprintf('git pull origin %s', $branch),
-        ];
+        ]);
 
         $output = [];
         foreach ($commands as $command) {
@@ -83,5 +100,30 @@ class SystemUpdater
         }
 
         return $branch;
+    }
+
+    private function sanitizeRemoteUrl(string $url): ?string
+    {
+        $url = trim($url);
+
+        if ($url === '') {
+            return null;
+        }
+
+        if (preg_match('/^[\w.+-]+@[\w.-]+:[\w.\/-]+$/', $url)) {
+            return $url;
+        }
+
+        $parts = parse_url($url);
+
+        if ($parts === false || !isset($parts['scheme'], $parts['host'])) {
+            return null;
+        }
+
+        if (!in_array($parts['scheme'], ['https', 'http', 'git'], true)) {
+            return null;
+        }
+
+        return $url;
     }
 }
