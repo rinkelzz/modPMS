@@ -13,6 +13,11 @@ require_once __DIR__ . '/../src/SystemUpdater.php';
 session_start();
 
 $config = require __DIR__ . '/../config/app.php';
+$updateGuard = $config['update_guard'] ?? [];
+$updateGuardEnabled = isset($updateGuard['enabled']) ? (bool) $updateGuard['enabled'] : false;
+$updateGuardUsername = isset($updateGuard['username']) && is_string($updateGuard['username']) ? $updateGuard['username'] : '';
+$updateGuardPasswordHash = isset($updateGuard['password_hash']) && is_string($updateGuard['password_hash']) ? $updateGuard['password_hash'] : '';
+$updateModuleActive = $updateGuardEnabled && $updateGuardUsername !== '' && $updateGuardPasswordHash !== '';
 $categoryManager = new RoomCategoryManager(__DIR__ . '/../storage/room_categories.json');
 $categories = $categoryManager->all();
 $roomManager = new RoomManager(__DIR__ . '/../storage/rooms.json');
@@ -216,10 +221,16 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch']);
             <div class="card-body">
               <p class="mb-2">Repository: <code><?= htmlspecialchars($config['repository']['url']) ?></code></p>
               <p>Branch: <code><?= htmlspecialchars($config['repository']['branch']) ?></code></p>
-              <form action="update.php" method="post" class="d-flex flex-column gap-3">
-                <input type="hidden" name="token" value="<?= htmlspecialchars($_SESSION['update_token'] = bin2hex(random_bytes(16))) ?>">
-                <button type="submit" class="btn btn-outline-primary">Update jetzt starten</button>
-              </form>
+              <?php if ($updateModuleActive): ?>
+                <form action="update.php" method="post" class="d-flex flex-column gap-3">
+                  <input type="hidden" name="token" value="<?= htmlspecialchars($_SESSION['update_token'] = bin2hex(random_bytes(16))) ?>">
+                  <button type="submit" class="btn btn-outline-primary">Update jetzt starten</button>
+                </form>
+              <?php else: ?>
+                <div class="alert alert-warning mb-0" role="alert">
+                  Systemupdates sind deaktiviert. Aktivieren Sie den geschützten Update-Zugang in <code>config/app.php</code>.
+                </div>
+              <?php endif; ?>
               <div class="mt-4">
                 <h3 class="h6 text-muted">Letzte Update-Ausgabe</h3>
                 <?php if (isset($_SESSION['update_output'])): ?>
