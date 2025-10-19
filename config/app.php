@@ -7,6 +7,11 @@ return [
         'url' => 'https://github.com/your-org/modPMS',
         'branch' => 'main',
     ],
+    'update_guard' => [
+        'enabled' => false,
+        'username' => null,
+        'password_hash' => null,
+    ],
     'modules' => [
         'dashboard' => [
             'title' => 'Dashboard',
