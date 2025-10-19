@@ -2,11 +2,11 @@
 
 Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP und MySQL. Dieses Repository enthält das Basis-Modul mit Dashboard, Kalender, Zimmerkategorien und integriertem Update-Workflow.
 
-## Features Basis-Modul (Version 1.0.3)
+## Features Basis-Modul (Version 1.0.5)
 
 - **Dashboard** mit tagesbasiertem Zimmerkalender (Zimmer auf Y-Achse, Tage auf X-Achse) und Schnellstatistik.
-- **Zimmerkategorien-Verwaltung** mit einfacher JSON-Speicherung (lokal) für einen schnellen Start.
-- **Zimmerübersicht** mit Beispiel-Zimmern, die sich leicht erweitern lassen.
+- **Zimmerkategorien-Verwaltung** inklusive Bearbeiten/Löschen und **Zimmerstamm** mit CRUD-Funktionen – alles direkt in MySQL gespeichert.
+- **Zimmerübersicht** mit Beispielzimmern aus der Datenbank, die sich leicht erweitern lassen.
 - **Systemupdates** direkt aus der Weboberfläche via `git` anstoßen.
 - **Installationsassistent** (`public/install.php`) zur grafischen Einrichtung der MySQL-Datenbank inklusive Beispieltabellen.
 - Responsive UI auf Basis von Bootstrap 5.
@@ -26,7 +26,7 @@ Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP un
 4. Anschließend das Dashboard öffnen: <http://localhost:8000>
 5. Aus Sicherheitsgründen `public/install.php` nach erfolgreicher Einrichtung entfernen oder sperren.
 
-> **Hinweis:** Für produktive Nutzung sollten Zimmerkategorien und Zimmerstammdaten in einer MySQL-Datenbank persistiert werden. Die JSON-Dateien `storage/room_categories.json` und `storage/rooms.json` sind als leichtgewichtiger Einstieg gedacht.
+> **Hinweis:** Nach der Installation werden Zimmerkategorien und Zimmer direkt in der konfigurierten MySQL-Datenbank gespeichert. Passen Sie die Zugangsdaten bei Bedarf in `config/database.php` an.
 
 ## Update-Mechanismus
 

@@ -2,16 +2,15 @@
 
 namespace ModPMS;
 
+use PDO;
+
 class RoomCategoryManager
 {
-    private string $storageFile;
+    private PDO $pdo;
 
-    public function __construct(string $storageFile)
+    public function __construct(PDO $pdo)
     {
-        $this->storageFile = $storageFile;
-        if (!file_exists($storageFile)) {
-            $this->persist([]);
-        }
+        $this->pdo = $pdo;
     }
 
     /**
@@ -19,14 +18,21 @@ class RoomCategoryManager
      */
     public function all(): array
     {
-        $raw = file_get_contents($this->storageFile);
-        if ($raw === false || $raw === '') {
-            return [];
-        }
+        $statement = $this->pdo->query('SELECT id, name, description, capacity, status FROM room_categories ORDER BY name');
 
-        $data = json_decode($raw, true);
+        $categories = $statement ? $statement->fetchAll() : [];
 
-        return is_array($data) ? $data : [];
+        return is_array($categories) ? $categories : [];
+    }
+
+    public function find(int $id): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT id, name, description, capacity, status FROM room_categories WHERE id = :id');
+        $statement->execute(['id' => $id]);
+
+        $category = $statement->fetch();
+
+        return $category !== false ? $category : null;
     }
 
     /**
@@ -34,33 +40,39 @@ class RoomCategoryManager
      */
     public function add(array $category): void
     {
-        $categories = $this->all();
-        $category['id'] = $this->generateId($categories);
-        $categories[] = $category;
-        $this->persist($categories);
+        $statement = $this->pdo->prepare(
+            'INSERT INTO room_categories (name, description, capacity, status) VALUES (:name, :description, :capacity, :status)'
+        );
+
+        $statement->execute([
+            'name' => $category['name'],
+            'description' => $category['description'] !== '' ? $category['description'] : null,
+            'capacity' => (int) $category['capacity'],
+            'status' => $category['status'],
+        ]);
     }
 
     /**
-     * @param array<int, array<string, mixed>> $categories
+     * @param array<string, mixed> $category
      */
-    private function persist(array $categories): void
+    public function update(int $id, array $category): void
     {
-        $payload = json_encode($categories, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-        file_put_contents($this->storageFile, $payload . PHP_EOL);
+        $statement = $this->pdo->prepare(
+            'UPDATE room_categories SET name = :name, description = :description, capacity = :capacity, status = :status WHERE id = :id'
+        );
+
+        $statement->execute([
+            'name' => $category['name'],
+            'description' => $category['description'] !== '' ? $category['description'] : null,
+            'capacity' => (int) $category['capacity'],
+            'status' => $category['status'],
+            'id' => $id,
+        ]);
     }
 
-    /**
-     * @param array<int, array<string, mixed>> $categories
-     */
-    private function generateId(array $categories): int
+    public function delete(int $id): void
     {
-        if (empty($categories)) {
-            return 1;
-        }
-
-        $ids = array_column($categories, 'id');
-        $max = max($ids);
-
-        return is_numeric($max) ? ((int) $max + 1) : 1;
+        $statement = $this->pdo->prepare('DELETE FROM room_categories WHERE id = :id');
+        $statement->execute(['id' => $id]);
     }
 }
