@@ -3,7 +3,6 @@
 namespace ModPMS;
 
 use DateTimeImmutable;
-use IntlDateFormatter;
 
 class Calendar
 {
@@ -16,16 +15,17 @@ class Calendar
 
     public function monthLabel(): string
     {
-        $formatter = new IntlDateFormatter(
-            'de_DE',
-            IntlDateFormatter::LONG,
-            IntlDateFormatter::NONE,
-            $this->currentDate->getTimezone()->getName(),
-            IntlDateFormatter::GREGORIAN,
-            'LLLL yyyy'
-        );
+        $formatter = $this->createIntlDateFormatter('LLLL yyyy', 'LONG', 'NONE');
 
-        return $formatter->format($this->currentDate) ?: $this->currentDate->format('F Y');
+        if ($formatter !== null) {
+            $label = $formatter->format($this->currentDate);
+
+            if ($label !== false) {
+                return $label;
+            }
+        }
+
+        return $this->currentDate->format('F Y');
     }
 
     /**
@@ -60,26 +60,65 @@ class Calendar
     {
         $days = [];
         $daysInMonth = (int) $this->currentDate->format('t');
-        $weekdayFormatter = new IntlDateFormatter(
-            'de_DE',
-            IntlDateFormatter::NONE,
-            IntlDateFormatter::NONE,
-            $this->currentDate->getTimezone()->getName(),
-            IntlDateFormatter::GREGORIAN,
-            'EE'
-        );
+        $weekdayFormatter = $this->createIntlDateFormatter('EE', 'NONE', 'NONE');
 
         for ($offset = 0; $offset < $daysInMonth; $offset++) {
             $date = $this->currentDate->modify(sprintf('+%d days', $offset));
 
             $days[] = [
                 'day' => (int) $date->format('j'),
-                'weekday' => $weekdayFormatter->format($date) ?: $date->format('D'),
+                'weekday' => $this->formatWeekday($weekdayFormatter, $date),
                 'isToday' => $date->format('Y-m-d') === (new DateTimeImmutable())->format('Y-m-d'),
                 'date' => $date->format('Y-m-d'),
             ];
         }
 
         return $days;
+    }
+
+    /**
+     * @return \IntlDateFormatter|null
+     */
+    private function createIntlDateFormatter(string $pattern, string $dateType, string $timeType)
+    {
+        if (!class_exists('IntlDateFormatter')) {
+            return null;
+        }
+
+        $timezone = $this->currentDate->getTimezone()->getName();
+        $calendar = defined('IntlDateFormatter::GREGORIAN')
+            ? constant('IntlDateFormatter::GREGORIAN')
+            : 1;
+
+        $dateTypeConstant = 'IntlDateFormatter::' . $dateType;
+        $timeTypeConstant = 'IntlDateFormatter::' . $timeType;
+
+        $dateTypeValue = defined($dateTypeConstant) ? constant($dateTypeConstant) : 0;
+        $timeTypeValue = defined($timeTypeConstant) ? constant($timeTypeConstant) : 0;
+
+        return new \IntlDateFormatter(
+            'de_DE',
+            $dateTypeValue,
+            $timeTypeValue,
+            $timezone,
+            $calendar,
+            $pattern
+        );
+    }
+
+    /**
+     * @param \IntlDateFormatter|null $formatter
+     */
+    private function formatWeekday($formatter, DateTimeImmutable $date): string
+    {
+        if ($formatter !== null) {
+            $weekday = $formatter->format($date);
+
+            if ($weekday !== false) {
+                return (string) $weekday;
+            }
+        }
+
+        return $date->format('D');
     }
 }
