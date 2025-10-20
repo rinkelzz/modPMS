@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.0.6',
+    'version' => '1.0.8',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',

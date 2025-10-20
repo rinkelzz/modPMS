@@ -2,12 +2,12 @@
 
 Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP und MySQL. Dieses Repository enthält das Basis-Modul mit Dashboard, Kalender, Zimmerkategorien und integriertem Update-Workflow.
 
-## Features Basis-Modul (Version 1.0.6)
+## Features Basis-Modul (Version 1.0.8)
 
 - **Dashboard** mit tagesbasiertem Zimmerkalender (Zimmer auf Y-Achse, Tage auf X-Achse) und Schnellstatistik.
 - **Zimmerkategorien-Verwaltung** inklusive Bearbeiten/Löschen und **Zimmerstamm** mit CRUD-Funktionen – alles direkt in MySQL gespeichert.
 - **Zimmerübersicht** mit Beispielzimmern aus der Datenbank, die sich leicht erweitern lassen.
-- **Systemupdates** direkt aus der Weboberfläche via `git` anstoßen.
+- **Systemupdates** direkt aus der Weboberfläche via `git` anstoßen – inklusive Repository-Prüfungen und aussagekräftigen Fehlermeldungen.
 - **Installationsassistent** (`public/install.php`) zur grafischen Einrichtung der MySQL-Datenbank inklusive Beispieltabellen.
 - Responsive UI auf Basis von Bootstrap 5.
 
@@ -31,8 +31,8 @@ Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP un
 ## Update-Mechanismus
 
 - Die aktuelle Version wird in `config/app.php` geführt. Bitte bei jedem Release anpassen (z. B. 1.0.2, 1.0.3 …).
-- Über den Bereich **Systemupdates** im Dashboard lässt sich per Button ein `git fetch/reset/pull` starten. Die Remote-URL wird dabei automatisch auf `https://github.com/rinkelzz/modpms` gesetzt.
-- Voraussetzung ist, dass das System unter einem Git-Checkout läuft und der Webserver Benutzer ausreichende Rechte für `git` besitzt.
+- Über den Bereich **Systemupdates** im Dashboard lässt sich per Button ein `git fetch/reset/pull` starten. Die Remote-URL wird dabei automatisch auf `https://github.com/rinkelzz/modpms` gesetzt oder – falls noch kein Remote existiert – initial hinterlegt.
+- Voraussetzung ist, dass das System unter einem Git-Checkout läuft, `.git` verfügbar ist und der Webserver-Benutzer ausreichende Rechte für `git` besitzt. Andernfalls liefert der Updater nun eine klare Fehlermeldung.
 
 ## Nächste Module
 
