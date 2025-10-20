@@ -119,19 +119,7 @@ class SystemUpdater
             sprintf('git pull --ff-only origin %s', escapeshellarg($branch)),
         ]);
 
-        $preservation = $this->createPreservationBackups();
-
-        if (!$preservation['success']) {
-            return [
-                'success' => false,
-                'message' => 'Konfigurationsdateien konnten nicht gesichert werden. Fallback wird versucht.',
-                'details' => $preservation['details'],
-            ];
-        }
-
-        $output = $preservation['details'];
-        $commandFailure = false;
-
+        $output = [];
         foreach ($commands as $command) {
             [$status, $cmdOutput] = $this->executeInProject($command);
             $output[] = [
@@ -141,172 +129,18 @@ class SystemUpdater
             ];
 
             if ($status !== 0) {
-                $commandFailure = true;
-                break;
+                return [
+                    'success' => false,
+                    'message' => 'Git-Update fehlgeschlagen. Fallback wird versucht.',
+                    'details' => $output,
+                ];
             }
-        }
-
-        $restoreResult = $this->restorePreservedFiles($preservation['backups']);
-        $output = array_merge($output, $restoreResult['details']);
-
-        if (!$restoreResult['success']) {
-            return [
-                'success' => false,
-                'message' => 'Git-Update fehlgeschlagen. Lokale Konfiguration konnte nicht wiederhergestellt werden.',
-                'details' => $output,
-            ];
-        }
-
-        if ($commandFailure) {
-            return [
-                'success' => false,
-                'message' => 'Git-Update fehlgeschlagen. Fallback wird versucht.',
-                'details' => $output,
-            ];
         }
 
         return [
             'success' => true,
             'message' => 'Update erfolgreich durchgeführt.',
             'details' => $output,
-        ];
-    }
-
-    /**
-     * @return array{success: bool, backups?: array<string, string>, details: array<int, array<string, mixed>>}
-     */
-    private function createPreservationBackups(): array
-    {
-        $details = [];
-        $backups = [];
-
-        foreach ($this->filesToPreserve() as $relativePath) {
-            $absolutePath = $this->projectRoot . DIRECTORY_SEPARATOR . $relativePath;
-
-            if (!is_file($absolutePath)) {
-                $details[] = [
-                    'command' => sprintf('preserve:%s', $relativePath),
-                    'status' => 0,
-                    'output' => ['Datei nicht gefunden, Sicherung übersprungen.'],
-                ];
-                continue;
-            }
-
-            $tmpFile = tempnam(sys_get_temp_dir(), 'modpms_conf_');
-
-            if ($tmpFile === false) {
-                $this->cleanupBackups($backups);
-
-                $details[] = [
-                    'command' => sprintf('preserve:%s', $relativePath),
-                    'status' => 1,
-                    'output' => ['Temporäre Sicherungsdatei konnte nicht erstellt werden.'],
-                ];
-
-                return [
-                    'success' => false,
-                    'details' => $details,
-                ];
-            }
-
-            if (@copy($absolutePath, $tmpFile) === false) {
-                @unlink($tmpFile);
-                $this->cleanupBackups($backups);
-
-                $details[] = [
-                    'command' => sprintf('preserve:%s', $relativePath),
-                    'status' => 1,
-                    'output' => ['Datei konnte nicht gesichert werden.'],
-                ];
-
-                return [
-                    'success' => false,
-                    'details' => $details,
-                ];
-            }
-
-            $backups[$relativePath] = $tmpFile;
-            $details[] = [
-                'command' => sprintf('preserve:%s', $relativePath),
-                'status' => 0,
-                'output' => [],
-            ];
-        }
-
-        return [
-            'success' => true,
-            'backups' => $backups,
-            'details' => $details,
-        ];
-    }
-
-    /**
-     * @param array<string, string> $backups
-     * @return array{success: bool, details: array<int, array<string, mixed>>}
-     */
-    private function restorePreservedFiles(array $backups): array
-    {
-        $details = [];
-        $success = true;
-
-        foreach ($backups as $relativePath => $backupPath) {
-            $destination = $this->projectRoot . DIRECTORY_SEPARATOR . $relativePath;
-            $directory = dirname($destination);
-
-            if (!is_dir($directory) && !@mkdir($directory, 0775, true)) {
-                $success = false;
-                $details[] = [
-                    'command' => sprintf('restore:%s', $relativePath),
-                    'status' => 1,
-                    'output' => ['Zielverzeichnis konnte nicht erstellt werden.'],
-                ];
-                continue;
-            }
-
-            if (@copy($backupPath, $destination) === false) {
-                $success = false;
-                $details[] = [
-                    'command' => sprintf('restore:%s', $relativePath),
-                    'status' => 1,
-                    'output' => ['Datei konnte nicht wiederhergestellt werden.'],
-                ];
-                continue;
-            }
-
-            $details[] = [
-                'command' => sprintf('restore:%s', $relativePath),
-                'status' => 0,
-                'output' => [],
-            ];
-        }
-
-        $this->cleanupBackups($backups);
-
-        return [
-            'success' => $success,
-            'details' => $details,
-        ];
-    }
-
-    /**
-     * @param array<string, string> $backups
-     */
-    private function cleanupBackups(array $backups): void
-    {
-        foreach ($backups as $backupPath) {
-            if (is_string($backupPath) && $backupPath !== '') {
-                @unlink($backupPath);
-            }
-        }
-    }
-
-    /**
-     * @return array<int, string>
-     */
-    private function filesToPreserve(): array
-    {
-        return [
-            'config/database.php',
         ];
     }
 

@@ -116,6 +116,7 @@ $config = require __DIR__ . '/../config/app.php';
 $dbError = null;
 $categories = [];
 $rooms = [];
+$calendarCategoryGroups = [];
 $guests = [];
 $users = [];
 $pdo = null;
@@ -573,6 +574,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
+
+            if (($_SESSION['user_role'] ?? '') !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
+                ];
+                break;
+            }
+
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -701,6 +711,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
+
+            if (($_SESSION['user_role'] ?? '') !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
+                ];
+                break;
+            }
+
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
@@ -750,6 +769,60 @@ if ($pdo !== null) {
     $rooms = $roomManager->all();
     $guests = $guestManager->all();
     $users = $userManager->all();
+
+    $categoryPositions = [];
+
+    foreach ($categories as $category) {
+        $categoryWithIntId = $category;
+        $categoryWithIntId['id'] = (int) $category['id'];
+
+        $categoryPositions[$categoryWithIntId['id']] = count($calendarCategoryGroups);
+        $calendarCategoryGroups[] = [
+            'category' => $categoryWithIntId,
+            'rooms' => [],
+            'totalRooms' => 0,
+            'freeRooms' => 0,
+            'is_uncategorized' => false,
+        ];
+    }
+
+    $uncategorizedIndex = null;
+
+    foreach ($rooms as $room) {
+        $status = $room['status'] ?? '';
+        $isFree = $status === 'frei';
+        $categoryId = isset($room['category_id']) && $room['category_id'] !== null
+            ? (int) $room['category_id']
+            : null;
+
+        if ($categoryId !== null && isset($categoryPositions[$categoryId])) {
+            $targetIndex = $categoryPositions[$categoryId];
+        } else {
+            if ($uncategorizedIndex === null) {
+                $uncategorizedIndex = count($calendarCategoryGroups);
+                $calendarCategoryGroups[] = [
+                    'category' => [
+                        'id' => null,
+                        'name' => 'Ohne Kategorie',
+                        'status' => null,
+                    ],
+                    'rooms' => [],
+                    'totalRooms' => 0,
+                    'freeRooms' => 0,
+                    'is_uncategorized' => true,
+                ];
+            }
+
+            $targetIndex = $uncategorizedIndex;
+        }
+
+        $calendarCategoryGroups[$targetIndex]['rooms'][] = $room;
+        $calendarCategoryGroups[$targetIndex]['totalRooms']++;
+
+        if ($isFree) {
+            $calendarCategoryGroups[$targetIndex]['freeRooms']++;
+        }
+    }
 }
 
 if ($pdo !== null && isset($_GET['editCategory']) && $categoryFormData['id'] === null) {
@@ -917,7 +990,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                 <table class="table table-bordered align-middle room-calendar">
                   <thead class="table-light">
                     <tr>
-                      <th scope="col" class="room-column">Zimmer</th>
+                      <th scope="col" class="room-column">Kategorie / Zimmer</th>
                       <?php foreach ($days as $day): ?>
                         <th scope="col" class="text-center">
                           <div class="day-number"><?= $day['day'] ?></div>
@@ -927,20 +1000,52 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                     </tr>
                   </thead>
                   <tbody>
-                    <?php foreach ($rooms as $room): ?>
-                      <tr>
-                        <th scope="row" class="room-label">
-                          <div class="fw-semibold">Zimmer <?= htmlspecialchars($room['number']) ?></div>
-                          <small class="text-muted">Status: <?= htmlspecialchars(ucfirst($room['status'])) ?></small>
-                        </th>
-                        <?php foreach ($days as $day): ?>
-                          <td class="room-calendar-cell <?= $day['isToday'] ? 'today' : '' ?>" data-date="<?= $day['date'] ?>" data-room="<?= htmlspecialchars($room['number']) ?>">
-                            <span class="visually-hidden">Zimmer <?= htmlspecialchars($room['number']) ?> am <?= $day['date'] ?></span>
-                          </td>
-                        <?php endforeach; ?>
-                      </tr>
-                    <?php endforeach; ?>
-                    <?php if (empty($rooms)): ?>
+                    <?php if (!empty($calendarCategoryGroups)): ?>
+                      <?php foreach ($calendarCategoryGroups as $group): ?>
+                        <tr class="category-row<?= $group['is_uncategorized'] ? ' category-row-uncategorized' : '' ?>">
+                          <th scope="row" class="room-label category-label">
+                            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                              <span><?= htmlspecialchars($group['category']['name']) ?></span>
+                              <?php if (!$group['is_uncategorized'] && isset($group['category']['status'])): ?>
+                                <?php
+                                  $categoryStatusClass = $group['category']['status'] === 'aktiv'
+                                    ? 'text-bg-success'
+                                    : 'text-bg-secondary';
+                                ?>
+                                <span class="badge <?= $categoryStatusClass ?>">Status: <?= htmlspecialchars(ucfirst($group['category']['status'])) ?></span>
+                              <?php elseif ($group['is_uncategorized']): ?>
+                                <span class="badge text-bg-warning">Ohne Zuordnung</span>
+                              <?php endif; ?>
+                            </div>
+                            <div class="category-summary text-muted small">
+                              Gesamt: <?= $group['totalRooms'] ?> · Frei: <?= $group['freeRooms'] ?>
+                            </div>
+                          </th>
+                          <?php foreach ($days as $day): ?>
+                            <td class="category-cell">&nbsp;</td>
+                          <?php endforeach; ?>
+                        </tr>
+                        <?php if (!empty($group['rooms'])): ?>
+                          <?php foreach ($group['rooms'] as $room): ?>
+                            <tr>
+                              <th scope="row" class="room-label room-label-room">
+                                <div class="fw-semibold">Zimmer <?= htmlspecialchars($room['number']) ?></div>
+                                <small class="text-muted">Status: <?= htmlspecialchars(ucfirst($room['status'])) ?></small>
+                              </th>
+                              <?php foreach ($days as $day): ?>
+                                <td class="room-calendar-cell <?= $day['isToday'] ? 'today' : '' ?>" data-date="<?= $day['date'] ?>" data-room="<?= htmlspecialchars($room['number']) ?>">
+                                  <span class="visually-hidden">Zimmer <?= htmlspecialchars($room['number']) ?> am <?= $day['date'] ?></span>
+                                </td>
+                              <?php endforeach; ?>
+                            </tr>
+                          <?php endforeach; ?>
+                        <?php else: ?>
+                          <tr class="room-empty-row">
+                            <td colspan="<?= count($days) + 1 ?>" class="text-center text-muted py-3">Noch keine Zimmer in dieser Kategorie.</td>
+                          </tr>
+                        <?php endif; ?>
+                      <?php endforeach; ?>
+                    <?php else: ?>
                       <tr>
                         <td colspan="<?= count($days) + 1 ?>" class="text-muted text-center py-4">Noch keine Zimmer angelegt.</td>
                       </tr>

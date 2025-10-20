@@ -96,6 +96,34 @@ body {
     z-index: 1;
 }
 
+.room-calendar .category-row .category-label {
+    background-color: #dbeafe;
+    border-top: 2px solid #bfdbfe;
+    border-bottom: 2px solid #bfdbfe;
+    font-weight: 600;
+}
+
+.room-calendar .category-row .category-summary {
+    margin-top: 0.25rem;
+}
+
+.room-calendar .category-row td {
+    background-color: #f1f5f9;
+}
+
+.room-calendar .category-row .category-cell {
+    background-color: #f1f5f9;
+    font-weight: 500;
+}
+
+.room-calendar .room-label-room {
+    padding-left: 1.5rem;
+}
+
+.room-calendar .room-empty-row td {
+    background-color: #fff;
+}
+
 .room-calendar-cell {
     min-width: 64px;
     height: 60px;
