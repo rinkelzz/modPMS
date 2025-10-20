@@ -1410,6 +1410,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
+            $currentRole = $_SESSION['user_role'] ?? null;
+            if ($currentRole !== 'admin') {
+                http_response_code(403);
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie sind nicht berechtigt, Benutzer zu verwalten.',
+                ];
+                break;
+            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -1538,6 +1547,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
+            $currentRole = $_SESSION['user_role'] ?? null;
+            if ($currentRole !== 'admin') {
+                http_response_code(403);
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie sind nicht berechtigt, Benutzer zu löschen.',
+                ];
+                break;
+            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
