@@ -29,17 +29,6 @@ if (!isset($_SESSION['user_id'])) {
 
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
-$currentUserRole = $_SESSION['user_role'] ?? 'mitarbeiter';
-
-if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
-    try {
-        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-    } catch (Throwable $exception) {
-        $_SESSION['csrf_token'] = bin2hex(hash('sha256', uniqid('', true), true));
-    }
-}
-
-$csrfToken = (string) $_SESSION['csrf_token'];
 
 try {
     $updateToken = bin2hex(random_bytes(32));
@@ -428,25 +417,9 @@ if ($pdo !== null && isset($_GET['ajax'])) {
 }
 
 if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form'])) {
-    $sessionCsrfToken = is_string($_SESSION['csrf_token'] ?? null) ? $_SESSION['csrf_token'] : '';
-    $submittedCsrfToken = is_string($_POST['csrf_token'] ?? null) ? $_POST['csrf_token'] : '';
+    $form = $_POST['form'];
 
-    if ($sessionCsrfToken === '' || $submittedCsrfToken === '' || !hash_equals($sessionCsrfToken, $submittedCsrfToken)) {
-        $alert = [
-            'type' => 'danger',
-            'message' => 'Ungültige Formularübermittlung. Bitte laden Sie die Seite neu und versuchen Sie es erneut.',
-        ];
-    } else {
-        $form = is_string($_POST['form']) ? $_POST['form'] : '';
-
-        if (in_array($form, ['user_create', 'user_update', 'user_delete'], true) && $currentUserRole !== 'admin') {
-            $activeSection = 'users';
-            $alert = [
-                'type' => 'danger',
-                'message' => 'Sie sind nicht berechtigt, Benutzer zu verwalten.',
-            ];
-        } else {
-            switch ($form) {
+    switch ($form) {
         case 'category_create':
         case 'category_update':
             $activeSection = 'categories';
@@ -1437,6 +1410,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
+
+            if (!isset($_SESSION['user_role']) || $_SESSION['user_role'] !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
+                ];
+                break;
+            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -1565,6 +1546,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
+
+            if (!isset($_SESSION['user_role']) || $_SESSION['user_role'] !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie haben keine Berechtigung, Benutzer zu löschen.',
+                ];
+                break;
+            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
@@ -1601,8 +1590,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             header('Location: index.php?section=users');
             exit;
-            }
-        }
     }
 } elseif ($pdo === null && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $alert = [
@@ -2367,33 +2354,49 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                         ?>
                         <tr class="category-row<?= $group['is_uncategorized'] ? ' category-row-uncategorized' : '' ?>">
                           <th scope="rowgroup" class="category-label category-column" rowspan="<?= $categoryRowspan ?>">
-                            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-                              <span><?= htmlspecialchars($categoryData['name'] ?? 'Unbekannte Kategorie') ?></span>
+                            <div class="category-label-main">
+                              <span class="category-name"><?= htmlspecialchars($categoryData['name'] ?? 'Unbekannte Kategorie') ?></span>
                               <?php if (!$group['is_uncategorized'] && isset($categoryData['status'])): ?>
                                 <?php
-                                  $categoryStatusClass = $categoryData['status'] === 'aktiv'
+                                  $categoryStatus = strtolower((string) $categoryData['status']);
+                                  $categoryStatusClass = $categoryStatus === 'aktiv'
                                     ? 'text-bg-success'
                                     : 'text-bg-secondary';
                                 ?>
-                                <span class="badge <?= $categoryStatusClass ?>">Status: <?= htmlspecialchars(ucfirst((string) $categoryData['status'])) ?></span>
+                                <span class="badge <?= $categoryStatusClass ?> category-status-badge"><?= htmlspecialchars(ucfirst($categoryStatus)) ?></span>
                               <?php elseif ($group['is_uncategorized']): ?>
-                                <span class="badge text-bg-warning">Ohne Zuordnung</span>
+                                <span class="badge text-bg-warning category-status-badge">Ohne Zuordnung</span>
                               <?php endif; ?>
                             </div>
                             <?php
                               $overbookingRooms = isset($group['overbookingRooms']) ? (int) $group['overbookingRooms'] : 0;
                               $overbookingReservations = isset($group['overbookingReservations']) ? (int) $group['overbookingReservations'] : 0;
                             ?>
-                            <div class="category-summary text-muted small">
-                              Gesamt: <?= $group['totalRooms'] ?> · Frei (Status): <?= $group['freeRooms'] ?>
+                            <div class="category-meta">
+                              <span class="category-meta-item">
+                                <span class="category-meta-label">Gesamt</span>
+                                <span class="category-meta-value"><?= $group['totalRooms'] ?></span>
+                              </span>
+                              <span class="category-meta-item">
+                                <span class="category-meta-label">Frei</span>
+                                <span class="category-meta-value"><?= $group['freeRooms'] ?></span>
+                              </span>
                               <?php if ($overbookingRooms > 0): ?>
-                                · Überbuchungen: <?= $overbookingRooms ?> Zimmer<?php if ($overbookingReservations > 0): ?> (<?= $overbookingReservations ?> Reserv<?= $overbookingReservations === 1 ? 'ierung' : 'ierungen' ?>)<?php endif; ?>
+                                <span class="category-meta-item category-meta-item-alert">
+                                  <span class="category-meta-label">Überb.</span>
+                                  <span class="category-meta-value"><?= $overbookingRooms ?></span>
+                                  <?php if ($overbookingReservations > 0): ?>
+                                    <span class="category-meta-extra">(<?= $overbookingReservations ?>)</span>
+                                  <?php endif; ?>
+                                </span>
                               <?php endif; ?>
                             </div>
                           </th>
                           <th scope="row" class="room-label room-label-summary room-column">
-                            <div class="fw-semibold">Übersicht</div>
-                            <small class="text-muted">Belegt, frei &amp; Überbuchungen</small>
+                            <div class="room-label-main">
+                              <span class="room-name">Übersicht</span>
+                              <span class="room-label-details">Belegt · Frei · Überbuchung</span>
+                            </div>
                           </th>
                           <?php foreach ($days as $day): ?>
                             <?php
@@ -2415,13 +2418,28 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                           <?php foreach ($roomsInGroup as $room): ?>
                             <?php
                               $roomId = isset($room['id']) ? (int) $room['id'] : 0;
-                              $roomStatus = isset($room['status']) ? (string) $room['status'] : '';
+                              $roomStatus = isset($room['status']) ? strtolower((string) $room['status']) : '';
                               $roomNumber = trim((string) ($room['number'] ?? $roomId));
                             ?>
                             <tr>
                               <th scope="row" class="room-label room-label-room room-column">
-                                <div class="fw-semibold">Zimmer <?= htmlspecialchars($roomNumber) ?></div>
-                                <small class="text-muted">Status: <?= htmlspecialchars(ucfirst($roomStatus)) ?></small>
+                                <div class="room-label-main">
+                                  <span class="room-name">Zimmer <?= htmlspecialchars($roomNumber) ?></span>
+                                  <?php
+                                    $roomStatusBadgeClass = 'text-bg-secondary';
+                                    $roomStatusText = ucfirst($roomStatus);
+                                    if ($roomStatus === 'frei') {
+                                        $roomStatusBadgeClass = 'text-bg-success';
+                                    } elseif ($roomStatus === 'belegt') {
+                                        $roomStatusBadgeClass = 'text-bg-primary';
+                                    } elseif ($roomStatus === 'wartung') {
+                                        $roomStatusBadgeClass = 'text-bg-warning text-dark';
+                                    }
+                                  ?>
+                                  <?php if ($roomStatus !== ''): ?>
+                                    <span class="badge room-status-badge <?= $roomStatusBadgeClass ?>"><?= htmlspecialchars($roomStatusText) ?></span>
+                                  <?php endif; ?>
+                                </div>
                               </th>
                               <?php foreach ($days as $day): ?>
                                 <?php
@@ -2471,8 +2489,10 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                         <?php endif; ?>
                         <tr class="overbooking-row">
                           <th scope="row" class="room-label room-label-overbooking room-column">
-                            <div class="fw-semibold">Überbuchung</div>
-                            <small class="text-muted">Reservierungen ohne Zimmerzuweisung</small>
+                            <div class="room-label-main">
+                              <span class="room-name">Überbuchung</span>
+                              <span class="badge room-status-badge text-bg-warning text-dark">Ohne Zimmer</span>
+                            </div>
                           </th>
                           <?php foreach ($days as $day): ?>
                             <?php
@@ -2531,7 +2551,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               <div class="card-body">
                 <form method="post" class="row g-3">
                   <input type="hidden" name="form" value="<?= $isReservationEditing ? 'reservation_update' : 'reservation_create' ?>">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <?php if ($isReservationEditing): ?>
                     <input type="hidden" name="id" value="<?= (int) $reservationFormData['id'] ?>">
                   <?php endif; ?>
@@ -2902,7 +2921,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=reservations&amp;editReservation=<?= (int) $reservation['id'] ?>">Bearbeiten</a>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Reservierung wirklich löschen?');">
                                   <input type="hidden" name="form" value="reservation_delete">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="id" value="<?= (int) $reservation['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
                                 </form>
@@ -2942,7 +2960,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               <div class="card-body">
                 <form method="post" class="row g-3" id="category-form">
                   <input type="hidden" name="form" value="<?= $isEditingCategory ? 'category_update' : 'category_create' ?>">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <?php if ($isEditingCategory): ?>
                     <input type="hidden" name="id" value="<?= (int) $categoryFormData['id'] ?>">
                   <?php endif; ?>
@@ -3006,7 +3023,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=categories&editCategory=<?= (int) $category['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Kategorie wirklich löschen?');">
                                   <input type="hidden" name="form" value="category_delete">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                                 </form>
@@ -3099,7 +3115,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             <div class="card-body">
               <form method="post" class="row g-3" id="guest-form">
                 <input type="hidden" name="form" value="<?= $isEditingGuest ? 'guest_update' : 'guest_create' ?>">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <?php if ($isEditingGuest): ?>
                   <input type="hidden" name="id" value="<?= (int) $guestFormData['id'] ?>">
                 <?php endif; ?>
@@ -3410,7 +3425,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editGuest=<?= (int) $guest['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Gast wirklich löschen?');">
                                 <input type="hidden" name="form" value="guest_delete">
-                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="id" value="<?= (int) $guest['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                               </form>
@@ -3449,7 +3463,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             <div class="card-body">
               <form method="post" class="row g-3" id="company-form">
                 <input type="hidden" name="form" value="<?= $isEditingCompany ? 'company_update' : 'company_create' ?>">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <?php if ($isEditingCompany): ?>
                   <input type="hidden" name="id" value="<?= (int) $companyFormData['id'] ?>">
                 <?php endif; ?>
@@ -3565,7 +3578,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editCompany=<?= (int) $company['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Firma wirklich löschen?');">
                                 <input type="hidden" name="form" value="company_delete">
-                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="id" value="<?= (int) $company['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm" <?= ($companyGuestCounts[$companyId] ?? 0) > 0 ? 'disabled title="Zuerst Gästezuordnungen entfernen"' : '' ?>>Löschen</button>
                               </form>
@@ -3607,7 +3619,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               <div class="card-body">
                 <form method="post" class="row g-3" id="room-form">
                   <input type="hidden" name="form" value="<?= $isEditingRoom ? 'room_update' : 'room_create' ?>">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <?php if ($isEditingRoom): ?>
                     <input type="hidden" name="id" value="<?= (int) $roomFormData['id'] ?>">
                   <?php endif; ?>
@@ -3693,7 +3704,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rooms&editRoom=<?= (int) $room['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Zimmer wirklich löschen?');">
                                   <input type="hidden" name="form" value="room_delete">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="id" value="<?= (int) $room['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                                 </form>
@@ -3735,7 +3745,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             <div class="card-body">
               <form method="post" class="row g-3" id="user-form">
                 <input type="hidden" name="form" value="<?= $isEditingUser ? 'user_update' : 'user_create' ?>">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <?php if ($isEditingUser): ?>
                   <input type="hidden" name="id" value="<?= (int) $userFormData['id'] ?>">
                 <?php endif; ?>
@@ -3809,10 +3818,9 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=users&editUser=<?= (int) $user['id'] ?>">Bearbeiten</a>
                               <?php if ((int) $_SESSION['user_id'] !== (int) $user['id']): ?>
-                                  <form method="post" onsubmit="return confirm('Benutzer wirklich löschen?');">
-                                    <input type="hidden" name="form" value="user_delete">
-                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
-                                    <input type="hidden" name="id" value="<?= (int) $user['id'] ?>">
+                                <form method="post" onsubmit="return confirm('Benutzer wirklich löschen?');">
+                                  <input type="hidden" name="form" value="user_delete">
+                                  <input type="hidden" name="id" value="<?= (int) $user['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                                 </form>
                               <?php else: ?>

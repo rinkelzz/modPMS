@@ -179,15 +179,69 @@ body {
     border-top: 2px solid #bfdbfe;
     border-bottom: 2px solid #bfdbfe;
     font-weight: 600;
-}
-
-.room-calendar .category-summary {
-    margin-top: 0.25rem;
+    padding-right: 1rem;
 }
 
 .room-calendar .category-cell {
     background-color: #f1f5f9;
     text-align: left;
+}
+
+.room-calendar .category-label-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.room-calendar .category-name {
+    font-size: 1rem;
+}
+
+.room-calendar .category-status-badge {
+    font-size: 0.75rem;
+    text-transform: capitalize;
+}
+
+.room-calendar .category-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.room-calendar .category-meta-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 9999px;
+    background-color: #eff6ff;
+    color: #1d4ed8;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+.room-calendar .category-meta-item-alert {
+    background-color: #fee2e2;
+    color: #b91c1c;
+}
+
+.room-calendar .category-meta-label {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+
+.room-calendar .category-meta-value {
+    font-weight: 700;
+}
+
+.room-calendar .category-meta-extra {
+    font-size: 0.75rem;
+    font-weight: 600;
 }
 
 .room-calendar .category-day-metric {
@@ -206,6 +260,28 @@ body {
 
 .room-calendar .room-label-room {
     padding-left: 1.25rem;
+}
+
+.room-calendar .room-label-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.room-calendar .room-name {
+    font-weight: 600;
+}
+
+.room-calendar .room-label-details {
+    font-size: 0.8rem;
+    color: #64748b;
+}
+
+.room-calendar .room-status-badge {
+    font-size: 0.75rem;
+    text-transform: capitalize;
 }
 
 .room-calendar .room-label-overbooking {
