@@ -3,6 +3,33 @@ body {
     font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
+.app-container {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+}
+
+@media (min-width: 992px) {
+    .app-container {
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+}
+
+@media (min-width: 1400px) {
+    .app-container {
+        max-width: 1700px;
+    }
+}
+
+@media (min-width: 1800px) {
+    .app-container {
+        max-width: 1900px;
+    }
+}
+
 .app-main {
     min-height: calc(100vh - 4rem);
 }
@@ -126,27 +153,43 @@ body {
 }
 
 .calendar-grid-wrapper {
-    overflow-x: auto;
+    overflow-x: hidden;
+    max-width: 100%;
+}
+
+@media (max-width: 1199.98px) {
+    .calendar-grid-wrapper {
+        overflow-x: auto;
+    }
 }
 
 
 .room-calendar {
-    min-width: 900px;
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
     border-collapse: separate;
     border-spacing: 0;
-    --category-column-width: 220px;
-    --room-column-width: 240px;
+    --category-column-width: clamp(180px, 16vw, 240px);
+    --room-column-width: clamp(200px, 18vw, 260px);
 }
 
 .room-calendar th,
 .room-calendar td {
     text-align: center;
     vertical-align: middle;
+}
+
+.room-calendar thead th {
     white-space: nowrap;
 }
 
+.room-calendar .room-calendar-cell {
+    white-space: normal;
+}
+
 .room-calendar .category-column {
-    min-width: var(--category-column-width);
+    width: var(--category-column-width);
     position: sticky;
     left: 0;
     background-color: #dbeafe;
@@ -155,12 +198,13 @@ body {
 }
 
 .room-calendar .room-column {
-    min-width: var(--room-column-width);
+    width: var(--room-column-width);
     position: sticky;
     left: var(--category-column-width);
     background-color: #f8fafc;
     box-shadow: inset -1px 0 0 #e2e8f0;
     z-index: 2;
+    text-align: left;
 }
 
 .room-calendar .room-label {
@@ -169,6 +213,13 @@ body {
     position: sticky;
     left: var(--category-column-width);
     z-index: 2;
+}
+
+.room-calendar .category-column,
+.room-calendar .category-cell,
+.room-calendar .category-label,
+.room-calendar .category-label-main {
+    text-align: left;
 }
 
 .room-calendar .category-label {

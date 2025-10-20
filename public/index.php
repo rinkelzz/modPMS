@@ -1410,8 +1410,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
-
-            if (!isset($_SESSION['user_role']) || $_SESSION['user_role'] !== 'admin') {
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
                 $alert = [
                     'type' => 'danger',
                     'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
@@ -1546,8 +1545,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
-
-            if (!isset($_SESSION['user_role']) || $_SESSION['user_role'] !== 'admin') {
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
                 $alert = [
                     'type' => 'danger',
                     'message' => 'Sie haben keine Berechtigung, Benutzer zu löschen.',
@@ -2253,7 +2251,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
     </nav>
 
     <main class="app-main py-4">
-      <div class="container-xxl">
+      <div class="app-container container-fluid">
       <?php if ($dbError): ?>
         <div class="alert alert-danger" role="alert">
           <?= htmlspecialchars($dbError) ?><br>
