@@ -1,0 +1,4252 @@
+<?php
+
+use ModPMS\Calendar;
+use ModPMS\CompanyManager;
+use ModPMS\Database;
+use ModPMS\GuestManager;
+use ModPMS\ReservationManager;
+use ModPMS\RoomCategoryManager;
+use ModPMS\RoomManager;
+use ModPMS\SystemUpdater;
+use ModPMS\UserManager;
+
+require_once __DIR__ . '/../src/Database.php';
+require_once __DIR__ . '/../src/CompanyManager.php';
+require_once __DIR__ . '/../src/RoomCategoryManager.php';
+require_once __DIR__ . '/../src/Calendar.php';
+require_once __DIR__ . '/../src/RoomManager.php';
+require_once __DIR__ . '/../src/SystemUpdater.php';
+require_once __DIR__ . '/../src/UserManager.php';
+require_once __DIR__ . '/../src/GuestManager.php';
+require_once __DIR__ . '/../src/ReservationManager.php';
+
+session_start();
+
+if (!isset($_SESSION['user_id'])) {
+    header('Location: login.php');
+    exit;
+}
+
+$currentUserId = (int) ($_SESSION['user_id'] ?? 0);
+$currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
+
+try {
+    $updateToken = bin2hex(random_bytes(32));
+} catch (Throwable $exception) {
+    $updateToken = bin2hex(hash('sha256', uniqid('', true), true));
+}
+
+$_SESSION['update_token'] = $updateToken;
+
+$alert = null;
+if (isset($_SESSION['alert'])) {
+    $alert = $_SESSION['alert'];
+    unset($_SESSION['alert']);
+}
+
+$updateOutput = null;
+if (isset($_SESSION['update_output']) && is_array($_SESSION['update_output'])) {
+    $updateOutput = $_SESSION['update_output'];
+    unset($_SESSION['update_output']);
+}
+
+$categoryFormData = [
+    'id' => null,
+    'name' => '',
+    'description' => '',
+    'capacity' => 1,
+    'status' => 'aktiv',
+];
+
+$roomFormData = [
+    'id' => null,
+    'room_number' => '',
+    'category_id' => '',
+    'status' => 'frei',
+    'floor' => '',
+    'notes' => '',
+];
+
+$guestFormData = [
+    'id' => null,
+    'salutation' => '',
+    'first_name' => '',
+    'last_name' => '',
+    'date_of_birth' => '',
+    'nationality' => '',
+    'document_type' => '',
+    'document_number' => '',
+    'address_street' => '',
+    'address_postal_code' => '',
+    'address_city' => '',
+    'address_country' => '',
+    'email' => '',
+    'phone' => '',
+    'purpose_of_stay' => 'privat',
+    'notes' => '',
+    'company_id' => '',
+    'room_id' => '',
+];
+
+$reservationFormData = [
+    'id' => null,
+    'guest_id' => '',
+    'guest_query' => '',
+    'company_id' => '',
+    'company_query' => '',
+    'room_id' => '',
+    'arrival_date' => '',
+    'departure_date' => '',
+    'status' => 'geplant',
+    'notes' => '',
+    'category_items' => [
+        [
+            'category_id' => '',
+            'room_quantity' => '1',
+        ],
+    ],
+];
+$reservationFormMode = 'create';
+$isEditingReservation = false;
+
+$companyFormData = [
+    'id' => null,
+    'name' => '',
+    'address_street' => '',
+    'address_postal_code' => '',
+    'address_city' => '',
+    'address_country' => '',
+    'email' => '',
+    'phone' => '',
+    'tax_id' => '',
+    'notes' => '',
+];
+
+$userFormData = [
+    'id' => null,
+    'name' => '',
+    'email' => '',
+    'role' => 'mitarbeiter',
+];
+
+$navItems = [
+    'dashboard' => 'Dashboard',
+    'reservations' => 'Reservierungen',
+    'categories' => 'Kategorien',
+    'rooms' => 'Zimmer',
+    'guests' => 'Gäste',
+    'users' => 'Benutzer',
+    'updates' => 'Updates',
+];
+
+$activeSection = $_GET['section'] ?? 'dashboard';
+if (!array_key_exists($activeSection, $navItems)) {
+    $activeSection = 'dashboard';
+}
+
+if (isset($_GET['editCategory'])) {
+    $activeSection = 'categories';
+} elseif (isset($_GET['editRoom'])) {
+    $activeSection = 'rooms';
+} elseif (isset($_GET['editGuest'])) {
+    $activeSection = 'guests';
+} elseif (isset($_GET['editUser'])) {
+    $activeSection = 'users';
+} elseif (isset($_GET['editCompany'])) {
+    $activeSection = 'guests';
+} elseif (isset($_GET['editReservation'])) {
+    $activeSection = 'reservations';
+}
+
+$calendarPastDays = 2;
+$calendarFutureDays = 5;
+$requestedCalendarDate = isset($_GET['date']) ? trim((string) $_GET['date']) : '';
+$calendarReferenceDate = null;
+
+if ($requestedCalendarDate !== '') {
+    $candidate = DateTimeImmutable::createFromFormat('Y-m-d', $requestedCalendarDate);
+    if ($candidate instanceof DateTimeImmutable) {
+        $calendarReferenceDate = $candidate;
+    }
+}
+
+$calendar = new Calendar($calendarReferenceDate);
+$days = $calendar->daysAround($calendarPastDays, $calendarFutureDays);
+$calendarRangeLabel = $calendar->rangeLabel($calendarPastDays, $calendarFutureDays);
+$calendarViewLength = $calendar->viewLength($calendarPastDays, $calendarFutureDays);
+$calendarPrevDate = $calendar->currentDate()->modify(sprintf('-%d days', $calendarViewLength));
+$calendarNextDate = $calendar->currentDate()->modify(sprintf('+%d days', $calendarViewLength));
+$calendarCurrentDateValue = $calendar->currentDate()->format('Y-m-d');
+$todayDateValue = (new DateTimeImmutable('today'))->format('Y-m-d');
+
+$config = require __DIR__ . '/../config/app.php';
+$dbError = null;
+$categories = [];
+$rooms = [];
+$calendarCategoryGroups = [];
+$guests = [];
+$companies = [];
+$companyGuestCounts = [];
+$companyLookup = [];
+$users = [];
+$reservations = [];
+$roomLookup = [];
+$guestLookup = [];
+$roomOccupancies = [];
+$categoryOverbookingOccupancies = [];
+$categoryOverbookingStats = [];
+$categoryLookup = [];
+$pdo = null;
+$categoryManager = null;
+$roomManager = null;
+$guestManager = null;
+$companyManager = null;
+$userManager = null;
+$reservationManager = null;
+$reservationCategoryOptionsHtml = '<option value="">Bitte auswählen</option>';
+$reservationRoomOptionsHtml = '<option value="">Kein konkretes Zimmer – Überbuchung</option>';
+$buildRoomSelectOptions = null;
+$reservationSearchTerm = isset($_GET['reservation_search']) ? trim((string) $_GET['reservation_search']) : '';
+$reservationStatuses = ['geplant', 'eingecheckt', 'abgereist', 'storniert'];
+$reservationUserLookup = [];
+$reservationGuestTooltip = '';
+$reservationCompanyTooltip = '';
+
+try {
+    $pdo = Database::getConnection();
+    $categoryManager = new RoomCategoryManager($pdo);
+    $roomManager = new RoomManager($pdo);
+    $guestManager = new GuestManager($pdo);
+    $companyManager = new CompanyManager($pdo);
+    $userManager = new UserManager($pdo);
+    $reservationManager = new ReservationManager($pdo);
+} catch (Throwable $exception) {
+    $dbError = $exception->getMessage();
+}
+
+$categoryStatuses = ['aktiv', 'inaktiv'];
+$roomStatuses = ['frei', 'belegt', 'wartung'];
+$guestSalutations = ['Herr', 'Frau', 'Divers'];
+$guestPurposeOptions = ['privat', 'geschäftlich'];
+$userRoles = ['admin', 'mitarbeiter'];
+
+$normalizeDateInput = static function (string $value): ?string {
+    if ($value === '') {
+        return null;
+    }
+
+    $date = DateTimeImmutable::createFromFormat('Y-m-d', $value);
+    if ($date === false) {
+        return null;
+    }
+
+    return $date->format('Y-m-d');
+};
+
+$createDateImmutable = static function (?string $value): ?DateTimeImmutable {
+    if ($value === null || $value === '') {
+        return null;
+    }
+
+    try {
+        return new DateTimeImmutable($value);
+    } catch (Throwable $exception) {
+        return null;
+    }
+};
+
+$buildGuestCalendarLabel = static function (array $guest): string {
+    $companyName = isset($guest['company_name']) ? trim((string) $guest['company_name']) : '';
+    if ($companyName !== '') {
+        return $companyName;
+    }
+
+    $lastName = isset($guest['last_name']) ? trim((string) $guest['last_name']) : '';
+    $firstName = isset($guest['first_name']) ? trim((string) $guest['first_name']) : '';
+
+    if ($lastName !== '' && $firstName !== '') {
+        $initial = function_exists('mb_substr') ? mb_substr($firstName, 0, 1) : substr($firstName, 0, 1);
+
+        return sprintf('%s %s.', $lastName, strtoupper((string) $initial));
+    }
+
+    if ($lastName !== '') {
+        return $lastName;
+    }
+
+    return $firstName !== '' ? $firstName : 'Gast';
+};
+
+$buildGuestReservationLabel = static function (array $guest): string {
+    $companyName = isset($guest['company_name']) ? trim((string) $guest['company_name']) : '';
+    $lastName = isset($guest['last_name']) ? trim((string) $guest['last_name']) : '';
+    $firstName = isset($guest['first_name']) ? trim((string) $guest['first_name']) : '';
+
+    $nameParts = array_filter([$firstName, $lastName], static fn ($value) => $value !== '');
+    $fullName = implode(' ', $nameParts);
+
+    if ($companyName !== '' && $fullName !== '') {
+        return sprintf('%s – %s', $companyName, $fullName);
+    }
+
+    if ($companyName !== '') {
+        return $companyName;
+    }
+
+    if ($fullName !== '') {
+        return $fullName;
+    }
+
+    if (isset($guest['id'])) {
+        return 'Gast #' . (int) $guest['id'];
+    }
+
+    return 'Gast';
+};
+
+$buildAddressLabel = static function (array $record): string {
+    $street = isset($record['address_street']) ? trim((string) $record['address_street']) : '';
+    $postal = isset($record['address_postal_code']) ? trim((string) $record['address_postal_code']) : '';
+    $city = isset($record['address_city']) ? trim((string) $record['address_city']) : '';
+    $country = isset($record['address_country']) ? trim((string) $record['address_country']) : '';
+
+    $parts = [];
+    if ($street !== '') {
+        $parts[] = $street;
+    }
+
+    $cityLineParts = array_filter([$postal, $city], static fn ($value) => $value !== '');
+    if ($cityLineParts !== []) {
+        $parts[] = implode(' ', $cityLineParts);
+    }
+
+    if ($country !== '') {
+        $parts[] = $country;
+    }
+
+    return $parts !== [] ? implode(', ', $parts) : '';
+};
+
+$buildCompanyReservationLabel = static function (array $company): string {
+    $name = '';
+    if (isset($company['name'])) {
+        $name = trim((string) $company['name']);
+    } elseif (isset($company['company_name'])) {
+        $name = trim((string) $company['company_name']);
+    }
+
+    if ($name !== '') {
+        return $name;
+    }
+
+    if (isset($company['id'])) {
+        return 'Firma #' . (int) $company['id'];
+    }
+
+    return 'Firma';
+};
+
+if ($pdo !== null && isset($_GET['ajax'])) {
+    $ajaxAction = (string) $_GET['ajax'];
+    $term = isset($_GET['term']) ? trim((string) $_GET['term']) : '';
+    $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 20;
+
+    header('Content-Type: application/json; charset=utf-8');
+
+    try {
+        if ($ajaxAction === 'guest_search' && $guestManager instanceof GuestManager) {
+            $results = [];
+            foreach ($guestManager->search($term, $limit) as $guest) {
+                $guest['company_name'] = $guest['company_name'] ?? '';
+                $label = $buildGuestReservationLabel($guest);
+                $address = $buildAddressLabel($guest);
+
+                $company = null;
+                if (!empty($guest['company_id'])) {
+                    $company = [
+                        'id' => (int) $guest['company_id'],
+                        'label' => $buildCompanyReservationLabel([
+                            'id' => $guest['company_id'],
+                            'name' => $guest['company_name'] ?? '',
+                        ]),
+                        'address' => $buildAddressLabel([
+                            'address_street' => $guest['company_address_street'] ?? '',
+                            'address_postal_code' => $guest['company_address_postal_code'] ?? '',
+                            'address_city' => $guest['company_address_city'] ?? '',
+                            'address_country' => $guest['company_address_country'] ?? '',
+                        ]),
+                    ];
+                }
+
+                $results[] = [
+                    'id' => (int) $guest['id'],
+                    'label' => $label,
+                    'address' => $address,
+                    'company' => $company,
+                ];
+            }
+
+            echo json_encode(['items' => $results], JSON_THROW_ON_ERROR);
+            exit;
+        }
+
+        if ($ajaxAction === 'company_search' && $companyManager instanceof CompanyManager) {
+            $results = [];
+            foreach ($companyManager->search($term, $limit) as $company) {
+                $results[] = [
+                    'id' => (int) $company['id'],
+                    'label' => $buildCompanyReservationLabel($company),
+                    'address' => $buildAddressLabel($company),
+                ];
+            }
+
+            echo json_encode(['items' => $results], JSON_THROW_ON_ERROR);
+            exit;
+        }
+    } catch (Throwable $exception) {
+        http_response_code(500);
+        echo json_encode([
+            'items' => [],
+            'error' => $exception->getMessage(),
+        ]);
+        exit;
+    }
+
+    echo json_encode(['items' => []]);
+    exit;
+}
+
+if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form'])) {
+    $form = $_POST['form'];
+
+    switch ($form) {
+        case 'category_create':
+        case 'category_update':
+            $activeSection = 'categories';
+            $name = trim($_POST['name'] ?? '');
+            $description = trim($_POST['description'] ?? '');
+            $capacityInput = trim((string) ($_POST['capacity'] ?? ''));
+            $capacityValue = (int) $capacityInput;
+            $status = $_POST['status'] ?? 'aktiv';
+            if (!in_array($status, $categoryStatuses, true)) {
+                $status = 'aktiv';
+            }
+
+            $categoryFormData = [
+                'id' => $form === 'category_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'name' => $name,
+                'description' => $description,
+                'capacity' => $capacityInput !== '' ? $capacityInput : '',
+                'status' => $status,
+            ];
+
+            if ($name === '' || $capacityValue <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen Namen und eine gültige Kapazität an.',
+                ];
+                break;
+            }
+
+            $payload = [
+                'name' => $name,
+                'description' => $description,
+                'capacity' => $capacityValue,
+                'status' => $status,
+            ];
+
+            if ($form === 'category_create') {
+                $categoryManager->add($payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Kategorie "%s" erfolgreich angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=categories');
+                exit;
+            }
+
+            $categoryId = (int) ($_POST['id'] ?? 0);
+            if ($categoryId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Kategorie konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            if ($categoryManager->find($categoryId) === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $categoryManager->update($categoryId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Kategorie "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=categories');
+            exit;
+
+        case 'category_delete':
+            $activeSection = 'categories';
+            $categoryId = (int) ($_POST['id'] ?? 0);
+
+            if ($categoryId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Kategorie konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $category = $categoryManager->find($categoryId);
+            if ($category === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $categoryManager->delete($categoryId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Kategorie "%s" wurde gelöscht.', htmlspecialchars($category['name'], ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=categories');
+            exit;
+
+        case 'room_create':
+        case 'room_update':
+            $activeSection = 'rooms';
+            $roomNumber = trim($_POST['room_number'] ?? '');
+            $roomStatus = $_POST['status'] ?? 'frei';
+            if (!in_array($roomStatus, $roomStatuses, true)) {
+                $roomStatus = 'frei';
+            }
+            $categoryIdInput = trim((string) ($_POST['category_id'] ?? ''));
+            $categoryId = $categoryIdInput === '' ? null : (int) $categoryIdInput;
+            $floor = trim($_POST['floor'] ?? '');
+            $notes = trim($_POST['notes'] ?? '');
+
+            $roomFormData = [
+                'id' => $form === 'room_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'room_number' => $roomNumber,
+                'category_id' => $categoryIdInput,
+                'status' => $roomStatus,
+                'floor' => $floor,
+                'notes' => $notes,
+            ];
+
+            if ($roomNumber === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie eine Zimmernummer an.',
+                ];
+                break;
+            }
+
+            $payload = [
+                'room_number' => $roomNumber,
+                'category_id' => $categoryId,
+                'status' => $roomStatus,
+                'floor' => $floor,
+                'notes' => $notes,
+            ];
+
+            if ($form === 'room_create') {
+                $roomManager->create($payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Zimmer "%s" erfolgreich angelegt.', htmlspecialchars($roomNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=rooms');
+                exit;
+            }
+
+            $roomId = (int) ($_POST['id'] ?? 0);
+            if ($roomId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Zimmer konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            if ($roomManager->find($roomId) === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das ausgewählte Zimmer wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $roomManager->update($roomId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Zimmer "%s" wurde aktualisiert.', htmlspecialchars($roomNumber, ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=rooms');
+            exit;
+
+        case 'room_delete':
+            $activeSection = 'rooms';
+            $roomId = (int) ($_POST['id'] ?? 0);
+
+            if ($roomId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Zimmer konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $room = $roomManager->find($roomId);
+            if ($room === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das ausgewählte Zimmer wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $roomManager->delete($roomId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Zimmer "%s" wurde gelöscht.', htmlspecialchars($room['room_number'], ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=rooms');
+            exit;
+
+        case 'guest_create':
+        case 'guest_update':
+            $activeSection = 'guests';
+            $salutationInput = trim($_POST['salutation'] ?? '');
+            if ($salutationInput !== '' && !in_array($salutationInput, $guestSalutations, true)) {
+                $salutationInput = '';
+            }
+
+            $firstName = trim($_POST['first_name'] ?? '');
+            $lastName = trim($_POST['last_name'] ?? '');
+            $dateOfBirthInput = trim((string) ($_POST['date_of_birth'] ?? ''));
+            $nationality = trim($_POST['nationality'] ?? '');
+            $documentType = trim($_POST['document_type'] ?? '');
+            $documentNumber = trim($_POST['document_number'] ?? '');
+            $addressStreet = trim($_POST['address_street'] ?? '');
+            $addressPostalCode = trim($_POST['address_postal_code'] ?? '');
+            $addressCity = trim($_POST['address_city'] ?? '');
+            $addressCountry = trim($_POST['address_country'] ?? '');
+            $email = trim($_POST['email'] ?? '');
+            $phone = trim($_POST['phone'] ?? '');
+            $purposeInput = $_POST['purpose_of_stay'] ?? 'privat';
+            $notes = trim($_POST['notes'] ?? '');
+            $companyIdInput = trim((string) ($_POST['company_id'] ?? ''));
+            $roomIdInput = trim((string) ($_POST['room_id'] ?? ''));
+
+            if (!in_array($purposeInput, $guestPurposeOptions, true)) {
+                $purposeInput = 'privat';
+            }
+
+            $guestFormData = [
+                'id' => $form === 'guest_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'salutation' => $salutationInput,
+                'first_name' => $firstName,
+                'last_name' => $lastName,
+                'date_of_birth' => $dateOfBirthInput,
+                'nationality' => $nationality,
+                'document_type' => $documentType,
+                'document_number' => $documentNumber,
+                'address_street' => $addressStreet,
+                'address_postal_code' => $addressPostalCode,
+                'address_city' => $addressCity,
+                'address_country' => $addressCountry,
+                'email' => $email,
+                'phone' => $phone,
+                'purpose_of_stay' => $purposeInput,
+                'notes' => $notes,
+                'company_id' => $companyIdInput,
+                'room_id' => $roomIdInput,
+            ];
+
+            if ($firstName === '' || $lastName === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie mindestens Vor- und Nachnamen des Gastes an.',
+                ];
+                break;
+            }
+
+            $companyId = null;
+            if ($companyIdInput !== '') {
+                $companyIdValue = (int) $companyIdInput;
+
+                if ($companyIdValue <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Firma ist ungültig.',
+                    ];
+                    break;
+                }
+
+                if ($companyManager === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Firmenzuordnungen konnten nicht geladen werden. Bitte versuchen Sie es erneut.',
+                    ];
+                    break;
+                }
+
+                $company = $companyManager->find($companyIdValue);
+                if ($company === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Firma wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $companyId = $companyIdValue;
+            }
+
+            $roomId = null;
+            if ($roomIdInput !== '') {
+                $roomIdValue = (int) $roomIdInput;
+
+                if ($roomIdValue <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das ausgewählte Zimmer ist ungültig.',
+                    ];
+                    break;
+                }
+
+                if ($roomManager === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Zimmer konnten nicht geladen werden. Bitte versuchen Sie es erneut.',
+                    ];
+                    break;
+                }
+
+                $room = $roomManager->find($roomIdValue);
+                if ($room === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das ausgewählte Zimmer wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $roomId = $roomIdValue;
+            }
+
+            if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie eine gültige E-Mail-Adresse für den Gast an.',
+                ];
+                break;
+            }
+
+            if (($documentType === '' && $documentNumber !== '') || ($documentType !== '' && $documentNumber === '')) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte hinterlegen Sie Ausweisart und -nummer gemeinsam.',
+                ];
+                break;
+            }
+
+            $normalizedBirthDate = $normalizeDateInput($dateOfBirthInput);
+            if ($dateOfBirthInput !== '' && $normalizedBirthDate === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das angegebene Geburtsdatum ist ungültig. Bitte verwenden Sie das Format JJJJ-MM-TT.',
+                ];
+                break;
+            }
+
+            $payload = [
+                'salutation' => $salutationInput !== '' ? $salutationInput : null,
+                'first_name' => $firstName,
+                'last_name' => $lastName,
+                'date_of_birth' => $normalizedBirthDate,
+                'nationality' => $nationality !== '' ? $nationality : null,
+                'document_type' => $documentType !== '' ? $documentType : null,
+                'document_number' => $documentNumber !== '' ? $documentNumber : null,
+                'address_street' => $addressStreet !== '' ? $addressStreet : null,
+                'address_postal_code' => $addressPostalCode !== '' ? $addressPostalCode : null,
+                'address_city' => $addressCity !== '' ? $addressCity : null,
+                'address_country' => $addressCountry !== '' ? $addressCountry : null,
+                'email' => $email !== '' ? $email : null,
+                'phone' => $phone !== '' ? $phone : null,
+                'purpose_of_stay' => $purposeInput,
+                'notes' => $notes !== '' ? $notes : null,
+                'company_id' => $companyId,
+                'room_id' => $roomId,
+            ];
+
+            if ($form === 'guest_create') {
+                $guestManager->create($payload + [
+                    'arrival_date' => null,
+                    'departure_date' => null,
+                ]);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Gast "%s %s" erfolgreich angelegt.', htmlspecialchars($firstName, ENT_QUOTES, 'UTF-8'), htmlspecialchars($lastName, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=guests');
+                exit;
+            }
+
+            $guestId = (int) ($_POST['id'] ?? 0);
+            if ($guestId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Gast konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $guest = $guestManager->find($guestId);
+            if ($guest === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Gast wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $guestManager->update($guestId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Gast "%s %s" wurde aktualisiert.', htmlspecialchars($firstName, ENT_QUOTES, 'UTF-8'), htmlspecialchars($lastName, ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=guests');
+            exit;
+
+        case 'guest_delete':
+            $activeSection = 'guests';
+            $guestId = (int) ($_POST['id'] ?? 0);
+
+            if ($guestId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Gast konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $guest = $guestManager->find($guestId);
+            if ($guest === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Gast wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $guestManager->delete($guestId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Gast "%s %s" wurde gelöscht.', htmlspecialchars($guest['first_name'], ENT_QUOTES, 'UTF-8'), htmlspecialchars($guest['last_name'], ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=guests');
+            exit;
+
+        case 'company_create':
+        case 'company_update':
+            $activeSection = 'guests';
+
+            if ($companyManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Firmenverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $name = trim($_POST['name'] ?? '');
+            $addressStreet = trim($_POST['address_street'] ?? '');
+            $addressPostalCode = trim($_POST['address_postal_code'] ?? '');
+            $addressCity = trim($_POST['address_city'] ?? '');
+            $addressCountry = trim($_POST['address_country'] ?? '');
+            $email = trim($_POST['email'] ?? '');
+            $phone = trim($_POST['phone'] ?? '');
+            $taxId = trim($_POST['tax_id'] ?? '');
+            $notes = trim($_POST['notes'] ?? '');
+
+            $companyFormData = [
+                'id' => $form === 'company_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'name' => $name,
+                'address_street' => $addressStreet,
+                'address_postal_code' => $addressPostalCode,
+                'address_city' => $addressCity,
+                'address_country' => $addressCountry,
+                'email' => $email,
+                'phone' => $phone,
+                'tax_id' => $taxId,
+                'notes' => $notes,
+            ];
+
+            if ($name === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen Firmennamen an.',
+                ];
+                break;
+            }
+
+            if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie eine gültige E-Mail-Adresse für die Firma an.',
+                ];
+                break;
+            }
+
+            $payload = [
+                'name' => $name,
+                'address_street' => $addressStreet !== '' ? $addressStreet : null,
+                'address_postal_code' => $addressPostalCode !== '' ? $addressPostalCode : null,
+                'address_city' => $addressCity !== '' ? $addressCity : null,
+                'address_country' => $addressCountry !== '' ? $addressCountry : null,
+                'email' => $email !== '' ? $email : null,
+                'phone' => $phone !== '' ? $phone : null,
+                'tax_id' => $taxId !== '' ? $taxId : null,
+                'notes' => $notes !== '' ? $notes : null,
+            ];
+
+            if ($form === 'company_create') {
+                $companyManager->create($payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Firma "%s" wurde angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=guests');
+                exit;
+            }
+
+            $companyId = (int) ($_POST['id'] ?? 0);
+            if ($companyId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Firma konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $company = $companyManager->find($companyId);
+            if ($company === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Firma wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $companyManager->update($companyId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Firma "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=guests');
+            exit;
+
+        case 'company_delete':
+            $activeSection = 'guests';
+
+            if ($companyManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Firmenverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $companyId = (int) ($_POST['id'] ?? 0);
+
+            if ($companyId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Firma konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $company = $companyManager->find($companyId);
+            if ($company === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Firma wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            if ($companyManager->hasGuests($companyId)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Firma kann nicht gelöscht werden, solange Gäste zugeordnet sind.',
+                ];
+                break;
+            }
+
+            $companyManager->delete($companyId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Firma "%s" wurde gelöscht.', htmlspecialchars($company['name'], ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=guests');
+            exit;
+
+        case 'reservation_create':
+        case 'reservation_update':
+            $activeSection = 'reservations';
+
+            if ($reservationManager === null || $guestManager === null || $roomManager === null || $categoryManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Reservierungsverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $guestIdInput = trim((string) ($_POST['guest_id'] ?? ''));
+            $guestQueryInput = trim((string) ($_POST['guest_query'] ?? ''));
+            $companyIdInput = trim((string) ($_POST['company_id'] ?? ''));
+            $companyQueryInput = trim((string) ($_POST['company_query'] ?? ''));
+            $arrivalInput = trim((string) ($_POST['arrival_date'] ?? ''));
+            $departureInput = trim((string) ($_POST['departure_date'] ?? ''));
+            $statusInput = $_POST['status'] ?? 'geplant';
+            $notes = trim((string) ($_POST['notes'] ?? ''));
+            $categoryItemsInput = $_POST['reservation_categories'] ?? [];
+
+            $reservationFormMode = $form === 'reservation_update' ? 'update' : 'create';
+            $isEditingReservation = $form === 'reservation_update';
+            $categoryItemsForForm = [];
+            $validCategoryItems = [];
+            $categoryValidationErrors = false;
+            $selectedRoomIds = [];
+            $roomValidationCache = [];
+
+            $availableCategories = $categoryManager->all();
+            $categoryLookupForValidation = [];
+            foreach ($availableCategories as $availableCategory) {
+                if (!isset($availableCategory['id'])) {
+                    continue;
+                }
+
+                $categoryLookupForValidation[(int) $availableCategory['id']] = $availableCategory;
+            }
+
+            if (is_array($categoryItemsInput)) {
+                foreach ($categoryItemsInput as $item) {
+                    if (!is_array($item)) {
+                        continue;
+                    }
+
+                    $rawCategoryId = trim((string) ($item['category_id'] ?? ''));
+                    $rawQuantity = trim((string) ($item['room_quantity'] ?? ''));
+                    $rawRoomId = trim((string) ($item['room_id'] ?? ''));
+
+                    $categoryIdValue = $rawCategoryId !== '' ? (int) $rawCategoryId : 0;
+                    $quantityValue = $rawQuantity !== '' ? (int) $rawQuantity : 0;
+                    $roomIdValue = $rawRoomId !== '' ? (int) $rawRoomId : 0;
+
+                    $categoryItemsForForm[] = [
+                        'category_id' => $categoryIdValue > 0 ? (string) $categoryIdValue : '',
+                        'room_quantity' => $rawQuantity !== '' ? $rawQuantity : '',
+                        'room_id' => $roomIdValue > 0 ? (string) $roomIdValue : '',
+                    ];
+
+                    if ($categoryIdValue <= 0 || !isset($categoryLookupForValidation[$categoryIdValue])) {
+                        $categoryValidationErrors = true;
+                        continue;
+                    }
+
+                    if ($roomIdValue > 0) {
+                        if (!isset($roomValidationCache[$roomIdValue])) {
+                            $roomValidationCache[$roomIdValue] = $roomManager->find($roomIdValue);
+                        }
+
+                        $roomRecord = $roomValidationCache[$roomIdValue];
+                        if ($roomRecord === null) {
+                            $categoryValidationErrors = true;
+                            continue;
+                        }
+
+                        $roomCategoryId = isset($roomRecord['category_id']) ? (int) $roomRecord['category_id'] : null;
+                        if ($roomCategoryId !== null && $roomCategoryId !== $categoryIdValue) {
+                            $categoryValidationErrors = true;
+                            continue;
+                        }
+
+                        if (in_array($roomIdValue, $selectedRoomIds, true)) {
+                            $categoryValidationErrors = true;
+                            continue;
+                        }
+
+                        $selectedRoomIds[] = $roomIdValue;
+                        $quantityValue = 1;
+                    }
+
+                    if ($quantityValue <= 0) {
+                        $categoryValidationErrors = true;
+                        continue;
+                    }
+
+                    if ($quantityValue > 50) {
+                        $quantityValue = 50;
+                    }
+
+                    $validCategoryItems[] = [
+                        'category_id' => $categoryIdValue,
+                        'room_quantity' => $quantityValue,
+                        'room_id' => $roomIdValue > 0 ? $roomIdValue : null,
+                    ];
+                }
+            }
+
+            if ($categoryItemsForForm === []) {
+                $categoryItemsForForm[] = [
+                    'category_id' => '',
+                    'room_quantity' => '1',
+                    'room_id' => '',
+                ];
+            }
+
+            $reservationFormData = [
+                'id' => $form === 'reservation_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'guest_id' => $guestIdInput,
+                'guest_query' => $guestQueryInput,
+                'company_id' => $companyIdInput,
+                'company_query' => $companyQueryInput,
+                'arrival_date' => $arrivalInput,
+                'departure_date' => $departureInput,
+                'status' => in_array($statusInput, $reservationStatuses, true) ? $statusInput : 'geplant',
+                'notes' => $notes,
+                'category_items' => $categoryItemsForForm,
+            ];
+
+            $guestId = (int) $guestIdInput;
+            if ($guestId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte wählen Sie einen gültigen Gast aus.',
+                ];
+                break;
+            }
+
+            $guest = $guestManager->find($guestId);
+            if ($guest === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Gast wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            if ($validCategoryItems === []) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie mindestens eine gültige Kategorie mit Zimmeranzahl an.',
+                ];
+                break;
+            }
+
+            if ($categoryValidationErrors) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte prüfen Sie die gewählten Kategorien und Zimmermengen.',
+                ];
+                break;
+            }
+
+            $primaryCategoryId = $validCategoryItems[0]['category_id'];
+            $totalRoomQuantity = 0;
+            foreach ($validCategoryItems as $validItem) {
+                $totalRoomQuantity += $validItem['room_quantity'];
+            }
+
+            $assignedRoomIds = [];
+            foreach ($validCategoryItems as $validItem) {
+                if (isset($validItem['room_id']) && $validItem['room_id'] !== null) {
+                    $assignedRoomIds[] = (int) $validItem['room_id'];
+                }
+            }
+
+            $primaryRoomId = $assignedRoomIds !== [] ? $assignedRoomIds[0] : null;
+
+            $companyId = null;
+            if ($companyIdInput !== '') {
+                if ($companyManager === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Firmen können derzeit nicht geladen werden.',
+                    ];
+                    break;
+                }
+
+                $companyIdValue = (int) $companyIdInput;
+                if ($companyIdValue <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte wählen Sie eine gültige Firma aus.',
+                    ];
+                    break;
+                }
+
+                $company = $companyManager->find($companyIdValue);
+                if ($company === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Firma wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $companyId = $companyIdValue;
+            }
+
+            $normalizedArrival = $normalizeDateInput($arrivalInput);
+            if ($normalizedArrival === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Anreisedatum ist ungültig. Bitte verwenden Sie das Format JJJJ-MM-TT.',
+                ];
+                break;
+            }
+
+            $normalizedDeparture = $normalizeDateInput($departureInput);
+            if ($normalizedDeparture === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Abreisedatum ist ungültig. Bitte verwenden Sie das Format JJJJ-MM-TT.',
+                ];
+                break;
+            }
+
+            $arrivalDate = new DateTimeImmutable($normalizedArrival);
+            $departureDate = new DateTimeImmutable($normalizedDeparture);
+
+            if ($departureDate < $arrivalDate) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Abreisedatum darf nicht vor dem Anreisedatum liegen.',
+                ];
+                break;
+            }
+
+            $reservationStatus = in_array($statusInput, $reservationStatuses, true) ? $statusInput : 'geplant';
+
+            $createPayload = [
+                'guest_id' => $guestId,
+                'room_id' => $primaryRoomId,
+                'category_id' => $primaryCategoryId,
+                'room_quantity' => $totalRoomQuantity,
+                'company_id' => $companyId,
+                'arrival_date' => $arrivalDate->format('Y-m-d'),
+                'departure_date' => $departureDate->format('Y-m-d'),
+                'status' => $reservationStatus,
+                'notes' => $notes !== '' ? $notes : null,
+                'created_by' => $currentUserId > 0 ? $currentUserId : null,
+                'updated_by' => $currentUserId > 0 ? $currentUserId : null,
+            ];
+
+            if ($form === 'reservation_update') {
+                $reservationId = (int) ($_POST['id'] ?? 0);
+                if ($reservationId <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die Reservierung konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                    ];
+                    break;
+                }
+
+                $existingReservation = $reservationManager->find($reservationId);
+                if ($existingReservation === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Reservierung wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $updatePayload = $createPayload;
+                $updatePayload['created_by'] = $existingReservation['created_by'] ?? null;
+                $updatePayload['updated_by'] = $currentUserId > 0 ? $currentUserId : null;
+
+                $reservationManager->update($reservationId, $updatePayload);
+                $reservationManager->replaceItems($reservationId, $validCategoryItems);
+
+                $guestManager->update($guestId, [
+                    'arrival_date' => $arrivalDate->format('Y-m-d'),
+                    'departure_date' => $departureDate->format('Y-m-d'),
+                    'room_id' => $primaryRoomId,
+                    'company_id' => $companyId,
+                ]);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Reservierung für "%s %s" wurde aktualisiert.', htmlspecialchars($guest['first_name'], ENT_QUOTES, 'UTF-8'), htmlspecialchars($guest['last_name'], ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=reservations');
+                exit;
+            }
+
+            $reservationId = $reservationManager->create($createPayload);
+            $reservationManager->replaceItems($reservationId, $validCategoryItems);
+
+            $guestManager->update($guestId, [
+                'arrival_date' => $arrivalDate->format('Y-m-d'),
+                'departure_date' => $departureDate->format('Y-m-d'),
+                'room_id' => $primaryRoomId,
+                'company_id' => $companyId,
+            ]);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Reservierung für "%s %s" wurde angelegt.', htmlspecialchars($guest['first_name'], ENT_QUOTES, 'UTF-8'), htmlspecialchars($guest['last_name'], ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=reservations');
+            exit;
+
+        case 'reservation_delete':
+            $activeSection = 'reservations';
+
+            if ($reservationManager === null || $guestManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Reservierungsverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $reservationId = (int) ($_POST['id'] ?? 0);
+            if ($reservationId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Reservierung konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $reservation = $reservationManager->find($reservationId);
+            if ($reservation === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Reservierung wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $guestId = (int) ($reservation['guest_id'] ?? 0);
+            $guest = $guestId > 0 ? $guestManager->find($guestId) : null;
+
+            $reservationManager->delete($reservationId);
+
+            if ($guestId > 0) {
+                $latestReservation = $reservationManager->latestForGuest($guestId);
+
+                if ($latestReservation !== null) {
+                    $guestManager->update($guestId, [
+                        'arrival_date' => $latestReservation['arrival_date'],
+                        'departure_date' => $latestReservation['departure_date'],
+                        'room_id' => $latestReservation['room_id'],
+                        'company_id' => $latestReservation['company_id'] ?? null,
+                    ]);
+                } else {
+                    $guestManager->update($guestId, [
+                        'arrival_date' => null,
+                        'departure_date' => null,
+                        'room_id' => null,
+                        'company_id' => $guest['company_id'] ?? null,
+                    ]);
+                }
+            }
+
+            $guestNameParts = [];
+            if ($guest !== null) {
+                $guestNameParts[] = $guest['first_name'] ?? '';
+                $guestNameParts[] = $guest['last_name'] ?? '';
+            }
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Reservierung%s wurde gelöscht.', $guest !== null ? ' für "' . htmlspecialchars(trim(implode(' ', array_filter($guestNameParts))), ENT_QUOTES, 'UTF-8') . '"' : ''),
+            ];
+
+            header('Location: index.php?section=reservations');
+            exit;
+
+        case 'user_create':
+        case 'user_update':
+            $activeSection = 'users';
+            $name = trim($_POST['name'] ?? '');
+            $email = trim($_POST['email'] ?? '');
+            $roleInput = $_POST['role'] ?? 'mitarbeiter';
+            $role = in_array($roleInput, $userRoles, true) ? $roleInput : 'mitarbeiter';
+            $password = (string) ($_POST['password'] ?? '');
+            $passwordConfirm = (string) ($_POST['password_confirm'] ?? '');
+
+            $userFormData = [
+                'id' => $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'name' => $name,
+                'email' => $email,
+                'role' => $role,
+            ];
+
+            if ($name === '' || $email === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen Namen und eine E-Mail-Adresse an.',
+                ];
+                break;
+            }
+
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie eine gültige E-Mail-Adresse ein.',
+                ];
+                break;
+            }
+
+            if ($form === 'user_create' && $password === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte vergeben Sie ein Passwort für den neuen Benutzer.',
+                ];
+                break;
+            }
+
+            if ($password !== '' && strlen($password) < 8) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Passwort muss mindestens 8 Zeichen lang sein.',
+                ];
+                break;
+            }
+
+            if ($password !== $passwordConfirm) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die eingegebenen Passwörter stimmen nicht überein.',
+                ];
+                break;
+            }
+
+            $existingUser = $userManager->findByEmail($email);
+            $targetUserId = $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null;
+
+            if ($existingUser !== null && ($targetUserId === null || (int) $existingUser['id'] !== $targetUserId)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die angegebene E-Mail-Adresse wird bereits verwendet.',
+                ];
+                break;
+            }
+
+            if ($form === 'user_create') {
+                $userManager->create([
+                    'name' => $name,
+                    'email' => $email,
+                    'role' => $role,
+                    'password_hash' => password_hash($password, PASSWORD_DEFAULT),
+                ]);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Benutzer "%s" erfolgreich angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=users');
+                exit;
+            }
+
+            $userId = $targetUserId;
+            if ($userId === null || $userId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Benutzer konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $user = $userManager->find($userId);
+            if ($user === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Benutzer wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $payload = [
+                'name' => $name,
+                'email' => $email,
+                'role' => $role,
+            ];
+
+            if ($password !== '') {
+                $payload['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
+            }
+
+            $userManager->update($userId, $payload);
+
+            if ((int) $_SESSION['user_id'] === $userId) {
+                $_SESSION['user_name'] = $name;
+                $_SESSION['user_email'] = $email;
+                $_SESSION['user_role'] = $role;
+            }
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Benutzer "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=users');
+            exit;
+
+        case 'user_delete':
+            $activeSection = 'users';
+            $userId = (int) ($_POST['id'] ?? 0);
+
+            if ($userId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Benutzer konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            if ((int) $_SESSION['user_id'] === $userId) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie können Ihr eigenes Konto nicht löschen.',
+                ];
+                break;
+            }
+
+            $user = $userManager->find($userId);
+            if ($user === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Benutzer wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $userManager->delete($userId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Benutzer "%s" wurde gelöscht.', htmlspecialchars($user['name'], ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=users');
+            exit;
+    }
+} elseif ($pdo === null && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $alert = [
+        'type' => 'danger',
+        'message' => 'Aktionen sind ohne aktive Datenbankverbindung nicht verfügbar.',
+    ];
+}
+
+if ($pdo !== null) {
+    $categories = $categoryManager->all();
+    $options = ['<option value="">Bitte auswählen</option>'];
+    foreach ($categories as $category) {
+        if (!isset($category['id'])) {
+            continue;
+        }
+
+        $categoryId = (int) $category['id'];
+        $categoryLookup[$categoryId] = $category;
+        $options[] = sprintf(
+            '<option value="%d">%s</option>',
+            $categoryId,
+            htmlspecialchars((string) ($category['name'] ?? ''), ENT_QUOTES, 'UTF-8')
+        );
+    }
+    $reservationCategoryOptionsHtml = implode('', $options);
+    $rooms = $roomManager->all();
+    $roomsByCategory = [];
+    foreach ($rooms as $room) {
+        if (!isset($room['id'])) {
+            continue;
+        }
+
+        $categoryId = isset($room['category_id']) && $room['category_id'] !== null
+            ? (int) $room['category_id']
+            : 0;
+
+        if (!isset($roomsByCategory[$categoryId])) {
+            $roomsByCategory[$categoryId] = [];
+        }
+
+        $roomsByCategory[$categoryId][] = $room;
+    }
+
+    $buildRoomSelectOptions = static function (?int $selectedRoomId) use ($roomsByCategory, $categoryLookup): string {
+        $options = ['<option value="">Kein konkretes Zimmer – Überbuchung</option>'];
+
+        foreach ($roomsByCategory as $categoryId => $categoryRooms) {
+            if ($categoryRooms === []) {
+                continue;
+            }
+
+            $label = $categoryId > 0 && isset($categoryLookup[$categoryId]['name'])
+                ? (string) $categoryLookup[$categoryId]['name']
+                : 'Ohne Kategorie';
+
+            $options[] = '<optgroup label="' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '">';
+
+            foreach ($categoryRooms as $room) {
+                if (!isset($room['id'])) {
+                    continue;
+                }
+
+                $roomId = (int) $room['id'];
+                $roomNumber = trim((string) ($room['number'] ?? $room['room_number'] ?? $roomId));
+                $roomLabelParts = ['Zimmer ' . $roomNumber];
+
+                if (isset($room['category_name']) && $room['category_name'] !== null && $room['category_name'] !== '') {
+                    $roomLabelParts[] = '(' . $room['category_name'] . ')';
+                }
+
+                $roomLabel = trim(implode(' ', $roomLabelParts));
+
+                $options[] = sprintf(
+                    '<option value="%d"%s>%s</option>',
+                    $roomId,
+                    $selectedRoomId !== null && $roomId === $selectedRoomId ? ' selected' : '',
+                    htmlspecialchars($roomLabel, ENT_QUOTES, 'UTF-8')
+                );
+            }
+
+            $options[] = '</optgroup>';
+        }
+
+        return implode('', $options);
+    };
+
+    $reservationRoomOptionsHtml = $buildRoomSelectOptions(null);
+    $guests = $guestManager->all();
+    if ($companyManager !== null) {
+        $companies = $companyManager->all();
+    }
+    $users = $userManager->all();
+
+    foreach ($users as $user) {
+        if (!isset($user['id'])) {
+            continue;
+        }
+
+        $userId = (int) $user['id'];
+        $displayName = trim((string) ($user['name'] ?? ''));
+        if ($displayName === '') {
+            $displayName = trim((string) ($user['email'] ?? ''));
+        }
+        if ($displayName === '') {
+            $displayName = 'Benutzer #' . $userId;
+        }
+
+        $reservationUserLookup[$userId] = $displayName;
+    }
+
+    foreach ($rooms as $room) {
+        if (!isset($room['id'])) {
+            continue;
+        }
+
+        $roomLookup[(int) $room['id']] = $room;
+    }
+
+    foreach ($guests as $guest) {
+        if (isset($guest['id'])) {
+            $guestLookup[(int) $guest['id']] = $guest;
+        }
+
+        if (isset($guest['company_id']) && $guest['company_id'] !== null) {
+            $companyId = (int) $guest['company_id'];
+            if (!isset($companyGuestCounts[$companyId])) {
+                $companyGuestCounts[$companyId] = 0;
+            }
+            $companyGuestCounts[$companyId]++;
+        }
+    }
+
+    if ($reservationFormData['guest_query'] === '' && $reservationFormData['guest_id'] !== '') {
+        $reservationGuestId = (int) $reservationFormData['guest_id'];
+        if ($reservationGuestId > 0 && isset($guestLookup[$reservationGuestId])) {
+            $reservationFormData['guest_query'] = $buildGuestReservationLabel($guestLookup[$reservationGuestId]);
+        }
+    }
+
+    foreach ($companies as $company) {
+        if (!isset($company['id'])) {
+            continue;
+        }
+
+        $companyLookup[(int) $company['id']] = $company;
+    }
+
+    if ($reservationFormData['company_query'] === '' && $reservationFormData['company_id'] !== '') {
+        $reservationCompanyId = (int) $reservationFormData['company_id'];
+        if ($reservationCompanyId > 0 && isset($companyLookup[$reservationCompanyId])) {
+            $reservationFormData['company_query'] = $buildCompanyReservationLabel($companyLookup[$reservationCompanyId]);
+        }
+    }
+
+    $reservationGuestTooltip = '';
+    if ($reservationFormData['guest_id'] !== '') {
+        $reservationGuestId = (int) $reservationFormData['guest_id'];
+        if ($reservationGuestId > 0 && isset($guestLookup[$reservationGuestId])) {
+            $reservationGuestTooltip = $buildAddressLabel($guestLookup[$reservationGuestId]);
+        }
+    }
+
+    $reservationCompanyTooltip = '';
+    if ($reservationFormData['company_id'] !== '') {
+        $reservationCompanyId = (int) $reservationFormData['company_id'];
+        if ($reservationCompanyId > 0 && isset($companyLookup[$reservationCompanyId])) {
+            $reservationCompanyTooltip = $buildAddressLabel($companyLookup[$reservationCompanyId]);
+        }
+    }
+
+    $roomStays = [];
+
+    if ($reservationManager !== null) {
+        $reservations = $reservationManager->all($reservationSearchTerm !== '' ? $reservationSearchTerm : null);
+    }
+
+    $categoryOverbookingStays = [];
+
+    foreach ($reservations as $index => $reservation) {
+        if (isset($reservation['status']) && $reservation['status'] === 'storniert') {
+            continue;
+        }
+
+        $baseLabel = $buildGuestCalendarLabel([
+            'company_name' => $reservation['company_name'] ?? '',
+            'last_name' => $reservation['guest_last_name'] ?? '',
+            'first_name' => $reservation['guest_first_name'] ?? '',
+        ]);
+
+        $arrivalDate = $createDateImmutable($reservation['arrival_date'] ?? null);
+        $departureDate = $createDateImmutable($reservation['departure_date'] ?? null);
+
+        $items = $reservation['items'] ?? [];
+        if ($items === []) {
+            $items[] = [
+                'category_id' => $reservation['category_id'] ?? null,
+                'room_quantity' => $reservation['room_quantity'] ?? 1,
+                'room_id' => $reservation['room_id'] ?? null,
+                'category_name' => $reservation['reservation_category_name'] ?? null,
+                'room_number' => $reservation['room_number'] ?? null,
+            ];
+        }
+
+        $reservations[$index]['items'] = $items;
+
+        foreach ($items as $item) {
+            $itemCategoryId = isset($item['category_id']) ? (int) $item['category_id'] : 0;
+            $itemQuantity = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
+            if ($itemQuantity <= 0) {
+                $itemQuantity = 1;
+            }
+
+            $itemCategoryName = isset($item['category_name']) && $item['category_name'] !== null
+                ? (string) $item['category_name']
+                : ($itemCategoryId > 0 && isset($categoryLookup[$itemCategoryId]['name']) ? (string) $categoryLookup[$itemCategoryId]['name'] : '');
+
+            $itemLabel = $baseLabel;
+            if ($itemCategoryName !== '') {
+                $itemLabel .= ' – ' . $itemCategoryName;
+            }
+            if ($itemQuantity > 1) {
+                $itemLabel .= sprintf(' (%d Zimmer)', $itemQuantity);
+            }
+
+            $itemRoomId = isset($item['room_id']) ? (int) $item['room_id'] : 0;
+            if ($itemRoomId > 0) {
+                $roomStays[$itemRoomId][] = [
+                    'label' => $itemLabel,
+                    'arrival' => $arrivalDate,
+                    'departure' => $departureDate,
+                ];
+                continue;
+            }
+
+            if ($itemCategoryId <= 0) {
+                continue;
+            }
+
+            if (!isset($categoryOverbookingStats[$itemCategoryId])) {
+                $categoryOverbookingStats[$itemCategoryId] = [
+                    'reservations' => 0,
+                    'rooms' => 0,
+                ];
+            }
+
+            $categoryOverbookingStats[$itemCategoryId]['reservations']++;
+            $categoryOverbookingStats[$itemCategoryId]['rooms'] += $itemQuantity;
+
+            $categoryOverbookingStays[$itemCategoryId][] = [
+                'label' => $itemLabel,
+                'arrival' => $arrivalDate,
+                'departure' => $departureDate,
+                'quantity' => $itemQuantity,
+            ];
+        }
+    }
+
+    if ($days !== []) {
+        $viewStart = new DateTimeImmutable($days[0]['date']);
+        $viewEnd = new DateTimeImmutable($days[count($days) - 1]['date']);
+        $viewEndExclusive = $viewEnd->modify('+1 day');
+
+        foreach ($roomStays as $roomId => $stays) {
+            foreach ($stays as $stay) {
+                $arrival = $stay['arrival'];
+                $departure = $stay['departure'];
+
+                if ($arrival === null && $departure === null) {
+                    continue;
+                }
+
+                $stayStart = $arrival ?? $viewStart;
+                if ($arrival === null && $departure !== null && $departure <= $viewStart) {
+                    continue;
+                }
+
+                $exclusiveEnd = $viewEndExclusive;
+                if ($departure !== null) {
+                    $exclusiveEnd = $departure;
+                    if ($arrival !== null && $departure <= $arrival) {
+                        $exclusiveEnd = $arrival->modify('+1 day');
+                    }
+                }
+
+                $effectiveStart = $stayStart > $viewStart ? $stayStart : $viewStart;
+                $effectiveEnd = $exclusiveEnd < $viewEndExclusive ? $exclusiveEnd : $viewEndExclusive;
+
+                if ($arrival === null && $departure !== null && $effectiveEnd <= $effectiveStart) {
+                    $effectiveEnd = $departure;
+                }
+
+                if ($effectiveStart >= $effectiveEnd) {
+                    continue;
+                }
+
+                for ($cursor = $effectiveStart; $cursor < $effectiveEnd; $cursor = $cursor->modify('+1 day')) {
+                    $dateKey = $cursor->format('Y-m-d');
+                    $roomOccupancies[$roomId][$dateKey][] = $stay['label'];
+                }
+            }
+        }
+
+        foreach ($categoryOverbookingStays as $categoryId => $stays) {
+            foreach ($stays as $stay) {
+                $arrival = $stay['arrival'];
+                $departure = $stay['departure'];
+
+                if ($arrival === null && $departure === null) {
+                    continue;
+                }
+
+                $stayStart = $arrival ?? $viewStart;
+                if ($arrival === null && $departure !== null && $departure <= $viewStart) {
+                    continue;
+                }
+
+                $exclusiveEnd = $viewEndExclusive;
+                if ($departure !== null) {
+                    $exclusiveEnd = $departure;
+                    if ($arrival !== null && $departure <= $arrival) {
+                        $exclusiveEnd = $arrival->modify('+1 day');
+                    }
+                }
+
+                $effectiveStart = $stayStart > $viewStart ? $stayStart : $viewStart;
+                $effectiveEnd = $exclusiveEnd < $viewEndExclusive ? $exclusiveEnd : $viewEndExclusive;
+
+                if ($arrival === null && $departure !== null && $effectiveEnd <= $effectiveStart) {
+                    $effectiveEnd = $departure;
+                }
+
+                if ($effectiveStart >= $effectiveEnd) {
+                    continue;
+                }
+
+                $stayQuantity = isset($stay['quantity']) ? (int) $stay['quantity'] : 1;
+                if ($stayQuantity <= 0) {
+                    $stayQuantity = 1;
+                }
+
+                for ($cursor = $effectiveStart; $cursor < $effectiveEnd; $cursor = $cursor->modify('+1 day')) {
+                    $dateKey = $cursor->format('Y-m-d');
+                    if (!isset($categoryOverbookingOccupancies[$categoryId][$dateKey])) {
+                        $categoryOverbookingOccupancies[$categoryId][$dateKey] = [
+                            'labels' => [],
+                            'quantity' => 0,
+                        ];
+                    }
+
+                    $categoryOverbookingOccupancies[$categoryId][$dateKey]['labels'][] = $stay['label'];
+                    $categoryOverbookingOccupancies[$categoryId][$dateKey]['quantity'] += $stayQuantity;
+                }
+            }
+        }
+    }
+
+    $categoryPositions = [];
+
+    foreach ($categories as $category) {
+        $categoryWithIntId = $category;
+        $categoryWithIntId['id'] = (int) $category['id'];
+
+        $categoryPositions[$categoryWithIntId['id']] = count($calendarCategoryGroups);
+        $calendarCategoryGroups[] = [
+            'category' => $categoryWithIntId,
+            'rooms' => [],
+            'totalRooms' => 0,
+            'freeRooms' => 0,
+            'is_uncategorized' => false,
+            'overbookings' => [],
+            'overbookingReservations' => 0,
+            'overbookingRooms' => 0,
+        ];
+    }
+
+    $uncategorizedIndex = null;
+
+    foreach ($rooms as $room) {
+        $status = $room['status'] ?? '';
+        $isFree = $status === 'frei';
+        $categoryId = isset($room['category_id']) && $room['category_id'] !== null
+            ? (int) $room['category_id']
+            : null;
+
+        if ($categoryId !== null && isset($categoryPositions[$categoryId])) {
+            $targetIndex = $categoryPositions[$categoryId];
+        } else {
+            if ($uncategorizedIndex === null) {
+                $uncategorizedIndex = count($calendarCategoryGroups);
+                $calendarCategoryGroups[] = [
+                    'category' => [
+                        'id' => null,
+                        'name' => 'Ohne Kategorie',
+                        'status' => null,
+                    ],
+                    'rooms' => [],
+                    'totalRooms' => 0,
+                    'freeRooms' => 0,
+                    'is_uncategorized' => true,
+                    'overbookings' => [],
+                    'overbookingReservations' => 0,
+                    'overbookingRooms' => 0,
+                ];
+            }
+
+            $targetIndex = $uncategorizedIndex;
+        }
+
+        $calendarCategoryGroups[$targetIndex]['rooms'][] = $room;
+        $calendarCategoryGroups[$targetIndex]['totalRooms']++;
+
+        if ($isFree) {
+            $calendarCategoryGroups[$targetIndex]['freeRooms']++;
+        }
+    }
+
+    foreach ($calendarCategoryGroups as $index => $group) {
+        $categoryId = $group['category']['id'] ?? null;
+        if ($categoryId !== null && isset($categoryOverbookingOccupancies[$categoryId])) {
+            $calendarCategoryGroups[$index]['overbookings'] = $categoryOverbookingOccupancies[$categoryId];
+            $calendarCategoryGroups[$index]['overbookingReservations'] = $categoryOverbookingStats[$categoryId]['reservations'] ?? 0;
+            $calendarCategoryGroups[$index]['overbookingRooms'] = $categoryOverbookingStats[$categoryId]['rooms'] ?? 0;
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editCategory']) && $categoryFormData['id'] === null) {
+    $categoryToEdit = $categoryManager->find((int) $_GET['editCategory']);
+
+    if ($categoryToEdit) {
+        $categoryFormData = [
+            'id' => (int) $categoryToEdit['id'],
+            'name' => $categoryToEdit['name'],
+            'description' => $categoryToEdit['description'] ?? '',
+            'capacity' => (int) $categoryToEdit['capacity'],
+            'status' => $categoryToEdit['status'],
+        ];
+    } elseif ($alert === null) {
+        $alert = [
+            'type' => 'warning',
+            'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
+        ];
+    }
+}
+
+if ($pdo !== null && isset($_GET['editRoom']) && $roomFormData['id'] === null) {
+    $roomToEdit = $roomManager->find((int) $_GET['editRoom']);
+
+    if ($roomToEdit) {
+        $roomFormData = [
+            'id' => (int) $roomToEdit['id'],
+            'room_number' => $roomToEdit['room_number'],
+            'category_id' => $roomToEdit['category_id'] !== null ? (string) $roomToEdit['category_id'] : '',
+            'status' => $roomToEdit['status'],
+            'floor' => $roomToEdit['floor'] ?? '',
+            'notes' => $roomToEdit['notes'] ?? '',
+        ];
+    } elseif ($alert === null) {
+        $alert = [
+            'type' => 'warning',
+            'message' => 'Das ausgewählte Zimmer wurde nicht gefunden.',
+        ];
+    }
+}
+
+if ($pdo !== null && isset($_GET['editGuest']) && $guestFormData['id'] === null) {
+    $guestToEdit = $guestManager->find((int) $_GET['editGuest']);
+
+    if ($guestToEdit) {
+        $guestFormData = [
+            'id' => (int) $guestToEdit['id'],
+            'salutation' => $guestToEdit['salutation'] ?? '',
+            'first_name' => $guestToEdit['first_name'],
+            'last_name' => $guestToEdit['last_name'],
+            'date_of_birth' => $guestToEdit['date_of_birth'] ?? '',
+            'nationality' => $guestToEdit['nationality'] ?? '',
+            'document_type' => $guestToEdit['document_type'] ?? '',
+            'document_number' => $guestToEdit['document_number'] ?? '',
+            'address_street' => $guestToEdit['address_street'] ?? '',
+            'address_postal_code' => $guestToEdit['address_postal_code'] ?? '',
+            'address_city' => $guestToEdit['address_city'] ?? '',
+            'address_country' => $guestToEdit['address_country'] ?? '',
+            'email' => $guestToEdit['email'] ?? '',
+            'phone' => $guestToEdit['phone'] ?? '',
+            'purpose_of_stay' => $guestToEdit['purpose_of_stay'] ?? 'privat',
+            'notes' => $guestToEdit['notes'] ?? '',
+            'company_id' => isset($guestToEdit['company_id']) && $guestToEdit['company_id'] !== null ? (string) $guestToEdit['company_id'] : '',
+            'room_id' => isset($guestToEdit['room_id']) && $guestToEdit['room_id'] !== null ? (string) $guestToEdit['room_id'] : '',
+        ];
+    } elseif ($alert === null) {
+        $alert = [
+            'type' => 'warning',
+            'message' => 'Der ausgewählte Gast wurde nicht gefunden.',
+        ];
+    }
+}
+
+if ($pdo !== null && isset($_GET['editCompany']) && $companyFormData['id'] === null) {
+    if ($companyManager === null) {
+        if ($alert === null) {
+            $alert = [
+                'type' => 'danger',
+                'message' => 'Die Firmenverwaltung ist derzeit nicht verfügbar.',
+            ];
+        }
+    } else {
+        $companyToEdit = $companyManager->find((int) $_GET['editCompany']);
+
+        if ($companyToEdit) {
+            $companyFormData = [
+                'id' => (int) $companyToEdit['id'],
+                'name' => $companyToEdit['name'],
+                'address_street' => $companyToEdit['address_street'] ?? '',
+                'address_postal_code' => $companyToEdit['address_postal_code'] ?? '',
+                'address_city' => $companyToEdit['address_city'] ?? '',
+                'address_country' => $companyToEdit['address_country'] ?? '',
+                'email' => $companyToEdit['email'] ?? '',
+                'phone' => $companyToEdit['phone'] ?? '',
+                'tax_id' => $companyToEdit['tax_id'] ?? '',
+                'notes' => $companyToEdit['notes'] ?? '',
+            ];
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die ausgewählte Firma wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id'] === null) {
+    if ($reservationManager === null) {
+        if ($alert === null) {
+            $alert = [
+                'type' => 'danger',
+                'message' => 'Die Reservierungsverwaltung ist derzeit nicht verfügbar.',
+            ];
+        }
+    } else {
+        $reservationToEdit = $reservationManager->find((int) $_GET['editReservation']);
+
+        if ($reservationToEdit) {
+            $itemsForForm = $reservationToEdit['items'] ?? [];
+            if ($itemsForForm === []) {
+                $itemsForForm[] = [
+                    'category_id' => $reservationToEdit['category_id'] ?? null,
+                    'room_quantity' => $reservationToEdit['room_quantity'] ?? 1,
+                ];
+            }
+
+            $normalizedItems = [];
+            foreach ($itemsForForm as $item) {
+                $normalizedItems[] = [
+                    'category_id' => isset($item['category_id']) && $item['category_id'] !== null ? (string) $item['category_id'] : '',
+                    'room_quantity' => isset($item['room_quantity']) && (int) $item['room_quantity'] > 0 ? (string) $item['room_quantity'] : '1',
+                    'room_id' => isset($item['room_id']) && $item['room_id'] !== null ? (string) $item['room_id'] : '',
+                ];
+            }
+
+            $reservationFormData = [
+                'id' => (int) $reservationToEdit['id'],
+                'guest_id' => (string) $reservationToEdit['guest_id'],
+                'guest_query' => $buildGuestReservationLabel([
+                    'id' => $reservationToEdit['guest_id'],
+                    'first_name' => $reservationToEdit['guest_first_name'] ?? '',
+                    'last_name' => $reservationToEdit['guest_last_name'] ?? '',
+                    'company_name' => $reservationToEdit['company_name'] ?? '',
+                ]),
+                'company_id' => isset($reservationToEdit['company_id']) && $reservationToEdit['company_id'] !== null ? (string) $reservationToEdit['company_id'] : '',
+                'company_query' => isset($reservationToEdit['company_id'], $reservationToEdit['company_name']) && $reservationToEdit['company_name'] !== null ? $buildCompanyReservationLabel([
+                    'id' => $reservationToEdit['company_id'],
+                    'name' => $reservationToEdit['company_name'],
+                ]) : '',
+                'room_id' => isset($reservationToEdit['room_id']) && $reservationToEdit['room_id'] !== null ? (string) $reservationToEdit['room_id'] : '',
+                'arrival_date' => $reservationToEdit['arrival_date'],
+                'departure_date' => $reservationToEdit['departure_date'],
+                'status' => $reservationToEdit['status'],
+                'notes' => $reservationToEdit['notes'] ?? '',
+                'category_items' => $normalizedItems,
+            ];
+            $reservationFormMode = 'update';
+            $isEditingReservation = true;
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die ausgewählte Reservierung wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editUser']) && $userFormData['id'] === null) {
+    $userToEdit = $userManager->find((int) $_GET['editUser']);
+
+    if ($userToEdit) {
+        $userFormData = [
+            'id' => (int) $userToEdit['id'],
+            'name' => $userToEdit['name'],
+            'email' => $userToEdit['email'],
+            'role' => $userToEdit['role'],
+        ];
+    } elseif ($alert === null) {
+        $alert = [
+            'type' => 'warning',
+            'message' => 'Der ausgewählte Benutzer wurde nicht gefunden.',
+        ];
+    }
+}
+
+$updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], $config['repository']['url']);
+
+?>
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title><?= htmlspecialchars($config['name']) ?> · Basis Modul</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+    <link rel="stylesheet" href="assets/css/style.css">
+  </head>
+  <body>
+    <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm sticky-top">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="index.php?section=dashboard">🏨 <?= htmlspecialchars($config['name']) ?></a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#primaryNav" aria-controls="primaryNav" aria-expanded="false" aria-label="Navigation umschalten">
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="primaryNav">
+          <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+            <?php foreach ($navItems as $sectionKey => $label): ?>
+              <li class="nav-item">
+                <?php
+                  $navUrl = 'index.php?section=' . rawurlencode($sectionKey);
+                  if ($sectionKey === 'dashboard' && $calendarReferenceDate instanceof DateTimeImmutable) {
+                      $navUrl .= '&date=' . rawurlencode($calendarCurrentDateValue);
+                  }
+                ?>
+                <a class="nav-link <?= $activeSection === $sectionKey ? 'active' : '' ?>" href="<?= htmlspecialchars($navUrl) ?>"><?= htmlspecialchars($label) ?></a>
+              </li>
+            <?php endforeach; ?>
+          </ul>
+          <div class="d-flex align-items-center gap-3 flex-wrap justify-content-end">
+            <div class="dropdown quick-action-dropdown">
+              <button class="btn btn-primary btn-sm quick-action-toggle" type="button" id="quickActionMenu" data-bs-toggle="dropdown" aria-expanded="false" title="Schnell erstellen">
+                <span class="quick-action-icon" aria-hidden="true">+</span>
+                <span class="visually-hidden">Schnellauswahl öffnen</span>
+              </button>
+              <ul class="dropdown-menu dropdown-menu-end quick-action-menu" aria-labelledby="quickActionMenu">
+                <li><a class="dropdown-item" href="index.php?section=reservations#reservation-form">Neue Reservierung</a></li>
+                <li><a class="dropdown-item" href="index.php?section=guests#guest-meldeschein">Meldeschein vorbereiten</a></li>
+                <li><a class="dropdown-item" href="index.php?section=guests#guest-form">Neuen Gast anlegen</a></li>
+              </ul>
+            </div>
+            <span class="badge rounded-pill text-bg-primary">Version <?= htmlspecialchars($config['version']) ?></span>
+            <span class="text-muted small">Angemeldet als <?= htmlspecialchars($_SESSION['user_name'] ?? $_SESSION['user_email'] ?? 'Unbekannt') ?></span>
+            <a href="logout.php" class="btn btn-outline-secondary btn-sm">Abmelden</a>
+          </div>
+        </div>
+      </div>
+    </nav>
+
+    <main class="app-main py-4">
+      <div class="app-container container-fluid">
+      <?php if ($dbError): ?>
+        <div class="alert alert-danger" role="alert">
+          <?= htmlspecialchars($dbError) ?><br>
+          <small>Bitte führen Sie die <a href="install.php">Installation</a> durch oder prüfen Sie die Verbindungseinstellungen.</small>
+        </div>
+      <?php endif; ?>
+
+      <?php if ($alert): ?>
+        <div class="alert alert-<?= htmlspecialchars($alert['type']) ?> alert-dismissible fade show mb-4" role="alert">
+          <?= $alert['message'] ?>
+          <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+      <?php endif; ?>
+
+      <?php if ($activeSection === 'dashboard'): ?>
+      <section id="dashboard" class="app-section active">
+        <div class="row g-4">
+        <div class="col-12">
+          <div class="card module-card h-100" id="reservation-create">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+              <div>
+                <h2 class="h5 mb-1">Dashboard</h2>
+                <p class="text-muted mb-0">Kalender und aktuelle Auslastung im Blick.</p>
+              </div>
+              <span class="badge text-bg-info">Basis-Modul</span>
+            </div>
+            <div class="card-body">
+              <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-3 calendar-toolbar">
+                <div>
+                  <h3 class="h4 mb-1"><?= htmlspecialchars($calendarRangeLabel) ?></h3>
+                  <div class="text-muted small">Referenzdatum: <?= (new DateTimeImmutable($calendarCurrentDateValue))->format('d.m.Y') ?></div>
+                  <div class="text-muted small">Heute: <?= (new DateTimeImmutable($todayDateValue))->format('d.m.Y') ?></div>
+                </div>
+                <div class="calendar-controls d-flex flex-wrap align-items-center gap-2">
+                  <a class="btn btn-outline-secondary btn-sm" href="index.php?section=dashboard&amp;date=<?= $calendarPrevDate->format('Y-m-d') ?>" title="Vorherige <?= $calendarViewLength ?> Tage" aria-label="Vorherige <?= $calendarViewLength ?> Tage">&laquo;</a>
+                  <a class="btn btn-outline-secondary btn-sm" href="index.php?section=dashboard" title="Zurück zu heute">Heute</a>
+                  <a class="btn btn-outline-secondary btn-sm" href="index.php?section=dashboard&amp;date=<?= $calendarNextDate->format('Y-m-d') ?>" title="Nächste <?= $calendarViewLength ?> Tage" aria-label="Nächste <?= $calendarViewLength ?> Tage">&raquo;</a>
+                  <form method="get" class="d-flex align-items-center gap-2">
+                    <input type="hidden" name="section" value="dashboard">
+                    <label for="calendar-date" class="visually-hidden">Datum auswählen</label>
+                    <input type="date" id="calendar-date" name="date" class="form-control form-control-sm" value="<?= htmlspecialchars($calendarCurrentDateValue) ?>">
+                    <button type="submit" class="btn btn-primary btn-sm">Springen</button>
+                  </form>
+                </div>
+              </div>
+              <div class="calendar-grid-wrapper">
+                <table class="table table-bordered align-middle room-calendar">
+                  <thead class="table-light">
+                    <tr>
+                      <th scope="col" class="category-column">Kategorie</th>
+                      <th scope="col" class="room-column">Zimmer / Typ</th>
+                      <?php foreach ($days as $day): ?>
+                        <th scope="col" class="text-center">
+                          <div class="day-number"><?= $day['day'] ?></div>
+                          <small class="text-muted text-uppercase"><?= $day['weekday'] ?></small>
+                        </th>
+                      <?php endforeach; ?>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <?php if (!empty($calendarCategoryGroups)): ?>
+                      <?php foreach ($calendarCategoryGroups as $group): ?>
+                        <?php
+                          $roomsInGroup = array_values($group['rooms'] ?? []);
+                          $roomRowCount = count($roomsInGroup);
+                          $rowsForRooms = $roomRowCount > 0 ? $roomRowCount : 1;
+                          $categoryRowspan = $rowsForRooms + 2;
+                          $categoryData = $group['category'] ?? ['name' => 'Unbekannte Kategorie'];
+                          $overbookingData = $group['overbookings'] ?? [];
+                          $categoryDayStats = [];
+                          foreach ($days as $day) {
+                              $dateKey = $day['date'];
+                              $assignedCount = 0;
+                              foreach ($roomsInGroup as $room) {
+                                  $roomId = isset($room['id']) ? (int) $room['id'] : 0;
+                                  if ($roomId > 0 && !empty($roomOccupancies[$roomId][$dateKey])) {
+                                      $assignedCount++;
+                                  }
+                              }
+
+                              $overbookingCell = $overbookingData[$dateKey] ?? ['quantity' => 0];
+                              $overbookedRooms = isset($overbookingCell['quantity']) ? (int) $overbookingCell['quantity'] : 0;
+                              if ($overbookedRooms < 0) {
+                                  $overbookedRooms = 0;
+                              }
+
+                              $freeCount = $group['totalRooms'] - $assignedCount;
+                              if ($freeCount < 0) {
+                                  $freeCount = 0;
+                              }
+
+                              $categoryDayStats[$dateKey] = [
+                                  'assigned' => $assignedCount,
+                                  'free' => $freeCount,
+                                  'overbooked' => $overbookedRooms,
+                              ];
+                          }
+                        ?>
+                        <tr class="category-row<?= $group['is_uncategorized'] ? ' category-row-uncategorized' : '' ?>">
+                          <th scope="rowgroup" class="category-label category-column" rowspan="<?= $categoryRowspan ?>">
+                            <div class="category-label-main">
+                              <span class="category-name"><?= htmlspecialchars($categoryData['name'] ?? 'Unbekannte Kategorie') ?></span>
+                              <?php if (!$group['is_uncategorized'] && isset($categoryData['status'])): ?>
+                                <?php
+                                  $categoryStatus = strtolower((string) $categoryData['status']);
+                                  $categoryStatusClass = $categoryStatus === 'aktiv'
+                                    ? 'text-bg-success'
+                                    : 'text-bg-secondary';
+                                ?>
+                                <span class="badge <?= $categoryStatusClass ?> category-status-badge"><?= htmlspecialchars(ucfirst($categoryStatus)) ?></span>
+                              <?php elseif ($group['is_uncategorized']): ?>
+                                <span class="badge text-bg-warning category-status-badge">Ohne Zuordnung</span>
+                              <?php endif; ?>
+                            </div>
+                            <?php
+                              $overbookingRooms = isset($group['overbookingRooms']) ? (int) $group['overbookingRooms'] : 0;
+                              $overbookingReservations = isset($group['overbookingReservations']) ? (int) $group['overbookingReservations'] : 0;
+                            ?>
+                            <div class="category-meta">
+                              <span class="category-meta-item">
+                                <span class="category-meta-label">Gesamt</span>
+                                <span class="category-meta-value"><?= $group['totalRooms'] ?></span>
+                              </span>
+                              <span class="category-meta-item">
+                                <span class="category-meta-label">Frei</span>
+                                <span class="category-meta-value"><?= $group['freeRooms'] ?></span>
+                              </span>
+                              <?php if ($overbookingRooms > 0): ?>
+                                <span class="category-meta-item category-meta-item-alert">
+                                  <span class="category-meta-label">Überb.</span>
+                                  <span class="category-meta-value"><?= $overbookingRooms ?></span>
+                                  <?php if ($overbookingReservations > 0): ?>
+                                    <span class="category-meta-extra">(<?= $overbookingReservations ?>)</span>
+                                  <?php endif; ?>
+                                </span>
+                              <?php endif; ?>
+                            </div>
+                          </th>
+                          <th scope="row" class="room-label room-label-summary room-column">
+                            <div class="room-label-main">
+                              <span class="room-name">Übersicht</span>
+                              <span class="room-label-details">Belegt · Frei · Überbuchung</span>
+                            </div>
+                          </th>
+                          <?php foreach ($days as $day): ?>
+                            <?php
+                              $dateKey = $day['date'];
+                              $stats = $categoryDayStats[$dateKey] ?? ['assigned' => 0, 'free' => 0, 'overbooked' => 0];
+                            ?>
+                            <td class="category-cell">
+                              <div class="category-day-metric">
+                                <span class="badge text-bg-primary">Belegt: <?= $stats['assigned'] ?></span>
+                              </div>
+                              <div class="category-day-metric text-muted">Frei: <?= $stats['free'] ?></div>
+                              <?php if ($stats['overbooked'] > 0): ?>
+                                <div class="category-day-metric text-danger">Überbuchung: <?= $stats['overbooked'] ?></div>
+                              <?php endif; ?>
+                            </td>
+                          <?php endforeach; ?>
+                        </tr>
+                        <?php if ($roomRowCount > 0): ?>
+                          <?php foreach ($roomsInGroup as $room): ?>
+                            <?php
+                              $roomId = isset($room['id']) ? (int) $room['id'] : 0;
+                              $roomStatus = isset($room['status']) ? strtolower((string) $room['status']) : '';
+                              $roomNumber = trim((string) ($room['number'] ?? $roomId));
+                            ?>
+                            <tr>
+                              <th scope="row" class="room-label room-label-room room-column">
+                                <div class="room-label-main">
+                                  <span class="room-name">Zimmer <?= htmlspecialchars($roomNumber) ?></span>
+                                  <?php
+                                    $roomStatusBadgeClass = 'text-bg-secondary';
+                                    $roomStatusText = ucfirst($roomStatus);
+                                    if ($roomStatus === 'frei') {
+                                        $roomStatusBadgeClass = 'text-bg-success';
+                                    } elseif ($roomStatus === 'belegt') {
+                                        $roomStatusBadgeClass = 'text-bg-primary';
+                                    } elseif ($roomStatus === 'wartung') {
+                                        $roomStatusBadgeClass = 'text-bg-warning text-dark';
+                                    }
+                                  ?>
+                                  <?php if ($roomStatus !== ''): ?>
+                                    <span class="badge room-status-badge <?= $roomStatusBadgeClass ?>"><?= htmlspecialchars($roomStatusText) ?></span>
+                                  <?php endif; ?>
+                                </div>
+                              </th>
+                              <?php foreach ($days as $day): ?>
+                                <?php
+                                  $cellOccupants = [];
+                                  if ($roomId > 0 && isset($roomOccupancies[$roomId][$day['date']])) {
+                                      $cellOccupants = $roomOccupancies[$roomId][$day['date']];
+                                  }
+
+                                  $cellClasses = ['room-calendar-cell'];
+                                  if ($day['isToday']) {
+                                      $cellClasses[] = 'today';
+                                  }
+                                  if ($cellOccupants !== []) {
+                                      $cellClasses[] = 'occupied';
+                                  } else {
+                                      $cellClasses[] = $roomStatus === 'wartung' ? 'maintenance' : 'free';
+                                  }
+                                ?>
+                                <td class="<?= htmlspecialchars(implode(' ', $cellClasses)) ?>" data-date="<?= htmlspecialchars($day['date']) ?>" data-room="<?= htmlspecialchars($roomNumber) ?>"<?= $roomId > 0 ? ' data-room-id="' . $roomId . '"' : '' ?>>
+                                  <span class="visually-hidden">Zimmer <?= htmlspecialchars($roomNumber) ?> am <?= htmlspecialchars($day['date']) ?></span>
+                                  <?php if ($cellOccupants !== []): ?>
+                                    <?php foreach ($cellOccupants as $occupantLabel): ?>
+                                      <div class="occupancy-entry"><?= htmlspecialchars($occupantLabel) ?></div>
+                                    <?php endforeach; ?>
+                                  <?php else: ?>
+                                    <?php if ($roomStatus === 'wartung'): ?>
+                                      <span class="badge text-bg-warning">Wartung</span>
+                                    <?php elseif ($roomStatus === 'belegt'): ?>
+                                      <span class="text-muted small">Belegt</span>
+                                    <?php else: ?>
+                                      <span class="text-muted small">Frei</span>
+                                    <?php endif; ?>
+                                  <?php endif; ?>
+                                </td>
+                              <?php endforeach; ?>
+                            </tr>
+                          <?php endforeach; ?>
+                        <?php else: ?>
+                          <tr class="room-empty-row">
+                            <th scope="row" class="room-label room-column room-label-room text-muted">Noch keine Zimmer in dieser Kategorie.</th>
+                            <?php foreach ($days as $day): ?>
+                              <td class="room-calendar-cell empty">
+                                <span class="text-muted small">–</span>
+                              </td>
+                            <?php endforeach; ?>
+                          </tr>
+                        <?php endif; ?>
+                        <tr class="overbooking-row">
+                          <th scope="row" class="room-label room-label-overbooking room-column">
+                            <div class="room-label-main">
+                              <span class="room-name">Überbuchung</span>
+                              <span class="badge room-status-badge text-bg-warning text-dark">Ohne Zimmer</span>
+                            </div>
+                          </th>
+                          <?php foreach ($days as $day): ?>
+                            <?php
+                              $overbookingCell = $overbookingData[$day['date']] ?? ['labels' => [], 'quantity' => 0];
+                              $overbookingLabels = isset($overbookingCell['labels']) && is_array($overbookingCell['labels']) ? $overbookingCell['labels'] : [];
+                              $overbookingQuantity = isset($overbookingCell['quantity']) ? (int) $overbookingCell['quantity'] : 0;
+                              $cellClasses = ['room-calendar-cell', 'overbooking'];
+                              if ($day['isToday']) {
+                                  $cellClasses[] = 'today';
+                              }
+                              if ($overbookingQuantity === 0) {
+                                  $cellClasses[] = 'overbooking-empty';
+                              }
+                            ?>
+                            <td class="<?= htmlspecialchars(implode(' ', $cellClasses)) ?>" data-date="<?= htmlspecialchars($day['date']) ?>">
+                              <span class="visually-hidden">Überbuchungen am <?= htmlspecialchars($day['date']) ?></span>
+                              <?php if ($overbookingQuantity > 0): ?>
+                                <div class="overbooking-quantity badge text-bg-danger">+<?= $overbookingQuantity ?></div>
+                                <?php foreach ($overbookingLabels as $entry): ?>
+                                  <div class="occupancy-entry"><?= htmlspecialchars($entry) ?></div>
+                                <?php endforeach; ?>
+                              <?php else: ?>
+                                <span class="text-muted small">Keine</span>
+                              <?php endif; ?>
+                            </td>
+                          <?php endforeach; ?>
+                        </tr>
+                      <?php endforeach; ?>
+                    <?php else: ?>
+                      <tr>
+                        <td colspan="<?= count($days) + 2 ?>" class="text-muted text-center py-4">Noch keine Zimmer angelegt.</td>
+                      </tr>
+                    <?php endif; ?>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php elseif ($activeSection === 'reservations'): ?>
+      <section id="reservations" class="app-section active">
+        <?php $isReservationEditing = $isEditingReservation; ?>
+        <div class="row g-4">
+          <div class="col-12 col-xl-5">
+            <div class="card module-card" id="reservation-form">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Reservierung <?= $isReservationEditing ? 'bearbeiten' : 'anlegen' ?></h2>
+                  <p class="text-muted mb-0">Aufenthalte mit Zimmer, Zeitraum und Status pflegen.</p>
+                </div>
+                <?php if ($isReservationEditing): ?>
+                  <span class="badge text-bg-primary">Bearbeitung</span>
+                <?php endif; ?>
+              </div>
+              <div class="card-body">
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="<?= $isReservationEditing ? 'reservation_update' : 'reservation_create' ?>">
+                  <?php if ($isReservationEditing): ?>
+                    <input type="hidden" name="id" value="<?= (int) $reservationFormData['id'] ?>">
+                  <?php endif; ?>
+                  <div class="col-12">
+                    <label for="reservation-guest-query" class="form-label">Gast *</label>
+                    <div class="typeahead position-relative" data-typeahead="guest" data-endpoint="index.php?ajax=guest_search">
+                      <input type="hidden" name="guest_id" id="reservation-guest-id" value="<?= htmlspecialchars((string) $reservationFormData['guest_id']) ?>">
+                      <input
+                        type="search"
+                        class="form-control typeahead-input"
+                        id="reservation-guest-query"
+                        name="guest_query"
+                        placeholder="z. B. Mustermann oder Musterfirma"
+                        value="<?= htmlspecialchars((string) $reservationFormData['guest_query']) ?>"
+                        autocomplete="off"
+                        data-minlength="2"
+                        <?= $pdo === null ? 'disabled' : 'required' ?>
+                        <?= $reservationGuestTooltip !== '' ? 'title="' . htmlspecialchars($reservationGuestTooltip) . '"' : '' ?>
+                      >
+                      <div class="typeahead-dropdown list-group shadow-sm" role="listbox" aria-label="Gastvorschläge"></div>
+                    </div>
+                    <div class="form-text">Neuer Gast? Über das Plus-Menü in der Navigation anlegen.</div>
+                  </div>
+                  <div class="col-12">
+                    <label for="reservation-company-query" class="form-label">Firma</label>
+                    <div class="typeahead position-relative" data-typeahead="company" data-endpoint="index.php?ajax=company_search">
+                      <input type="hidden" name="company_id" id="reservation-company-id" value="<?= htmlspecialchars((string) $reservationFormData['company_id']) ?>">
+                      <input
+                        type="search"
+                        class="form-control typeahead-input"
+                        id="reservation-company-query"
+                        name="company_query"
+                        placeholder="Optional: Firmenname suchen"
+                        value="<?= htmlspecialchars((string) $reservationFormData['company_query']) ?>"
+                        autocomplete="off"
+                        data-minlength="2"
+                        <?= $pdo === null ? 'disabled' : '' ?>
+                        <?= $reservationCompanyTooltip !== '' ? 'title="' . htmlspecialchars($reservationCompanyTooltip) . '"' : '' ?>
+                      >
+                      <div class="typeahead-dropdown list-group shadow-sm" role="listbox" aria-label="Firmenvorschläge"></div>
+                    </div>
+                    <div class="form-text">Optional: Firma zuordnen.</div>
+                  </div>
+                  <?php $categoryItemCount = count($reservationFormData['category_items']); ?>
+                  <div class="col-12">
+                    <label class="form-label">Kategorie &amp; Zimmer *</label>
+                    <div id="reservation-category-list" class="reservation-category-list" data-next-index="<?= $categoryItemCount ?>">
+                      <?php foreach ($reservationFormData['category_items'] as $categoryIndex => $categoryItem): ?>
+                        <?php
+                          $selectedCategoryId = isset($categoryItem['category_id']) && $categoryItem['category_id'] !== ''
+                              ? (int) $categoryItem['category_id']
+                              : 0;
+                          $quantityValue = isset($categoryItem['room_quantity']) && $categoryItem['room_quantity'] !== ''
+                              ? (string) $categoryItem['room_quantity']
+                              : '1';
+                          $selectedRoomId = isset($categoryItem['room_id']) && $categoryItem['room_id'] !== ''
+                              ? (int) $categoryItem['room_id']
+                              : null;
+                          $roomOptions = $buildRoomSelectOptions !== null
+                              ? $buildRoomSelectOptions($selectedRoomId)
+                              : $reservationRoomOptionsHtml;
+                          $disableRemove = $categoryItemCount === 1 && $categoryIndex === 0;
+                        ?>
+                        <div class="reservation-category-item card card-body border p-3 mb-2" data-index="<?= $categoryIndex ?>">
+                          <div class="row g-2 align-items-end">
+                            <div class="col-12 col-lg-5">
+                              <label class="form-label">Kategorie</label>
+                              <select class="form-select" name="reservation_categories[<?= $categoryIndex ?>][category_id]" <?= $pdo === null ? 'disabled' : 'required' ?>>
+                                <option value="">Bitte auswählen</option>
+                                <?php foreach ($categories as $category): ?>
+                                  <?php if (!isset($category['id'])) { continue; } ?>
+                                  <?php $categoryId = (int) $category['id']; ?>
+                                  <option value="<?= $categoryId ?>" <?= $selectedCategoryId === $categoryId ? 'selected' : '' ?>><?= htmlspecialchars($category['name']) ?></option>
+                                <?php endforeach; ?>
+                              </select>
+                            </div>
+                            <div class="col-6 col-lg-3">
+                              <label class="form-label">Zimmeranzahl</label>
+                              <input type="number" class="form-control" name="reservation_categories[<?= $categoryIndex ?>][room_quantity]" min="1" max="50" step="1" value="<?= htmlspecialchars($quantityValue) ?>" <?= $pdo === null ? 'disabled' : 'required' ?>>
+                            </div>
+                            <div class="col-6 col-lg-4 d-flex align-items-end">
+                              <button type="button" class="btn btn-outline-danger w-100 remove-category-item" data-remove-category <?= $pdo === null ? 'disabled' : '' ?><?= $disableRemove ? ' disabled' : '' ?>>Entfernen</button>
+                            </div>
+                            <div class="col-12 col-lg-8 mt-2">
+                              <label class="form-label">Zimmerzuweisung</label>
+                              <select class="form-select reservation-room-select" name="reservation_categories[<?= $categoryIndex ?>][room_id]" <?= $pdo === null ? 'disabled' : '' ?>>
+                                <?= $roomOptions ?>
+                              </select>
+                              <div class="form-text">Leer lassen, um Überbuchungen zu planen.</div>
+                            </div>
+                          </div>
+                        </div>
+                      <?php endforeach; ?>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center gap-2 mt-2">
+                      <button type="button" class="btn btn-outline-primary btn-sm" data-add-category <?= $pdo === null ? 'disabled' : '' ?>>Weitere Kategorie hinzufügen</button>
+                      <span class="text-muted small">Mindestens eine Kategorie ist erforderlich.</span>
+                    </div>
+                    <template id="reservation-category-template">
+                      <div class="reservation-category-item card card-body border p-3 mb-2" data-index="__INDEX__">
+                        <div class="row g-2 align-items-end">
+                          <div class="col-12 col-lg-5">
+                            <label class="form-label">Kategorie</label>
+                            <select class="form-select" name="reservation_categories[__INDEX__][category_id]" <?= $pdo === null ? 'disabled' : 'required' ?>>
+                              <?= $reservationCategoryOptionsHtml ?>
+                            </select>
+                          </div>
+                          <div class="col-6 col-lg-3">
+                            <label class="form-label">Zimmeranzahl</label>
+                            <input type="number" class="form-control" name="reservation_categories[__INDEX__][room_quantity]" min="1" max="50" step="1" value="1" <?= $pdo === null ? 'disabled' : 'required' ?>>
+                          </div>
+                          <div class="col-6 col-lg-4 d-flex align-items-end">
+                            <button type="button" class="btn btn-outline-danger w-100 remove-category-item" data-remove-category <?= $pdo === null ? 'disabled' : '' ?>>Entfernen</button>
+                          </div>
+                          <div class="col-12 col-lg-8 mt-2">
+                            <label class="form-label">Zimmerzuweisung</label>
+                            <select class="form-select reservation-room-select" name="reservation_categories[__INDEX__][room_id]" <?= $pdo === null ? 'disabled' : '' ?>>
+                              <?= $reservationRoomOptionsHtml ?>
+                            </select>
+                            <div class="form-text">Leer lassen, um Überbuchungen zu planen.</div>
+                          </div>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="col-md-6">
+                    <label for="reservation-arrival" class="form-label">Anreise *</label>
+                    <input type="date" class="form-control" id="reservation-arrival" name="arrival_date" value="<?= htmlspecialchars((string) $reservationFormData['arrival_date']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-md-6">
+                    <label for="reservation-departure" class="form-label">Abreise *</label>
+                    <input type="date" class="form-control" id="reservation-departure" name="departure_date" value="<?= htmlspecialchars((string) $reservationFormData['departure_date']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-md-6">
+                    <label for="reservation-status" class="form-label">Status *</label>
+                    <select class="form-select" id="reservation-status" name="status" required <?= $pdo === null ? 'disabled' : '' ?>>
+                      <?php foreach ($reservationStatuses as $statusOption): ?>
+                        <option value="<?= htmlspecialchars($statusOption) ?>" <?= $reservationFormData['status'] === $statusOption ? 'selected' : '' ?>><?= htmlspecialchars(ucfirst($statusOption)) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                  </div>
+                  <div class="col-12">
+                    <label for="reservation-notes" class="form-label">Notizen</label>
+                    <textarea class="form-control" id="reservation-notes" name="notes" rows="3" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $reservationFormData['notes']) ?></textarea>
+                    <div class="form-text">Interne Hinweise für Rezeption oder Housekeeping.</div>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end gap-2 flex-wrap">
+                    <?php if ($isReservationEditing): ?>
+                      <a href="index.php?section=reservations" class="btn btn-outline-secondary">Abbrechen</a>
+                    <?php endif; ?>
+                    <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isReservationEditing ? 'Reservierung aktualisieren' : 'Reservierung speichern' ?></button>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mt-3 mb-0">Die Formularfelder werden aktiviert, sobald eine Datenbankverbindung besteht.</p>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xl-7">
+            <div class="card module-card">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Reservierungsübersicht</h2>
+                  <p class="text-muted mb-0">Alle Aufenthalte inklusive Historie und Verantwortlichen.</p>
+                </div>
+                <span class="badge text-bg-info"><?= count($reservations) ?> Einträge</span>
+              </div>
+              <div class="card-body">
+                <form method="get" class="row g-3 align-items-end mb-3">
+                  <input type="hidden" name="section" value="reservations">
+                  <div class="col-12 col-lg-8">
+                    <label for="reservation-search" class="form-label">Suche nach Gast oder Firma</label>
+                    <input type="search" class="form-control" id="reservation-search" name="reservation_search" placeholder="z. B. Mustermann oder Musterfirma" value="<?= htmlspecialchars($reservationSearchTerm) ?>">
+                  </div>
+                  <div class="col-12 col-lg-4 d-flex gap-2">
+                    <button type="submit" class="btn btn-outline-primary flex-grow-1">Suche</button>
+                    <?php if ($reservationSearchTerm !== ''): ?>
+                      <a href="index.php?section=reservations" class="btn btn-link">Zurücksetzen</a>
+                    <?php endif; ?>
+                  </div>
+                </form>
+
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mb-0">Reservierungen werden geladen, sobald eine Datenbankverbindung besteht.</p>
+                <?php elseif ($reservations === []): ?>
+                  <p class="text-muted mb-0">Noch keine Reservierungen erfasst.</p>
+                <?php else: ?>
+                  <?php
+                    $statusBadgeMap = [
+                        'geplant' => 'text-bg-primary',
+                        'eingecheckt' => 'text-bg-success',
+                        'abgereist' => 'text-bg-secondary',
+                        'storniert' => 'text-bg-danger',
+                    ];
+                    $statusLabelMap = [
+                        'geplant' => 'Geplant',
+                        'eingecheckt' => 'Eingecheckt',
+                        'abgereist' => 'Abgereist',
+                        'storniert' => 'Storniert',
+                    ];
+                  ?>
+                  <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                      <thead class="table-light">
+                        <tr>
+                          <th scope="col">Gast &amp; Firma</th>
+                          <th scope="col">Zeitraum</th>
+                          <th scope="col">Zimmer</th>
+                          <th scope="col">Status</th>
+                          <th scope="col">Historie</th>
+                          <th scope="col" class="text-end">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($reservations as $reservation): ?>
+                          <?php
+                            $guestFirst = trim((string) ($reservation['guest_first_name'] ?? ''));
+                            $guestLast = trim((string) ($reservation['guest_last_name'] ?? ''));
+                            $guestDisplay = trim(implode(' ', array_filter([$guestFirst, $guestLast], static fn ($value) => $value !== '')));
+                            if ($guestDisplay === '') {
+                                $guestDisplay = 'Gast #' . (int) ($reservation['guest_id'] ?? 0);
+                            }
+                            $companyName = isset($reservation['company_name']) ? trim((string) $reservation['company_name']) : '';
+
+                            $arrivalLabel = '—';
+                            if (!empty($reservation['arrival_date'])) {
+                                try {
+                                    $arrivalLabel = (new DateTimeImmutable($reservation['arrival_date']))->format('d.m.Y');
+                                } catch (Throwable $exception) {
+                                    $arrivalLabel = $reservation['arrival_date'];
+                                }
+                            }
+
+                            $departureLabel = '—';
+                            if (!empty($reservation['departure_date'])) {
+                                try {
+                                    $departureLabel = (new DateTimeImmutable($reservation['departure_date']))->format('d.m.Y');
+                                } catch (Throwable $exception) {
+                                    $departureLabel = $reservation['departure_date'];
+                                }
+                            }
+
+                            $reservationItems = $reservation['items'] ?? [];
+                            if ($reservationItems === []) {
+                                $reservationItems[] = [
+                                    'category_id' => $reservation['category_id'] ?? null,
+                                    'category_name' => $reservation['reservation_category_name'] ?? null,
+                                    'room_quantity' => $reservation['room_quantity'] ?? 1,
+                                    'room_id' => $reservation['room_id'] ?? null,
+                                    'room_number' => $reservation['room_number'] ?? null,
+                                ];
+                            }
+
+                            $reservationCategoryDetails = [];
+                            foreach ($reservationItems as $item) {
+                                $itemCategoryId = isset($item['category_id']) ? (int) $item['category_id'] : 0;
+                                $itemCategoryName = isset($item['category_name']) && $item['category_name'] !== null
+                                    ? trim((string) $item['category_name'])
+                                    : ($itemCategoryId > 0 && isset($categoryLookup[$itemCategoryId]['name'])
+                                        ? trim((string) $categoryLookup[$itemCategoryId]['name'])
+                                        : '');
+
+                                $itemQuantity = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
+                                if ($itemQuantity <= 0) {
+                                    $itemQuantity = 1;
+                                }
+                                $itemQuantityLabel = sprintf('%d Zimmer', $itemQuantity);
+
+                                $itemRoomId = isset($item['room_id']) ? (int) $item['room_id'] : 0;
+                                $assignmentText = 'Noch kein Zimmer zugewiesen';
+                                $assignmentClass = 'text-warning';
+                                if ($itemRoomId > 0) {
+                                    $roomData = $roomLookup[$itemRoomId] ?? null;
+                                    $roomNumber = '';
+                                    if ($roomData !== null && isset($roomData['number'])) {
+                                        $roomNumber = trim((string) $roomData['number']);
+                                    } elseif (isset($item['room_number']) && $item['room_number'] !== null) {
+                                        $roomNumber = trim((string) $item['room_number']);
+                                    }
+                                    if ($roomNumber === '') {
+                                        $roomNumber = '#' . $itemRoomId;
+                                    }
+                                    $assignmentText = 'Zuweisung: Zimmer ' . $roomNumber;
+                                    $assignmentClass = 'text-muted';
+                                }
+
+                                $reservationCategoryDetails[] = [
+                                    'name' => $itemCategoryName !== '' ? $itemCategoryName : 'Kategorie unbekannt',
+                                    'quantity' => $itemQuantityLabel,
+                                    'assignment' => $assignmentText,
+                                    'assignment_class' => $assignmentClass,
+                                ];
+                            }
+
+                            $statusValue = (string) ($reservation['status'] ?? 'geplant');
+                            $statusBadge = $statusBadgeMap[$statusValue] ?? 'text-bg-secondary';
+                            $statusLabel = $statusLabelMap[$statusValue] ?? ucfirst($statusValue);
+
+                            $createdBy = $reservation['created_by_name'] ?? null;
+                            if ($createdBy === null && isset($reservation['created_by']) && $reservation['created_by'] !== null) {
+                                $createdId = (int) $reservation['created_by'];
+                                if (isset($reservationUserLookup[$createdId])) {
+                                    $createdBy = $reservationUserLookup[$createdId];
+                                }
+                            }
+
+                            $updatedBy = $reservation['updated_by_name'] ?? null;
+                            if ($updatedBy === null && isset($reservation['updated_by']) && $reservation['updated_by'] !== null) {
+                                $updatedId = (int) $reservation['updated_by'];
+                                if (isset($reservationUserLookup[$updatedId])) {
+                                    $updatedBy = $reservationUserLookup[$updatedId];
+                                }
+                            }
+
+                            $createdAtLabel = null;
+                            if (!empty($reservation['created_at'])) {
+                                try {
+                                    $createdAtLabel = (new DateTimeImmutable($reservation['created_at']))->format('d.m.Y H:i');
+                                } catch (Throwable $exception) {
+                                    $createdAtLabel = $reservation['created_at'];
+                                }
+                            }
+
+                            $updatedAtLabel = null;
+                            if (!empty($reservation['updated_at'])) {
+                                try {
+                                    $updatedAtLabel = (new DateTimeImmutable($reservation['updated_at']))->format('d.m.Y H:i');
+                                } catch (Throwable $exception) {
+                                    $updatedAtLabel = $reservation['updated_at'];
+                                }
+                            }
+                          ?>
+                          <tr>
+                            <td>
+                              <div class="fw-semibold"><?= htmlspecialchars($guestDisplay) ?></div>
+                              <?php if ($companyName !== ''): ?>
+                                <div class="small text-muted">Firma: <?= htmlspecialchars($companyName) ?></div>
+                              <?php else: ?>
+                                <div class="small text-muted">Keine Firma hinterlegt</div>
+                              <?php endif; ?>
+                              <?php if (!empty($reservation['notes'])): ?>
+                                <div class="small text-muted mt-1">Notiz: <?= htmlspecialchars((string) $reservation['notes']) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td>
+                              <div><?= htmlspecialchars($arrivalLabel) ?> – <?= htmlspecialchars($departureLabel) ?></div>
+                            </td>
+                            <td>
+                              <?php foreach ($reservationCategoryDetails as $detailIndex => $detail): ?>
+                                <div class="fw-semibold"><?= htmlspecialchars($detail['name']) ?></div>
+                                <div class="small text-muted">Zimmerbedarf: <?= htmlspecialchars($detail['quantity']) ?></div>
+                                <div class="small <?= htmlspecialchars($detail['assignment_class']) ?>"><?= htmlspecialchars($detail['assignment']) ?></div>
+                                <?php if ($detailIndex < count($reservationCategoryDetails) - 1): ?>
+                                  <hr class="my-2">
+                                <?php endif; ?>
+                              <?php endforeach; ?>
+                            </td>
+                            <td>
+                              <span class="badge <?= $statusBadge ?> text-uppercase"><?= htmlspecialchars($statusLabel) ?></span>
+                            </td>
+                            <td>
+                              <div class="small">Erstellt: <?= htmlspecialchars($createdBy ?? 'Unbekannt') ?><?php if ($createdAtLabel !== null): ?> <span class="text-muted">(<?= htmlspecialchars($createdAtLabel) ?>)</span><?php endif; ?></div>
+                              <div class="small">Aktualisiert: <?= htmlspecialchars($updatedBy ?? '—') ?><?php if ($updatedAtLabel !== null): ?> <span class="text-muted">(<?= htmlspecialchars($updatedAtLabel) ?>)</span><?php endif; ?></div>
+                            </td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=reservations&amp;editReservation=<?= (int) $reservation['id'] ?>">Bearbeiten</a>
+                                <form method="post" class="d-inline" onsubmit="return confirm('Reservierung wirklich löschen?');">
+                                  <input type="hidden" name="form" value="reservation_delete">
+                                  <input type="hidden" name="id" value="<?= (int) $reservation['id'] ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
+                                </form>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php elseif ($activeSection === 'categories'): ?>
+      <section id="categories" class="app-section active">
+        <?php $isEditingCategory = $categoryFormData['id'] !== null; ?>
+        <div class="row g-4">
+          <div class="col-12 col-xxl-8">
+            <div class="card module-card" id="category-management">
+      <section id="categories" class="app-section active">
+        <?php $isEditingCategory = $categoryFormData['id'] !== null; ?>
+        <div class="row g-4">
+          <div class="col-12 col-xxl-8">
+            <div class="card module-card" id="category-management">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Zimmerkategorien verwalten</h2>
+                  <p class="text-muted mb-0"><?= $isEditingCategory ? 'Bestehende Kategorie bearbeiten oder aktualisieren.' : 'Neue Kategorien für die Belegung anlegen.' ?></p>
+                </div>
+                <?php if ($isEditingCategory): ?>
+                  <span class="badge text-bg-primary">Bearbeitung</span>
+                <?php endif; ?>
+              </div>
+              <div class="card-body">
+                <form method="post" class="row g-3" id="category-form">
+                  <input type="hidden" name="form" value="<?= $isEditingCategory ? 'category_update' : 'category_create' ?>">
+                  <?php if ($isEditingCategory): ?>
+                    <input type="hidden" name="id" value="<?= (int) $categoryFormData['id'] ?>">
+                  <?php endif; ?>
+                  <div class="col-12">
+                    <label for="category-name" class="form-label">Bezeichnung *</label>
+                    <input type="text" class="form-control" id="category-name" name="name" value="<?= htmlspecialchars((string) $categoryFormData['name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-12">
+                    <label for="category-description" class="form-label">Beschreibung</label>
+                    <textarea class="form-control" id="category-description" name="description" rows="2" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $categoryFormData['description']) ?></textarea>
+                  </div>
+                  <div class="col-md-6">
+                    <label for="category-capacity" class="form-label">Kapazität *</label>
+                    <input type="number" min="1" class="form-control" id="category-capacity" name="capacity" value="<?= htmlspecialchars((string) $categoryFormData['capacity']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-md-6">
+                    <label for="category-status" class="form-label">Status</label>
+                    <select class="form-select" id="category-status" name="status" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <?php foreach ($categoryStatuses as $status): ?>
+                        <option value="<?= htmlspecialchars($status) ?>" <?= $categoryFormData['status'] === $status ? 'selected' : '' ?>><?= htmlspecialchars(ucfirst($status)) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end align-items-center flex-wrap gap-2">
+                    <?php if ($isEditingCategory): ?>
+                      <a href="index.php?section=categories" class="btn btn-outline-secondary">Abbrechen</a>
+                    <?php endif; ?>
+                    <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isEditingCategory ? 'Kategorie aktualisieren' : 'Kategorie speichern' ?></button>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mt-3 mb-0">Die Formularfelder sind deaktiviert, bis eine gültige Datenbankverbindung besteht.</p>
+                <?php endif; ?>
+
+                <?php if ($pdo !== null): ?>
+                  <div class="table-responsive mt-4">
+                    <table class="table table-sm align-middle mb-0">
+                      <thead class="table-light">
+                        <tr>
+                          <th scope="col">Bezeichnung</th>
+                          <th scope="col">Kapazität</th>
+                          <th scope="col">Status</th>
+                          <th scope="col" class="text-end">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($categories as $category): ?>
+                          <tr>
+                            <td>
+                              <div class="fw-semibold"><?= htmlspecialchars($category['name']) ?></div>
+                              <?php if (!empty($category['description'])): ?>
+                                <div class="small text-muted"><?= htmlspecialchars($category['description']) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td><?= (int) $category['capacity'] ?> Gäste</td>
+                            <td>
+                              <span class="badge <?= $category['status'] === 'aktiv' ? 'text-bg-success' : 'text-bg-secondary' ?>"><?= htmlspecialchars(ucfirst($category['status'])) ?></span>
+                            </td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2">
+                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=categories&editCategory=<?= (int) $category['id'] ?>">Bearbeiten</a>
+                                <form method="post" onsubmit="return confirm('Kategorie wirklich löschen?');">
+                                  <input type="hidden" name="form" value="category_delete">
+                                  <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                                </form>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                        <?php if (empty($categories)): ?>
+                          <tr>
+                            <td colspan="4" class="text-center text-muted py-3">Noch keine Kategorien erfasst.</td>
+                          </tr>
+                        <?php endif; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php endif; ?>
+
+      <?php if ($activeSection === 'updates'): ?>
+      <section id="updates" class="app-section active">
+        <div class="row g-4">
+          <div class="col-12 col-lg-8 col-xl-6">
+            <div class="card module-card" id="system-updates">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <div>
+                  <h2 class="h5 mb-1">Systemupdates</h2>
+                  <p class="text-muted mb-0">Version prüfen und GitHub Updates abrufen.</p>
+                </div>
+                <span class="badge text-bg-warning">Dev Tools</span>
+              </div>
+              <div class="card-body">
+                <form method="post" action="update.php" class="d-flex flex-column gap-3">
+                  <input type="hidden" name="token" value="<?= htmlspecialchars($updateToken, ENT_QUOTES, 'UTF-8') ?>">
+                  <div>
+                    <label class="form-label">Repository</label>
+                    <p class="form-control-plaintext mb-0">
+                      <?php $repositoryLabel = rtrim(str_replace(['https://', 'http://'], '', $config['repository']['url']), '/'); ?>
+                      <a href="<?= htmlspecialchars($config['repository']['url']) ?>" target="_blank" rel="noopener">
+                        <?= htmlspecialchars($repositoryLabel) ?>
+                      </a>
+                    </p>
+                  </div>
+                  <div>
+                    <label for="branch" class="form-label">Branch</label>
+                    <input type="text" class="form-control" id="branch" name="branch" value="<?= htmlspecialchars($config['repository']['branch']) ?>">
+                  </div>
+                  <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
+                    <div>
+                      <span class="text-muted d-block">Aktuelle Version</span>
+                      <span class="fs-5 fw-semibold"><?= htmlspecialchars($config['version']) ?></span>
+                    </div>
+                    <button type="submit" class="btn btn-outline-primary">Update ausführen</button>
+                  </div>
+                </form>
+                <?php if ($updateOutput): ?>
+                  <div class="alert alert-secondary mt-4 mb-0" role="status">
+                    <h3 class="h6 text-uppercase text-muted">Letzte Aktualisierung</h3>
+                    <pre class="small mb-0 bg-transparent border-0 p-0"><?= htmlspecialchars(implode("\n", $updateOutput)) ?></pre>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php endif; ?>
+
+      <?php if ($activeSection === 'guests'): ?>
+      <section id="guests" class="app-section active">
+        <div class="row g-4">
+          <div class="col-12 col-xxl-8">
+          <div class="card module-card" id="guest-meldeschein" data-section="guest-management">
+            <?php $isEditingGuest = $guestFormData['id'] !== null; ?>
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+              <div>
+                <h2 class="h5 mb-1">Gäste &amp; Meldescheine</h2>
+                <p class="text-muted mb-0"><?= $isEditingGuest ? 'Gastdaten prüfen und für den Meldeschein vervollständigen.' : 'Neue Gäste aufnehmen und Meldeschein-relevante Informationen sammeln.' ?></p>
+              </div>
+              <?php if ($isEditingGuest): ?>
+                <span class="badge text-bg-primary">Bearbeitung</span>
+              <?php else: ?>
+                <span class="badge text-bg-success">Meldeschein-Ready</span>
+              <?php endif; ?>
+            </div>
+            <div class="card-body">
+              <form method="post" class="row g-3" id="guest-form">
+                <input type="hidden" name="form" value="<?= $isEditingGuest ? 'guest_update' : 'guest_create' ?>">
+                <?php if ($isEditingGuest): ?>
+                  <input type="hidden" name="id" value="<?= (int) $guestFormData['id'] ?>">
+                <?php endif; ?>
+                <div class="col-md-2">
+                  <label for="guest-salutation" class="form-label">Anrede</label>
+                  <select class="form-select" id="guest-salutation" name="salutation" <?= $pdo === null ? 'disabled' : '' ?>>
+                    <option value="">Keine Angabe</option>
+                    <?php foreach ($guestSalutations as $salutation): ?>
+                      <option value="<?= htmlspecialchars($salutation) ?>" <?= $guestFormData['salutation'] === $salutation ? 'selected' : '' ?>><?= htmlspecialchars($salutation) ?></option>
+                    <?php endforeach; ?>
+                  </select>
+                </div>
+                <div class="col-md-5">
+                  <label for="guest-first-name" class="form-label">Vorname *</label>
+                  <input type="text" class="form-control" id="guest-first-name" name="first_name" value="<?= htmlspecialchars((string) $guestFormData['first_name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-5">
+                  <label for="guest-last-name" class="form-label">Nachname *</label>
+                  <input type="text" class="form-control" id="guest-last-name" name="last_name" value="<?= htmlspecialchars((string) $guestFormData['last_name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-4">
+                  <label for="guest-dob" class="form-label">Geburtsdatum</label>
+                  <input type="date" class="form-control" id="guest-dob" name="date_of_birth" value="<?= htmlspecialchars((string) $guestFormData['date_of_birth']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-4">
+                  <label for="guest-nationality" class="form-label">Staatsangehörigkeit</label>
+                  <input type="text" class="form-control" id="guest-nationality" name="nationality" value="<?= htmlspecialchars((string) $guestFormData['nationality']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-4">
+                  <label for="guest-purpose" class="form-label">Reisezweck</label>
+                  <select class="form-select" id="guest-purpose" name="purpose_of_stay" <?= $pdo === null ? 'disabled' : '' ?>>
+                    <?php foreach ($guestPurposeOptions as $purpose): ?>
+                      <option value="<?= htmlspecialchars($purpose) ?>" <?= $guestFormData['purpose_of_stay'] === $purpose ? 'selected' : '' ?>><?= $purpose === 'geschäftlich' ? 'Geschäftlich' : 'Privat' ?></option>
+                    <?php endforeach; ?>
+                  </select>
+                </div>
+                <div class="col-md-8">
+                  <label for="guest-company" class="form-label">Firma</label>
+                  <div class="input-group">
+                    <select class="form-select" id="guest-company" name="company_id" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <option value="">Keine Zuordnung</option>
+                      <?php foreach ($companies as $company): ?>
+                        <option value="<?= (int) $company['id'] ?>" <?= $guestFormData['company_id'] !== '' && (int) $guestFormData['company_id'] === (int) $company['id'] ? 'selected' : '' ?>><?= htmlspecialchars($company['name']) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <a class="btn btn-outline-secondary" href="index.php?section=guests#company-management">Neue Firma</a>
+                  </div>
+                </div>
+                <div class="col-md-4">
+                  <label for="guest-room" class="form-label">Zimmerzuordnung</label>
+                  <select class="form-select" id="guest-room" name="room_id" <?= $pdo === null ? 'disabled' : '' ?>>
+                    <option value="">Keine Zuordnung</option>
+                    <?php foreach ($rooms as $roomOption): ?>
+                      <option value="<?= isset($roomOption['id']) ? (int) $roomOption['id'] : 0 ?>" <?= $guestFormData['room_id'] !== '' && isset($roomOption['id']) && (int) $guestFormData['room_id'] === (int) $roomOption['id'] ? 'selected' : '' ?>>Zimmer <?= htmlspecialchars($roomOption['number']) ?><?= isset($roomOption['category_name']) && $roomOption['category_name'] !== null ? ' · ' . htmlspecialchars($roomOption['category_name']) : '' ?></option>
+                    <?php endforeach; ?>
+                  </select>
+                  <div class="form-text">An- und Abreisedaten werden im Reservierungsmodul erfasst.</div>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-document-type" class="form-label">Ausweisart</label>
+                  <input type="text" class="form-control" id="guest-document-type" name="document_type" value="<?= htmlspecialchars((string) $guestFormData['document_type']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-document-number" class="form-label">Ausweisnummer</label>
+                  <input type="text" class="form-control" id="guest-document-number" name="document_number" value="<?= htmlspecialchars((string) $guestFormData['document_number']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-8">
+                  <label for="guest-address-street" class="form-label">Straße &amp; Hausnummer</label>
+                  <input type="text" class="form-control" id="guest-address-street" name="address_street" value="<?= htmlspecialchars((string) $guestFormData['address_street']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-4">
+                  <label for="guest-address-postal" class="form-label">PLZ</label>
+                  <input type="text" class="form-control" id="guest-address-postal" name="address_postal_code" value="<?= htmlspecialchars((string) $guestFormData['address_postal_code']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-address-city" class="form-label">Ort</label>
+                  <input type="text" class="form-control" id="guest-address-city" name="address_city" value="<?= htmlspecialchars((string) $guestFormData['address_city']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-address-country" class="form-label">Land</label>
+                  <input type="text" class="form-control" id="guest-address-country" name="address_country" value="<?= htmlspecialchars((string) $guestFormData['address_country']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-email" class="form-label">E-Mail</label>
+                  <input type="email" class="form-control" id="guest-email" name="email" value="<?= htmlspecialchars((string) $guestFormData['email']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-phone" class="form-label">Telefon</label>
+                  <input type="text" class="form-control" id="guest-phone" name="phone" value="<?= htmlspecialchars((string) $guestFormData['phone']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-12">
+                  <label for="guest-notes" class="form-label">Notizen</label>
+                  <textarea class="form-control" id="guest-notes" name="notes" rows="2" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $guestFormData['notes']) ?></textarea>
+                  <div class="form-text">Freitext für Meldeschein-Hinweise, z. B. Begleitpersonen oder Besonderheiten.</div>
+                </div>
+                <div class="col-12 d-flex justify-content-end align-items-center flex-wrap gap-2">
+                  <?php if ($isEditingGuest): ?>
+                    <a href="index.php?section=guests" class="btn btn-outline-secondary">Abbrechen</a>
+                  <?php endif; ?>
+                  <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isEditingGuest ? 'Gast aktualisieren' : 'Gast speichern' ?></button>
+                </div>
+              </form>
+
+              <?php if ($pdo === null): ?>
+                <p class="text-muted mt-3 mb-0">Die Formularfelder sind deaktiviert, bis eine gültige Datenbankverbindung besteht.</p>
+              <?php endif; ?>
+
+              <?php if ($pdo !== null): ?>
+                <div class="table-responsive mt-4">
+                  <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light">
+                      <tr>
+                        <th scope="col">Gast</th>
+                        <th scope="col">Aufenthalt</th>
+                        <th scope="col">Zimmer</th>
+                        <th scope="col">Kontakt &amp; Adresse</th>
+                        <th scope="col">Firma</th>
+                        <th scope="col">Ausweisdaten</th>
+                        <th scope="col">Meldeschein</th>
+                        <th scope="col" class="text-end">Aktionen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <?php foreach ($guests as $guest): ?>
+                        <?php
+                          $guestNameParts = [];
+                          if (!empty($guest['salutation'])) {
+                              $guestNameParts[] = $guest['salutation'];
+                          }
+                          $guestNameParts[] = trim(($guest['first_name'] ?? '') . ' ' . ($guest['last_name'] ?? ''));
+                          $guestName = trim(implode(' ', array_filter($guestNameParts)));
+
+                          $birthLabel = '<span class="text-muted">unbekannt</span>';
+                          if (!empty($guest['date_of_birth'])) {
+                              try {
+                                  $birthLabel = htmlspecialchars((new DateTimeImmutable($guest['date_of_birth']))->format('d.m.Y'));
+                              } catch (Throwable $exception) {
+                                  $birthLabel = htmlspecialchars($guest['date_of_birth']);
+                              }
+                          }
+
+                          $nationalityLabel = !empty($guest['nationality']) ? htmlspecialchars($guest['nationality']) : '—';
+
+                          $arrivalLabel = null;
+                          if (!empty($guest['arrival_date'])) {
+                              try {
+                                  $arrivalLabel = (new DateTimeImmutable($guest['arrival_date']))->format('d.m.Y');
+                              } catch (Throwable $exception) {
+                                  $arrivalLabel = $guest['arrival_date'];
+                              }
+                          }
+
+                          $departureLabel = null;
+                          if (!empty($guest['departure_date'])) {
+                              try {
+                                  $departureLabel = (new DateTimeImmutable($guest['departure_date']))->format('d.m.Y');
+                              } catch (Throwable $exception) {
+                                  $departureLabel = $guest['departure_date'];
+                              }
+                          }
+
+                          $stayDetails = [];
+                          $hasStayWindow = $arrivalLabel !== null || $departureLabel !== null;
+                          if ($hasStayWindow) {
+                              $stayDetails[] = sprintf('%s – %s', $arrivalLabel !== null ? $arrivalLabel : 'offen', $departureLabel !== null ? $departureLabel : 'offen');
+                          } else {
+                              $stayDetails[] = 'Reservierungsdaten folgen';
+                          }
+                          $stayDetails[] = $guest['purpose_of_stay'] === 'geschäftlich' ? 'Geschäftlich' : 'Privat';
+
+                          $roomAssignment = null;
+                          $roomAssignmentStatus = null;
+                          if (isset($guest['room_id']) && $guest['room_id'] !== null) {
+                              $guestRoomId = (int) $guest['room_id'];
+                              if (isset($roomLookup[$guestRoomId])) {
+                                  $guestRoom = $roomLookup[$guestRoomId];
+                                  $roomAssignment = 'Zimmer ' . ($guestRoom['number'] ?? $guestRoomId);
+                                  if (!empty($guestRoom['category_name'])) {
+                                      $roomAssignment .= ' · ' . $guestRoom['category_name'];
+                                  }
+                                  $roomAssignmentStatus = $guestRoom['status'] ?? null;
+                              } else {
+                                  $roomAssignment = 'Zimmer #' . $guestRoomId;
+                              }
+                          }
+
+                          $contactParts = [];
+                          if (!empty($guest['email'])) {
+                              $contactParts[] = htmlspecialchars($guest['email']);
+                          }
+                          if (!empty($guest['phone'])) {
+                              $contactParts[] = htmlspecialchars($guest['phone']);
+                          }
+
+                          $companyName = isset($guest['company_name']) && $guest['company_name'] !== null ? (string) $guest['company_name'] : '';
+
+                          $addressParts = [];
+                          if (!empty($guest['address_street'])) {
+                              $addressParts[] = htmlspecialchars($guest['address_street']);
+                          }
+                          $cityLineParts = array_filter([
+                              $guest['address_postal_code'] !== null ? trim((string) $guest['address_postal_code']) : '',
+                              $guest['address_city'] !== null ? trim((string) $guest['address_city']) : '',
+                          ]);
+                          if ($cityLineParts !== []) {
+                              $addressParts[] = htmlspecialchars(implode(' ', $cityLineParts));
+                          }
+                          if (!empty($guest['address_country'])) {
+                              $addressParts[] = htmlspecialchars($guest['address_country']);
+                          }
+
+                          $documentParts = [];
+                          if (!empty($guest['document_type'])) {
+                              $documentParts[] = htmlspecialchars($guest['document_type']);
+                          }
+                          if (!empty($guest['document_number'])) {
+                              $documentParts[] = htmlspecialchars($guest['document_number']);
+                          }
+
+                          $hasMeldescheinCore = !empty($guest['date_of_birth'])
+                              && !empty($guest['nationality'])
+                              && !empty($guest['address_street'])
+                              && !empty($guest['address_city'])
+                              && !empty($guest['address_country'])
+                              && !empty($guest['document_type'])
+                              && !empty($guest['document_number']);
+
+                          $hasMeldeschein = $hasStayWindow && $hasMeldescheinCore;
+
+                          if (!$hasStayWindow) {
+                              $meldescheinBadgeClass = 'text-bg-warning';
+                              $meldescheinBadgeText = 'wartet auf Reservierung';
+                              $meldescheinStatusMessage = 'Reservierungsdaten werden für den Meldeschein benötigt.';
+                          } else {
+                              $meldescheinBadgeClass = $hasMeldeschein ? 'text-bg-success' : 'text-bg-warning';
+                              $meldescheinBadgeText = $hasMeldeschein ? 'bereit' : 'unvollständig';
+                              $meldescheinStatusMessage = $hasMeldeschein
+                                  ? 'Alle Pflichtfelder befüllt.'
+                                  : 'Bitte fehlende Angaben ergänzen.';
+                          }
+                        ?>
+                        <tr>
+                          <td>
+                            <div class="fw-semibold"><?= htmlspecialchars($guestName) ?></div>
+                            <div class="small text-muted">Geburtsdatum: <?= $birthLabel ?><?= $nationalityLabel !== '—' ? ' · ' . $nationalityLabel : '' ?></div>
+                          </td>
+                          <td>
+                            <?php foreach ($stayDetails as $stayDetail): ?>
+                              <div><?= htmlspecialchars($stayDetail) ?></div>
+                            <?php endforeach; ?>
+                            <?php if (empty($stayDetails)): ?>
+                              <span class="text-muted">Keine Angaben</span>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($roomAssignment !== null): ?>
+                              <div class="fw-semibold"><?= htmlspecialchars($roomAssignment) ?></div>
+                              <?php if ($roomAssignmentStatus !== null): ?>
+                                <div class="small text-muted">Status: <?= htmlspecialchars(ucfirst($roomAssignmentStatus)) ?></div>
+                              <?php endif; ?>
+                            <?php else: ?>
+                              <span class="text-muted">Keine Zuordnung</span>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($contactParts !== []): ?>
+                              <?php foreach ($contactParts as $contactPart): ?>
+                                <div><?= $contactPart ?></div>
+                              <?php endforeach; ?>
+                            <?php endif; ?>
+                            <?php if ($addressParts !== []): ?>
+                              <div class="mt-1">
+                                <?php foreach ($addressParts as $addressPart): ?>
+                                  <div><?= $addressPart ?></div>
+                                <?php endforeach; ?>
+                              </div>
+                            <?php endif; ?>
+                          <?php if ($contactParts === [] && $addressParts === []): ?>
+                            <span class="text-muted">Keine Kontaktdaten</span>
+                          <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($companyName !== ''): ?>
+                              <div class="fw-semibold"><?= htmlspecialchars($companyName) ?></div>
+                              <div class="small text-muted">Zuordnung für Meldeschein</div>
+                            <?php else: ?>
+                              <span class="text-muted">Keine Zuordnung</span>
+                              <?php if ($guest['purpose_of_stay'] === 'geschäftlich'): ?>
+                                <div class="small text-warning">Geschäftsreise ohne Firma</div>
+                              <?php endif; ?>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($documentParts !== []): ?>
+                              <?php foreach ($documentParts as $documentPart): ?>
+                                <div><?= $documentPart ?></div>
+                              <?php endforeach; ?>
+                            <?php else: ?>
+                              <span class="text-muted">Keine Angaben</span>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <span class="badge <?= $meldescheinBadgeClass ?> text-uppercase"><?= $meldescheinBadgeText ?></span>
+                            <div class="small text-muted"><?= htmlspecialchars($meldescheinStatusMessage) ?></div>
+                          </td>
+                          <td class="text-end">
+                            <div class="d-flex justify-content-end gap-2 flex-wrap">
+                              <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editGuest=<?= (int) $guest['id'] ?>">Bearbeiten</a>
+                              <form method="post" onsubmit="return confirm('Gast wirklich löschen?');">
+                                <input type="hidden" name="form" value="guest_delete">
+                                <input type="hidden" name="id" value="<?= (int) $guest['id'] ?>">
+                                <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                              </form>
+                              <button type="button" class="btn btn-outline-primary btn-sm" title="Export folgt in einem späteren Release" disabled>Meldeschein</button>
+                            </div>
+                          </td>
+                        </tr>
+                      <?php endforeach; ?>
+                      <?php if (empty($guests)): ?>
+                        <tr>
+                          <td colspan="8" class="text-center text-muted py-3">Noch keine Gäste erfasst.</td>
+                        </tr>
+                      <?php endif; ?>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="small text-muted mt-3 mb-0">Hinweis: Sobald alle Pflichtfelder gepflegt sind, kann ein Meldeschein aus den gespeicherten Daten generiert werden.</p>
+              <?php endif; ?>
+            </div>
+          </div>
+          </div>
+          <div class="col-12 col-xxl-4">
+          <div class="card module-card h-100" id="company-management">
+            <?php $isEditingCompany = $companyFormData['id'] !== null; ?>
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+              <div>
+                <h2 class="h5 mb-1">Firmen</h2>
+                <p class="text-muted mb-0"><?= $isEditingCompany ? 'Firmendaten anpassen und Zuordnungen prüfen.' : 'Stammdaten für Firmenkunden verwalten.' ?></p>
+              </div>
+              <?php if ($isEditingCompany): ?>
+                <span class="badge text-bg-primary">Bearbeitung</span>
+              <?php else: ?>
+                <span class="badge text-bg-info">Optional</span>
+              <?php endif; ?>
+            </div>
+            <div class="card-body">
+              <form method="post" class="row g-3" id="company-form">
+                <input type="hidden" name="form" value="<?= $isEditingCompany ? 'company_update' : 'company_create' ?>">
+                <?php if ($isEditingCompany): ?>
+                  <input type="hidden" name="id" value="<?= (int) $companyFormData['id'] ?>">
+                <?php endif; ?>
+                <div class="col-12">
+                  <label for="company-name" class="form-label">Firmenname *</label>
+                  <input type="text" class="form-control" id="company-name" name="name" value="<?= htmlspecialchars((string) $companyFormData['name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-12">
+                  <label for="company-address-street" class="form-label">Straße &amp; Hausnummer</label>
+                  <input type="text" class="form-control" id="company-address-street" name="address_street" value="<?= htmlspecialchars((string) $companyFormData['address_street']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="company-address-postal" class="form-label">PLZ</label>
+                  <input type="text" class="form-control" id="company-address-postal" name="address_postal_code" value="<?= htmlspecialchars((string) $companyFormData['address_postal_code']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="company-address-city" class="form-label">Ort</label>
+                  <input type="text" class="form-control" id="company-address-city" name="address_city" value="<?= htmlspecialchars((string) $companyFormData['address_city']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-12">
+                  <label for="company-address-country" class="form-label">Land</label>
+                  <input type="text" class="form-control" id="company-address-country" name="address_country" value="<?= htmlspecialchars((string) $companyFormData['address_country']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="company-email" class="form-label">E-Mail</label>
+                  <input type="email" class="form-control" id="company-email" name="email" value="<?= htmlspecialchars((string) $companyFormData['email']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="company-phone" class="form-label">Telefon</label>
+                  <input type="text" class="form-control" id="company-phone" name="phone" value="<?= htmlspecialchars((string) $companyFormData['phone']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-12">
+                  <label for="company-tax-id" class="form-label">Steuernummer / USt-IdNr.</label>
+                  <input type="text" class="form-control" id="company-tax-id" name="tax_id" value="<?= htmlspecialchars((string) $companyFormData['tax_id']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-12">
+                  <label for="company-notes" class="form-label">Notizen</label>
+                  <textarea class="form-control" id="company-notes" name="notes" rows="2" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $companyFormData['notes']) ?></textarea>
+                </div>
+                <div class="col-12 d-flex justify-content-end align-items-center flex-wrap gap-2">
+                  <?php if ($isEditingCompany): ?>
+                    <a href="index.php?section=guests" class="btn btn-outline-secondary">Abbrechen</a>
+                  <?php endif; ?>
+                  <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isEditingCompany ? 'Firma aktualisieren' : 'Firma speichern' ?></button>
+                </div>
+              </form>
+
+              <?php if ($pdo === null): ?>
+                <p class="text-muted mt-3 mb-0">Erstellen und Bearbeiten von Firmen ist ohne Datenbankverbindung nicht möglich.</p>
+              <?php endif; ?>
+
+              <?php if ($pdo !== null): ?>
+                <div class="table-responsive mt-4">
+                  <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light">
+                      <tr>
+                        <th scope="col">Firma</th>
+                        <th scope="col">Kontakt</th>
+                        <th scope="col" class="text-end">Aktionen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <?php foreach ($companies as $company): ?>
+                        <?php
+                          $companyId = (int) $company['id'];
+                          $assignedGuests = $companyGuestCounts[$companyId] ?? 0;
+                          $contactLines = array_filter([
+                              !empty($company['email']) ? htmlspecialchars($company['email']) : null,
+                              !empty($company['phone']) ? htmlspecialchars($company['phone']) : null,
+                          ]);
+                          $addressLines = array_filter([
+                              !empty($company['address_street']) ? htmlspecialchars($company['address_street']) : null,
+                              trim((($company['address_postal_code'] ?? '') !== '' ? $company['address_postal_code'] . ' ' : '') . ($company['address_city'] ?? '')) !== ''
+                                  ? htmlspecialchars(trim((($company['address_postal_code'] ?? '') !== '' ? $company['address_postal_code'] . ' ' : '') . ($company['address_city'] ?? '')))
+                                  : null,
+                              !empty($company['address_country']) ? htmlspecialchars($company['address_country']) : null,
+                          ]);
+                        ?>
+                        <tr>
+                          <td>
+                            <div class="fw-semibold d-flex align-items-center gap-2">
+                              <?= htmlspecialchars($company['name']) ?>
+                              <?php if ($assignedGuests > 0): ?>
+                                <span class="badge text-bg-secondary">Gäste: <?= $assignedGuests ?></span>
+                              <?php endif; ?>
+                            </div>
+                            <?php if (!empty($company['tax_id'])): ?>
+                              <div class="small text-muted">Steuer-ID: <?= htmlspecialchars($company['tax_id']) ?></div>
+                            <?php endif; ?>
+                            <?php if (!empty($company['notes'])): ?>
+                              <div class="small text-muted mt-1"><?= nl2br(htmlspecialchars($company['notes'])) ?></div>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($contactLines !== []): ?>
+                              <?php foreach ($contactLines as $contactLine): ?>
+                                <div><?= $contactLine ?></div>
+                              <?php endforeach; ?>
+                            <?php endif; ?>
+                            <?php if ($addressLines !== []): ?>
+                              <div class="mt-1">
+                                <?php foreach ($addressLines as $addressLine): ?>
+                                  <div><?= $addressLine ?></div>
+                                <?php endforeach; ?>
+                              </div>
+                            <?php endif; ?>
+                            <?php if ($contactLines === [] && $addressLines === []): ?>
+                              <span class="text-muted">Keine Kontaktdaten</span>
+                            <?php endif; ?>
+                          </td>
+                          <td class="text-end">
+                            <div class="d-flex justify-content-end gap-2">
+                              <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editCompany=<?= (int) $company['id'] ?>">Bearbeiten</a>
+                              <form method="post" onsubmit="return confirm('Firma wirklich löschen?');">
+                                <input type="hidden" name="form" value="company_delete">
+                                <input type="hidden" name="id" value="<?= (int) $company['id'] ?>">
+                                <button type="submit" class="btn btn-outline-danger btn-sm" <?= ($companyGuestCounts[$companyId] ?? 0) > 0 ? 'disabled title="Zuerst Gästezuordnungen entfernen"' : '' ?>>Löschen</button>
+                              </form>
+                            </div>
+                          </td>
+                        </tr>
+                      <?php endforeach; ?>
+                      <?php if (empty($companies)): ?>
+                        <tr>
+                          <td colspan="3" class="text-center text-muted py-3">Noch keine Firmen erfasst.</td>
+                        </tr>
+                      <?php endif; ?>
+                    </tbody>
+                  </table>
+                </div>
+              <?php endif; ?>
+            </div>
+          </div>
+          </div>
+        </div>
+      </section>
+      <?php endif; ?>
+
+      <?php if ($activeSection === 'rooms'): ?>
+      <section id="rooms" class="app-section active">
+        <?php $isEditingRoom = $roomFormData['id'] !== null; ?>
+        <div class="row g-4">
+          <div class="col-12 col-xxl-10">
+            <div class="card module-card" id="room-management">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Zimmerverwaltung</h2>
+                  <p class="text-muted mb-0"><?= $isEditingRoom ? 'Zimmerdetails bearbeiten und Status anpassen.' : 'Neue Zimmer mit Kategorie, Etage und Status hinterlegen.' ?></p>
+                </div>
+                <?php if ($isEditingRoom): ?>
+                  <span class="badge text-bg-primary">Bearbeitung</span>
+                <?php endif; ?>
+              </div>
+              <div class="card-body">
+                <form method="post" class="row g-3" id="room-form">
+                  <input type="hidden" name="form" value="<?= $isEditingRoom ? 'room_update' : 'room_create' ?>">
+                  <?php if ($isEditingRoom): ?>
+                    <input type="hidden" name="id" value="<?= (int) $roomFormData['id'] ?>">
+                  <?php endif; ?>
+                  <div class="col-md-3">
+                    <label for="room-number" class="form-label">Zimmernummer *</label>
+                    <input type="text" class="form-control" id="room-number" name="room_number" value="<?= htmlspecialchars((string) $roomFormData['room_number']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-md-3">
+                    <label for="room-category" class="form-label">Kategorie</label>
+                    <select class="form-select" id="room-category" name="category_id" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <option value="">Keine Zuordnung</option>
+                      <?php foreach ($categories as $category): ?>
+                        <option value="<?= (int) $category['id'] ?>" <?= $roomFormData['category_id'] !== '' && (int) $roomFormData['category_id'] === (int) $category['id'] ? 'selected' : '' ?>><?= htmlspecialchars($category['name']) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                  </div>
+                  <div class="col-md-3">
+                    <label for="room-status" class="form-label">Status</label>
+                    <select class="form-select" id="room-status" name="status" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <?php foreach ($roomStatuses as $status): ?>
+                        <option value="<?= htmlspecialchars($status) ?>" <?= $roomFormData['status'] === $status ? 'selected' : '' ?>><?= htmlspecialchars(ucfirst($status)) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                  </div>
+                  <div class="col-md-3">
+                    <label for="room-floor" class="form-label">Etage</label>
+                    <input type="text" class="form-control" id="room-floor" name="floor" value="<?= htmlspecialchars((string) $roomFormData['floor']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-12">
+                    <label for="room-notes" class="form-label">Notizen</label>
+                    <textarea class="form-control" id="room-notes" name="notes" rows="2" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $roomFormData['notes']) ?></textarea>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end align-items-center flex-wrap gap-2">
+                    <?php if ($isEditingRoom): ?>
+                      <a href="index.php?section=rooms" class="btn btn-outline-secondary">Abbrechen</a>
+                    <?php endif; ?>
+                    <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isEditingRoom ? 'Zimmer aktualisieren' : 'Zimmer speichern' ?></button>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mt-3 mb-0">Die Formularfelder sind deaktiviert, bis eine gültige Datenbankverbindung besteht.</p>
+                <?php endif; ?>
+
+                <?php if ($pdo !== null): ?>
+                  <div class="table-responsive mt-4">
+                    <table class="table table-sm align-middle mb-0">
+                      <thead class="table-light">
+                        <tr>
+                          <th scope="col">Zimmer</th>
+                          <th scope="col">Kategorie</th>
+                          <th scope="col">Status</th>
+                          <th scope="col">Etage</th>
+                          <th scope="col">Notizen</th>
+                          <th scope="col" class="text-end">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($rooms as $room): ?>
+                          <?php
+                            $roomStatusClass = 'text-bg-light border';
+                            if ($room['status'] === 'frei') {
+                                $roomStatusClass = 'text-bg-success';
+                            } elseif ($room['status'] === 'belegt') {
+                                $roomStatusClass = 'text-bg-danger';
+                            } elseif ($room['status'] === 'wartung') {
+                                $roomStatusClass = 'text-bg-warning';
+                            }
+                          ?>
+                          <tr>
+                            <td class="fw-semibold"><?= htmlspecialchars($room['number']) ?></td>
+                            <td>
+                              <?php if ($room['category_name']): ?>
+                                <?= htmlspecialchars($room['category_name']) ?>
+                              <?php else: ?>
+                                <span class="text-muted">Keine</span>
+                              <?php endif; ?>
+                            </td>
+                            <td><span class="badge <?= $roomStatusClass ?>"><?= htmlspecialchars(ucfirst($room['status'])) ?></span></td>
+                            <td><?= $room['floor'] !== null ? htmlspecialchars($room['floor']) : '—' ?></td>
+                            <td><?= $room['notes'] !== null && $room['notes'] !== '' ? htmlspecialchars($room['notes']) : '—' ?></td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2">
+                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rooms&editRoom=<?= (int) $room['id'] ?>">Bearbeiten</a>
+                                <form method="post" onsubmit="return confirm('Zimmer wirklich löschen?');">
+                                  <input type="hidden" name="form" value="room_delete">
+                                  <input type="hidden" name="id" value="<?= (int) $room['id'] ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                                </form>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                        <?php if (empty($rooms)): ?>
+                          <tr>
+                            <td colspan="6" class="text-center text-muted py-3">Noch keine Zimmer angelegt.</td>
+                          </tr>
+                        <?php endif; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php endif; ?>
+
+      <?php if ($activeSection === 'users'): ?>
+      <section id="users" class="app-section active">
+        <div class="row g-4">
+          <div class="col-12 col-xxl-8">
+            <div class="card module-card" id="user-management">
+            <?php $isEditingUser = $userFormData['id'] !== null; ?>
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+              <div>
+                <h2 class="h5 mb-1">Benutzerverwaltung</h2>
+                <p class="text-muted mb-0"><?= $isEditingUser ? 'Bestehenden Benutzer anpassen oder Passwort zurücksetzen.' : 'Neue Benutzer für das Team anlegen und Rollen vergeben.' ?></p>
+              </div>
+              <?php if ($isEditingUser): ?>
+                <span class="badge text-bg-primary">Bearbeitung</span>
+              <?php endif; ?>
+            </div>
+            <div class="card-body">
+              <form method="post" class="row g-3" id="user-form">
+                <input type="hidden" name="form" value="<?= $isEditingUser ? 'user_update' : 'user_create' ?>">
+                <?php if ($isEditingUser): ?>
+                  <input type="hidden" name="id" value="<?= (int) $userFormData['id'] ?>">
+                <?php endif; ?>
+                <div class="col-md-4">
+                  <label for="user-name" class="form-label">Name *</label>
+                  <input type="text" class="form-control" id="user-name" name="name" value="<?= htmlspecialchars((string) $userFormData['name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-4">
+                  <label for="user-email" class="form-label">E-Mail *</label>
+                  <input type="email" class="form-control" id="user-email" name="email" value="<?= htmlspecialchars((string) $userFormData['email']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-4">
+                  <label for="user-role" class="form-label">Rolle *</label>
+                  <select class="form-select" id="user-role" name="role" <?= $pdo === null ? 'disabled' : '' ?>>
+                    <?php foreach ($userRoles as $role): ?>
+                      <option value="<?= htmlspecialchars($role) ?>" <?= $userFormData['role'] === $role ? 'selected' : '' ?>><?= $role === 'admin' ? 'Administrator' : 'Mitarbeiter' ?></option>
+                    <?php endforeach; ?>
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label for="user-password" class="form-label">Passwort <?= $isEditingUser ? '(optional)' : '*' ?></label>
+                  <input type="password" class="form-control" id="user-password" name="password" <?= $pdo === null ? 'disabled' : '' ?> <?= $isEditingUser ? '' : 'required' ?>>
+                  <div class="form-text">Mindestens 8 Zeichen.</div>
+                </div>
+                <div class="col-md-6">
+                  <label for="user-password-confirm" class="form-label">Passwort wiederholen <?= $isEditingUser ? '(optional)' : '*' ?></label>
+                  <input type="password" class="form-control" id="user-password-confirm" name="password_confirm" <?= $pdo === null ? 'disabled' : '' ?> <?= $isEditingUser ? '' : 'required' ?>>
+                </div>
+                <div class="col-12 d-flex justify-content-end align-items-center flex-wrap gap-2">
+                  <?php if ($isEditingUser): ?>
+                    <a href="index.php?section=users" class="btn btn-outline-secondary">Abbrechen</a>
+                  <?php endif; ?>
+                  <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isEditingUser ? 'Benutzer aktualisieren' : 'Benutzer speichern' ?></button>
+                </div>
+              </form>
+
+              <?php if ($pdo === null): ?>
+                <p class="text-muted mt-3 mb-0">Die Formularfelder sind deaktiviert, bis eine gültige Datenbankverbindung besteht.</p>
+              <?php endif; ?>
+
+              <?php if ($pdo !== null): ?>
+                <div class="table-responsive mt-4">
+                  <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light">
+                      <tr>
+                        <th scope="col">Name</th>
+                        <th scope="col">E-Mail</th>
+                        <th scope="col">Rolle</th>
+                        <th scope="col">Letzter Login</th>
+                        <th scope="col" class="text-end">Aktionen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <?php foreach ($users as $user): ?>
+                        <?php
+                          $lastLoginLabel = '<span class="text-muted">Noch nie</span>';
+                          if (!empty($user['last_login_at'])) {
+                              try {
+                                  $lastLoginLabel = htmlspecialchars((new DateTime($user['last_login_at']))->format('d.m.Y H:i'));
+                              } catch (Throwable $exception) {
+                                  $lastLoginLabel = htmlspecialchars($user['last_login_at']);
+                              }
+                          }
+                        ?>
+                        <tr>
+                          <td class="fw-semibold"><?= htmlspecialchars($user['name']) ?></td>
+                          <td><?= htmlspecialchars($user['email']) ?></td>
+                          <td><span class="badge <?= $user['role'] === 'admin' ? 'text-bg-dark' : 'text-bg-secondary' ?>"><?= $user['role'] === 'admin' ? 'Administrator' : 'Mitarbeiter' ?></span></td>
+                          <td><?= $lastLoginLabel ?></td>
+                          <td class="text-end">
+                            <div class="d-flex justify-content-end gap-2">
+                              <a class="btn btn-outline-secondary btn-sm" href="index.php?section=users&editUser=<?= (int) $user['id'] ?>">Bearbeiten</a>
+                              <?php if ((int) $_SESSION['user_id'] !== (int) $user['id']): ?>
+                                <form method="post" onsubmit="return confirm('Benutzer wirklich löschen?');">
+                                  <input type="hidden" name="form" value="user_delete">
+                                  <input type="hidden" name="id" value="<?= (int) $user['id'] ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                                </form>
+                              <?php else: ?>
+                                <span class="badge text-bg-light">Eigenes Konto</span>
+                              <?php endif; ?>
+                            </div>
+                          </td>
+                        </tr>
+                      <?php endforeach; ?>
+                      <?php if (empty($users)): ?>
+                        <tr>
+                          <td colspan="5" class="text-center text-muted py-3">Noch keine Benutzer vorhanden.</td>
+                        </tr>
+                      <?php endif; ?>
+                    </tbody>
+                  </table>
+                </div>
+              <?php endif; ?>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php endif; ?>
+      </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+    <script>
+      (function () {
+        function setupReservationCategoryRepeater() {
+          var container = document.getElementById('reservation-category-list');
+          var template = document.getElementById('reservation-category-template');
+          var addButton = document.querySelector('[data-add-category]');
+
+          if (!container || !template || !addButton) {
+            return;
+          }
+
+          var nextIndex = parseInt(container.getAttribute('data-next-index') || '0', 10);
+          if (Number.isNaN(nextIndex) || nextIndex < container.children.length) {
+            nextIndex = container.children.length;
+          }
+
+          function updateRemoveButtons() {
+            var items = container.querySelectorAll('.reservation-category-item');
+            items.forEach(function (item, index) {
+              var button = item.querySelector('[data-remove-category]');
+              if (!button) {
+                return;
+              }
+              if (items.length === 1 && index === 0) {
+                button.setAttribute('disabled', 'disabled');
+              } else {
+                button.removeAttribute('disabled');
+              }
+            });
+          }
+
+          function bindRoomQuantityBehaviour(item) {
+            if (!item) {
+              return;
+            }
+
+            var roomSelect = item.querySelector('.reservation-room-select');
+            var quantityInput = item.querySelector('input[name$="[room_quantity]"]');
+
+            if (!roomSelect || !quantityInput) {
+              return;
+            }
+
+            function updateQuantityState() {
+              if (roomSelect.value !== '') {
+                quantityInput.value = '1';
+                quantityInput.setAttribute('readonly', 'readonly');
+                quantityInput.classList.add('reservation-quantity-readonly');
+              } else {
+                quantityInput.removeAttribute('readonly');
+                quantityInput.classList.remove('reservation-quantity-readonly');
+              }
+            }
+
+            roomSelect.addEventListener('change', updateQuantityState);
+            updateQuantityState();
+          }
+
+          function createItem() {
+            var html = template.innerHTML.replace(/__INDEX__/g, String(nextIndex));
+            nextIndex += 1;
+
+            var wrapper = document.createElement('div');
+            wrapper.innerHTML = html.trim();
+            return wrapper.firstElementChild;
+          }
+
+          addButton.addEventListener('click', function () {
+            var newItem = createItem();
+            if (!newItem) {
+              return;
+            }
+
+            container.appendChild(newItem);
+            bindRoomQuantityBehaviour(newItem);
+            updateRemoveButtons();
+          });
+
+          container.addEventListener('click', function (event) {
+            var target = event.target;
+            if (!(target instanceof Element) || !target.matches('[data-remove-category]')) {
+              return;
+            }
+
+            var item = target.closest('.reservation-category-item');
+            if (!item) {
+              return;
+            }
+
+            if (container.querySelectorAll('.reservation-category-item').length <= 1) {
+              return;
+            }
+
+            container.removeChild(item);
+            updateRemoveButtons();
+          });
+
+          container.querySelectorAll('.reservation-category-item').forEach(function (item) {
+            bindRoomQuantityBehaviour(item);
+          });
+          updateRemoveButtons();
+        }
+
+        function collapseNavbarOnClick(selector) {
+          document.querySelectorAll(selector).forEach(function (link) {
+            link.addEventListener('click', function () {
+              var navbarCollapse = document.getElementById('primaryNav');
+              if (!navbarCollapse || !navbarCollapse.classList.contains('show')) {
+                return;
+              }
+
+              if (window.bootstrap && window.bootstrap.Collapse) {
+                var collapse = window.bootstrap.Collapse.getInstance(navbarCollapse);
+                if (collapse) {
+                  collapse.hide();
+                }
+              }
+            });
+          });
+        }
+
+        function debounce(fn, delay) {
+          var timeoutId;
+          return function () {
+            var args = arguments;
+            var context = this;
+            clearTimeout(timeoutId);
+            timeoutId = setTimeout(function () {
+              fn.apply(context, args);
+            }, delay);
+          };
+        }
+
+        function setupTypeahead(container, options) {
+          if (!container) {
+            return null;
+          }
+
+          options = options || {};
+
+          var input = container.querySelector('.typeahead-input');
+          var hiddenInput = container.querySelector('input[type="hidden"]');
+          var dropdown = container.querySelector('.typeahead-dropdown');
+          var endpoint = container.getAttribute('data-endpoint');
+
+          if (!input || !hiddenInput || !dropdown || !endpoint) {
+            return null;
+          }
+
+          var minLength = parseInt(input.getAttribute('data-minlength') || '2', 10);
+          if (Number.isNaN(minLength) || minLength < 1) {
+            minLength = 1;
+          }
+
+          var limit = parseInt(container.getAttribute('data-limit') || '20', 10);
+          if (Number.isNaN(limit) || limit < 1) {
+            limit = 20;
+          }
+
+          var currentItems = [];
+          var activeIndex = -1;
+          var abortController = null;
+
+          function setActive(index) {
+            activeIndex = index;
+            var nodes = dropdown.querySelectorAll('.typeahead-item');
+            nodes.forEach(function (node, nodeIndex) {
+              if (nodeIndex === activeIndex) {
+                node.classList.add('active');
+                node.setAttribute('aria-selected', 'true');
+              } else {
+                node.classList.remove('active');
+                node.setAttribute('aria-selected', 'false');
+              }
+            });
+          }
+
+          function hideDropdown() {
+            dropdown.classList.remove('show');
+            dropdown.innerHTML = '';
+            currentItems = [];
+            setActive(-1);
+          }
+
+          function renderItems(items) {
+            dropdown.innerHTML = '';
+            if (!items.length) {
+              var empty = document.createElement('div');
+              empty.className = 'typeahead-empty list-group-item text-muted small';
+              empty.textContent = 'Keine Treffer';
+              dropdown.appendChild(empty);
+              dropdown.classList.add('show');
+              return;
+            }
+
+            items.forEach(function (item, index) {
+              var button = document.createElement('button');
+              button.type = 'button';
+              button.className = 'list-group-item list-group-item-action typeahead-item';
+              button.setAttribute('data-index', String(index));
+              button.setAttribute('role', 'option');
+              button.setAttribute('aria-selected', 'false');
+
+              var label = document.createElement('div');
+              label.className = 'fw-semibold';
+              label.textContent = item.label || '';
+              button.appendChild(label);
+
+              if (item.address) {
+                var details = document.createElement('div');
+                details.className = 'small text-muted';
+                details.textContent = item.address;
+                button.appendChild(details);
+                button.title = item.address;
+              }
+
+              button.addEventListener('mouseenter', function () {
+                setActive(index);
+              });
+
+              button.addEventListener('click', function () {
+                selectItem(index);
+              });
+
+              dropdown.appendChild(button);
+            });
+
+            dropdown.classList.add('show');
+            setActive(-1);
+          }
+
+          function selectItem(index) {
+            var item = currentItems[index];
+            if (!item) {
+              return;
+            }
+
+            hiddenInput.value = item.id != null ? String(item.id) : '';
+            input.value = item.label || '';
+
+            if (item.address) {
+              input.title = item.address;
+            } else {
+              input.removeAttribute('title');
+            }
+
+            if (typeof options.onSelect === 'function') {
+              options.onSelect(item);
+            }
+
+            hideDropdown();
+          }
+
+          function clearSelection(triggerCallback) {
+            hiddenInput.value = '';
+            input.removeAttribute('title');
+
+            if (triggerCallback && typeof options.onClear === 'function') {
+              options.onClear();
+            }
+          }
+
+          var fetchResults = debounce(function (query) {
+            if (!endpoint || input.disabled) {
+              return;
+            }
+
+            if (abortController && typeof abortController.abort === 'function') {
+              abortController.abort();
+            }
+
+            if (window.AbortController) {
+              abortController = new AbortController();
+            } else {
+              abortController = null;
+            }
+
+            var url = endpoint + '&term=' + encodeURIComponent(query) + '&limit=' + encodeURIComponent(String(limit));
+
+            fetch(url, { signal: abortController ? abortController.signal : undefined })
+              .then(function (response) {
+                if (!response.ok) {
+                  throw new Error('Netzwerkfehler: ' + response.status);
+                }
+                return response.json();
+              })
+              .then(function (data) {
+                var items = Array.isArray(data.items) ? data.items : [];
+                currentItems = items;
+                renderItems(items);
+              })
+              .catch(function (error) {
+                if (error.name === 'AbortError') {
+                  return;
+                }
+                console.warn('Typeahead request failed', error);
+                currentItems = [];
+                renderItems([]);
+              });
+          }, 200);
+
+          input.addEventListener('input', function () {
+            clearSelection(false);
+            if (input.value.trim().length < minLength) {
+              hideDropdown();
+              if (input.value.trim().length === 0) {
+                clearSelection(true);
+              }
+              return;
+            }
+
+            fetchResults(input.value.trim());
+          });
+
+          input.addEventListener('focus', function () {
+            if (input.value.trim().length >= minLength) {
+              fetchResults(input.value.trim());
+            }
+          });
+
+          input.addEventListener('keydown', function (event) {
+            if (!dropdown.classList.contains('show')) {
+              return;
+            }
+
+            if (event.key === 'ArrowDown') {
+              event.preventDefault();
+              if (!currentItems.length) {
+                return;
+              }
+              var nextIndex = activeIndex + 1;
+              if (nextIndex >= currentItems.length) {
+                nextIndex = 0;
+              }
+              setActive(nextIndex);
+            } else if (event.key === 'ArrowUp') {
+              event.preventDefault();
+              if (!currentItems.length) {
+                return;
+              }
+              var prevIndex = activeIndex - 1;
+              if (prevIndex < 0) {
+                prevIndex = currentItems.length - 1;
+              }
+              setActive(prevIndex);
+            } else if (event.key === 'Enter') {
+              if (activeIndex >= 0 && currentItems[activeIndex]) {
+                event.preventDefault();
+                selectItem(activeIndex);
+              }
+            } else if (event.key === 'Escape') {
+              hideDropdown();
+            }
+          });
+
+          input.addEventListener('blur', function () {
+            setTimeout(hideDropdown, 150);
+          });
+
+          dropdown.addEventListener('mousedown', function (event) {
+            event.preventDefault();
+          });
+
+          document.addEventListener('click', function (event) {
+            if (!container.contains(event.target)) {
+              hideDropdown();
+            }
+          });
+
+          return {
+            setValue: function (label, id, address) {
+              hiddenInput.value = id != null && id !== '' ? String(id) : '';
+              input.value = label || '';
+              if (address) {
+                input.title = address;
+              } else {
+                input.removeAttribute('title');
+              }
+            },
+            clear: function () {
+              clearSelection(true);
+              input.value = '';
+            }
+          };
+        }
+
+        collapseNavbarOnClick('#primaryNav .nav-link');
+        collapseNavbarOnClick('.quick-action-menu a');
+
+        var companyContainer = document.querySelector('[data-typeahead="company"]');
+        var companyTypeahead = setupTypeahead(companyContainer, {});
+
+        var guestContainer = document.querySelector('[data-typeahead="guest"]');
+        setupTypeahead(guestContainer, {
+          onSelect: function (item) {
+            if (item && item.company && companyTypeahead) {
+              companyTypeahead.setValue(item.company.label || '', item.company.id || '', item.company.address || '');
+            }
+          },
+          onClear: function () {
+            if (!companyContainer || !companyTypeahead) {
+              return;
+            }
+
+            var hidden = companyContainer.querySelector('input[type="hidden"]');
+            var input = companyContainer.querySelector('.typeahead-input');
+            if (hidden && hidden.value === '' && input) {
+              input.value = '';
+              input.removeAttribute('title');
+            }
+          }
+        });
+
+        setupReservationCategoryRepeater();
+      })();
+    </script>
+  </body>
+</html>
