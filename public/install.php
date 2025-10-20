@@ -176,7 +176,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->exec('CREATE TABLE IF NOT EXISTS reservations (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     guest_id INT UNSIGNED NOT NULL,
-                    room_id INT UNSIGNED NOT NULL,
+                    room_id INT UNSIGNED NULL,
+                    category_id INT UNSIGNED NOT NULL,
+                    room_quantity INT UNSIGNED NOT NULL DEFAULT 1,
                     company_id INT UNSIGNED NULL,
                     arrival_date DATE NOT NULL,
                     departure_date DATE NOT NULL,
@@ -187,13 +189,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     CONSTRAINT fk_reservations_guest FOREIGN KEY (guest_id) REFERENCES guests(id) ON DELETE CASCADE,
-                    CONSTRAINT fk_reservations_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_reservations_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_reservations_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE RESTRICT,
                     CONSTRAINT fk_reservations_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
                     CONSTRAINT fk_reservations_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
                     CONSTRAINT fk_reservations_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
                     INDEX idx_reservations_arrival (arrival_date),
                     INDEX idx_reservations_guest (guest_id),
-                    INDEX idx_reservations_room (room_id)
+                    INDEX idx_reservations_room (room_id),
+                    INDEX idx_reservations_category (category_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
                 $seedCategory = $pdo->query('SELECT COUNT(*) AS total FROM room_categories')->fetchColumn();
@@ -212,9 +216,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 $sampleRoomId = null;
-                $existingOccupiedRoom = $pdo->query('SELECT id FROM rooms WHERE status = "belegt" ORDER BY id ASC LIMIT 1')->fetchColumn();
-                if ($existingOccupiedRoom !== false) {
-                    $sampleRoomId = (int) $existingOccupiedRoom;
+                $sampleCategoryId = null;
+                $existingOccupiedRoom = $pdo->query('SELECT id, category_id FROM rooms WHERE status = "belegt" ORDER BY id ASC LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+                if (is_array($existingOccupiedRoom) && isset($existingOccupiedRoom['id'])) {
+                    $sampleRoomId = (int) $existingOccupiedRoom['id'];
+                    if (isset($existingOccupiedRoom['category_id'])) {
+                        $sampleCategoryId = (int) $existingOccupiedRoom['category_id'];
+                    }
+                }
+
+                if ($sampleCategoryId === null) {
+                    $existingCategoryId = $pdo->query('SELECT id FROM room_categories ORDER BY id ASC LIMIT 1')->fetchColumn();
+                    if ($existingCategoryId !== false) {
+                        $sampleCategoryId = (int) $existingCategoryId;
+                    }
                 }
 
                 $sampleCompanyId = null;
@@ -295,15 +310,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (
             (int) $reservationExists === 0
             && $sampleGuestId !== null
-            && $sampleRoomId !== null
+            && $sampleCategoryId !== null
         ) {
             $arrival = (new DateTimeImmutable('today'))->format('Y-m-d');
             $departure = (new DateTimeImmutable('+3 days'))->format('Y-m-d');
 
-            $stmt = $pdo->prepare('INSERT INTO reservations (guest_id, room_id, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+            $stmt = $pdo->prepare('INSERT INTO reservations (guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
             $stmt->execute([
                 $sampleGuestId,
                 $sampleRoomId,
+                $sampleCategoryId,
+                1,
                 $sampleCompanyId,
                 $arrival,
                 $departure,
@@ -319,6 +336,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $departure,
                 $sampleRoomId,
                 $sampleGuestId,
+            ]);
+
+            $overbookingArrival = (new DateTimeImmutable('+5 days'))->format('Y-m-d');
+            $overbookingDeparture = (new DateTimeImmutable('+8 days'))->format('Y-m-d');
+
+            $overbookingInsert = $pdo->prepare('INSERT INTO reservations (guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+            $overbookingInsert->execute([
+                $sampleGuestId,
+                $sampleCategoryId,
+                2,
+                $sampleCompanyId,
+                $overbookingArrival,
+                $overbookingDeparture,
+                'geplant',
+                'Reservierung ohne Zimmerzuweisung für Demonstrationszwecke.',
+                $sampleAdminId,
+                $sampleAdminId,
             ]);
         }
 

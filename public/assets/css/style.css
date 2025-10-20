@@ -183,6 +183,16 @@ body {
     padding-left: 1.5rem;
 }
 
+.room-calendar .room-label-overbooking {
+    padding-left: 1.5rem;
+    background-color: #fef9c3;
+    border-left: 4px solid #f59e0b;
+}
+
+.room-calendar .overbooking-row td {
+    background-color: #fff7ed;
+}
+
 .room-calendar .room-empty-row td {
     background-color: #fff;
 }
@@ -216,6 +226,25 @@ body {
 .room-calendar-cell.occupied {
     background-color: #1d4ed8;
     color: #fff;
+}
+
+.room-calendar-cell.overbooking {
+    background-color: #fef3c7;
+    color: #7c2d12;
+}
+
+.room-calendar-cell.overbooking.today {
+    border-color: #f97316;
+}
+
+.room-calendar-cell.overbooking .occupancy-entry {
+    color: inherit;
+}
+
+.room-calendar-cell.overbooking.overbooking-empty {
+    background-color: #fff7ed;
+    color: #a16207;
+    font-style: italic;
 }
 
 .room-calendar-cell.occupied.today {
