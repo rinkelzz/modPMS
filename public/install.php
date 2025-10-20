@@ -173,6 +173,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_guests_room (room_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS reservations (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    guest_id INT UNSIGNED NOT NULL,
+                    room_id INT UNSIGNED NOT NULL,
+                    company_id INT UNSIGNED NULL,
+                    arrival_date DATE NOT NULL,
+                    departure_date DATE NOT NULL,
+                    status ENUM("geplant", "eingecheckt", "abgereist", "storniert") NOT NULL DEFAULT "geplant",
+                    notes TEXT NULL,
+                    created_by INT UNSIGNED NULL,
+                    updated_by INT UNSIGNED NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_reservations_guest FOREIGN KEY (guest_id) REFERENCES guests(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_reservations_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_reservations_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_reservations_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_reservations_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+                    INDEX idx_reservations_arrival (arrival_date),
+                    INDEX idx_reservations_guest (guest_id),
+                    INDEX idx_reservations_room (room_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $seedCategory = $pdo->query('SELECT COUNT(*) AS total FROM room_categories')->fetchColumn();
                 if ((int) $seedCategory === 0) {
                     $stmt = $pdo->prepare('INSERT INTO room_categories (name, description, capacity, status) VALUES (?, ?, ?, ?)');
@@ -213,46 +236,91 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     $existingCompanyId = $pdo->query('SELECT id FROM companies ORDER BY id ASC LIMIT 1')->fetchColumn();
                     if ($existingCompanyId !== false) {
-                        $sampleCompanyId = (int) $existingCompanyId;
-                    }
-                }
+                $sampleCompanyId = (int) $existingCompanyId;
+            }
+        }
 
-                $adminExists = $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
-                if ((int) $adminExists === 0) {
-                    $stmt = $pdo->prepare('INSERT INTO users (name, email, role, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())');
-                    $stmt->execute([
-                        $adminName,
-                        $adminEmail,
-                        'admin',
-                        password_hash($adminPassword, PASSWORD_DEFAULT),
-                    ]);
-                }
+        $sampleAdminId = null;
+        $adminExists = $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+        if ((int) $adminExists === 0) {
+            $stmt = $pdo->prepare('INSERT INTO users (name, email, role, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())');
+            $stmt->execute([
+                $adminName,
+                $adminEmail,
+                'admin',
+                password_hash($adminPassword, PASSWORD_DEFAULT),
+            ]);
+            $sampleAdminId = (int) $pdo->lastInsertId();
+        } else {
+            $existingAdminId = $pdo->query('SELECT id FROM users ORDER BY id ASC LIMIT 1')->fetchColumn();
+            if ($existingAdminId !== false) {
+                $sampleAdminId = (int) $existingAdminId;
+            }
+        }
 
-                $guestExists = $pdo->query('SELECT COUNT(*) FROM guests')->fetchColumn();
-                if ((int) $guestExists === 0) {
-                    $stmt = $pdo->prepare('INSERT INTO guests (salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, company_id, room_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
-                    $stmt->execute([
-                        'Herr',
-                        'Max',
-                        'Mustermann',
-                        '1985-04-12',
-                        'Deutschland',
-                        'Personalausweis',
-                        'D1234567',
-                        'Musterstraße 1',
-                        '10115',
-                        'Berlin',
-                        'Deutschland',
-                        'max.mustermann@example.com',
-                        '+49 30 1234567',
-                        (new DateTimeImmutable('today'))->format('Y-m-d'),
-                        (new DateTimeImmutable('+3 days'))->format('Y-m-d'),
-                        'geschäftlich',
-                        'Beispielgast für den Einstieg.',
-                        $sampleCompanyId !== null ? $sampleCompanyId : null,
-                        $sampleRoomId !== null ? $sampleRoomId : null,
-                    ]);
-                }
+        $sampleGuestId = null;
+        $guestExists = $pdo->query('SELECT COUNT(*) FROM guests')->fetchColumn();
+        if ((int) $guestExists === 0) {
+            $stmt = $pdo->prepare('INSERT INTO guests (salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, company_id, room_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+            $stmt->execute([
+                'Herr',
+                'Max',
+                'Mustermann',
+                '1985-04-12',
+                'Deutschland',
+                'Personalausweis',
+                'D1234567',
+                'Musterstraße 1',
+                '10115',
+                'Berlin',
+                'Deutschland',
+                'max.mustermann@example.com',
+                '+49 30 1234567',
+                null,
+                null,
+                'geschäftlich',
+                'Beispielgast für den Einstieg.',
+                $sampleCompanyId !== null ? $sampleCompanyId : null,
+                $sampleRoomId !== null ? $sampleRoomId : null,
+            ]);
+            $sampleGuestId = (int) $pdo->lastInsertId();
+        } else {
+            $existingGuestId = $pdo->query('SELECT id FROM guests ORDER BY id ASC LIMIT 1')->fetchColumn();
+            if ($existingGuestId !== false) {
+                $sampleGuestId = (int) $existingGuestId;
+            }
+        }
+
+        $reservationExists = $pdo->query('SELECT COUNT(*) FROM reservations')->fetchColumn();
+        if (
+            (int) $reservationExists === 0
+            && $sampleGuestId !== null
+            && $sampleRoomId !== null
+        ) {
+            $arrival = (new DateTimeImmutable('today'))->format('Y-m-d');
+            $departure = (new DateTimeImmutable('+3 days'))->format('Y-m-d');
+
+            $stmt = $pdo->prepare('INSERT INTO reservations (guest_id, room_id, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+            $stmt->execute([
+                $sampleGuestId,
+                $sampleRoomId,
+                $sampleCompanyId,
+                $arrival,
+                $departure,
+                'geplant',
+                'Beispielreservierung für den Kalender.',
+                $sampleAdminId,
+                $sampleAdminId,
+            ]);
+
+            $guestUpdate = $pdo->prepare('UPDATE guests SET arrival_date = ?, departure_date = ?, room_id = ?, updated_at = NOW() WHERE id = ?');
+            $guestUpdate->execute([
+                $arrival,
+                $departure,
+                $sampleRoomId,
+                $sampleGuestId,
+            ]);
+        }
 
                 $databaseConfig = [
                     'driver' => 'mysql',

@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.4.1',
+    'version' => '1.5.0',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',
@@ -11,6 +11,10 @@ return [
         'dashboard' => [
             'title' => 'Dashboard',
             'description' => 'Übersicht mit Kalender und Schnellstatistiken.'
+        ],
+        'reservations' => [
+            'title' => 'Reservierungen',
+            'description' => 'Aufenthalte verwalten und Historien nachvollziehen.'
         ],
         'guests' => [
             'title' => 'Gästeverwaltung',
