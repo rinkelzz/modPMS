@@ -29,6 +29,7 @@ if (!isset($_SESSION['user_id'])) {
 
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
+$currentUserRole = $_SESSION['user_role'] ?? 'mitarbeiter';
 
 try {
     $updateToken = bin2hex(random_bytes(32));
@@ -1295,6 +1296,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_create':
         case 'user_update':
+            if ($currentUserRole !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie sind nicht berechtigt, Benutzer zu verwalten.',
+                ];
+                break;
+            }
+
             $activeSection = 'users';
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
@@ -1423,6 +1432,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             exit;
 
         case 'user_delete':
+            if ($currentUserRole !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie sind nicht berechtigt, Benutzer zu verwalten.',
+                ];
+                break;
+            }
+
             $activeSection = 'users';
             $userId = (int) ($_POST['id'] ?? 0);
 
