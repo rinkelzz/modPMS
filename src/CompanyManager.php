@@ -24,6 +24,46 @@ class CompanyManager
     }
 
     /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function search(string $term, int $limit = 15): array
+    {
+        $term = trim($term);
+        if ($term === '') {
+            return [];
+        }
+
+        $limit = max(1, min($limit, 50));
+
+        $sql = <<<SQL
+SELECT
+    id,
+    name,
+    address_street,
+    address_postal_code,
+    address_city,
+    address_country,
+    email,
+    phone
+FROM companies
+WHERE
+    name LIKE :term
+    OR email LIKE :term
+    OR phone LIKE :term
+ORDER BY name ASC
+LIMIT :limit
+SQL;
+
+        $stmt = $this->pdo->prepare($sql);
+        $likeTerm = sprintf('%%%s%%', $term);
+        $stmt->bindValue(':term', $likeTerm);
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return $stmt->fetchAll();
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function find(int $id): ?array

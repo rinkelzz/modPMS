@@ -38,17 +38,6 @@ try {
 
 $_SESSION['update_token'] = $updateToken;
 
-$adminCsrfToken = $_SESSION['admin_csrf_token'] ?? null;
-if (!is_string($adminCsrfToken) || $adminCsrfToken === '') {
-    try {
-        $adminCsrfToken = bin2hex(random_bytes(32));
-    } catch (Throwable $exception) {
-        $adminCsrfToken = bin2hex(hash('sha256', uniqid('', true), true));
-    }
-
-    $_SESSION['admin_csrf_token'] = $adminCsrfToken;
-}
-
 $alert = null;
 if (isset($_SESSION['alert'])) {
     $alert = $_SESSION['alert'];
@@ -102,7 +91,9 @@ $guestFormData = [
 $reservationFormData = [
     'id' => null,
     'guest_id' => '',
+    'guest_query' => '',
     'company_id' => '',
+    'company_query' => '',
     'room_id' => '',
     'arrival_date' => '',
     'departure_date' => '',
@@ -190,6 +181,7 @@ $calendarCategoryGroups = [];
 $guests = [];
 $companies = [];
 $companyGuestCounts = [];
+$companyLookup = [];
 $users = [];
 $reservations = [];
 $roomLookup = [];
@@ -205,6 +197,8 @@ $reservationManager = null;
 $reservationSearchTerm = isset($_GET['reservation_search']) ? trim((string) $_GET['reservation_search']) : '';
 $reservationStatuses = ['geplant', 'eingecheckt', 'abgereist', 'storniert'];
 $reservationUserLookup = [];
+$reservationGuestTooltip = '';
+$reservationCompanyTooltip = '';
 
 try {
     $pdo = Database::getConnection();
@@ -271,60 +265,149 @@ $buildGuestCalendarLabel = static function (array $guest): string {
     return $firstName !== '' ? $firstName : 'Gast';
 };
 
-if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form'])) {
-    $form = $_POST['form'];
-    $submittedToken = isset($_POST['csrf_token']) ? (string) $_POST['csrf_token'] : '';
-    $sessionToken = isset($_SESSION['admin_csrf_token']) ? (string) $_SESSION['admin_csrf_token'] : '';
-    $csrfIsValid = $submittedToken !== '' && $sessionToken !== '' && hash_equals($sessionToken, $submittedToken);
+$buildGuestReservationLabel = static function (array $guest): string {
+    $companyName = isset($guest['company_name']) ? trim((string) $guest['company_name']) : '';
+    $lastName = isset($guest['last_name']) ? trim((string) $guest['last_name']) : '';
+    $firstName = isset($guest['first_name']) ? trim((string) $guest['first_name']) : '';
 
-    try {
-        $adminCsrfToken = bin2hex(random_bytes(32));
-    } catch (Throwable $exception) {
-        $adminCsrfToken = bin2hex(hash('sha256', uniqid('', true), true));
+    $nameParts = array_filter([$firstName, $lastName], static fn ($value) => $value !== '');
+    $fullName = implode(' ', $nameParts);
+
+    if ($companyName !== '' && $fullName !== '') {
+        return sprintf('%s – %s', $companyName, $fullName);
     }
 
-    $_SESSION['admin_csrf_token'] = $adminCsrfToken;
+    if ($companyName !== '') {
+        return $companyName;
+    }
 
-    if (!$csrfIsValid) {
-        $alert = [
-            'type' => 'danger',
-            'message' => 'Die Formularübermittlung ist abgelaufen oder ungültig. Bitte laden Sie die Seite neu und versuchen Sie es erneut.',
-        ];
+    if ($fullName !== '') {
+        return $fullName;
+    }
 
-        switch ($form) {
-            case 'reservation_create':
-            case 'reservation_update':
-            case 'reservation_delete':
-                $activeSection = 'reservations';
-                break;
-            case 'category_create':
-            case 'category_update':
-            case 'category_delete':
-                $activeSection = 'categories';
-                break;
-            case 'room_create':
-            case 'room_update':
-            case 'room_delete':
-                $activeSection = 'rooms';
-                break;
-            case 'guest_create':
-            case 'guest_update':
-            case 'guest_delete':
-                $activeSection = 'guests';
-                break;
-            case 'company_create':
-            case 'company_update':
-            case 'company_delete':
-                $activeSection = 'guests';
-                break;
-            case 'user_create':
-            case 'user_update':
-            case 'user_delete':
-                $activeSection = 'users';
-                break;
+    if (isset($guest['id'])) {
+        return 'Gast #' . (int) $guest['id'];
+    }
+
+    return 'Gast';
+};
+
+$buildAddressLabel = static function (array $record): string {
+    $street = isset($record['address_street']) ? trim((string) $record['address_street']) : '';
+    $postal = isset($record['address_postal_code']) ? trim((string) $record['address_postal_code']) : '';
+    $city = isset($record['address_city']) ? trim((string) $record['address_city']) : '';
+    $country = isset($record['address_country']) ? trim((string) $record['address_country']) : '';
+
+    $parts = [];
+    if ($street !== '') {
+        $parts[] = $street;
+    }
+
+    $cityLineParts = array_filter([$postal, $city], static fn ($value) => $value !== '');
+    if ($cityLineParts !== []) {
+        $parts[] = implode(' ', $cityLineParts);
+    }
+
+    if ($country !== '') {
+        $parts[] = $country;
+    }
+
+    return $parts !== [] ? implode(', ', $parts) : '';
+};
+
+$buildCompanyReservationLabel = static function (array $company): string {
+    $name = '';
+    if (isset($company['name'])) {
+        $name = trim((string) $company['name']);
+    } elseif (isset($company['company_name'])) {
+        $name = trim((string) $company['company_name']);
+    }
+
+    if ($name !== '') {
+        return $name;
+    }
+
+    if (isset($company['id'])) {
+        return 'Firma #' . (int) $company['id'];
+    }
+
+    return 'Firma';
+};
+
+if ($pdo !== null && isset($_GET['ajax'])) {
+    $ajaxAction = (string) $_GET['ajax'];
+    $term = isset($_GET['term']) ? trim((string) $_GET['term']) : '';
+    $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 20;
+
+    header('Content-Type: application/json; charset=utf-8');
+
+    try {
+        if ($ajaxAction === 'guest_search' && $guestManager instanceof GuestManager) {
+            $results = [];
+            foreach ($guestManager->search($term, $limit) as $guest) {
+                $guest['company_name'] = $guest['company_name'] ?? '';
+                $label = $buildGuestReservationLabel($guest);
+                $address = $buildAddressLabel($guest);
+
+                $company = null;
+                if (!empty($guest['company_id'])) {
+                    $company = [
+                        'id' => (int) $guest['company_id'],
+                        'label' => $buildCompanyReservationLabel([
+                            'id' => $guest['company_id'],
+                            'name' => $guest['company_name'] ?? '',
+                        ]),
+                        'address' => $buildAddressLabel([
+                            'address_street' => $guest['company_address_street'] ?? '',
+                            'address_postal_code' => $guest['company_address_postal_code'] ?? '',
+                            'address_city' => $guest['company_address_city'] ?? '',
+                            'address_country' => $guest['company_address_country'] ?? '',
+                        ]),
+                    ];
+                }
+
+                $results[] = [
+                    'id' => (int) $guest['id'],
+                    'label' => $label,
+                    'address' => $address,
+                    'company' => $company,
+                ];
+            }
+
+            echo json_encode(['items' => $results], JSON_THROW_ON_ERROR);
+            exit;
         }
-    } else {
-        switch ($form) {
+
+        if ($ajaxAction === 'company_search' && $companyManager instanceof CompanyManager) {
+            $results = [];
+            foreach ($companyManager->search($term, $limit) as $company) {
+                $results[] = [
+                    'id' => (int) $company['id'],
+                    'label' => $buildCompanyReservationLabel($company),
+                    'address' => $buildAddressLabel($company),
+                ];
+            }
+
+            echo json_encode(['items' => $results], JSON_THROW_ON_ERROR);
+            exit;
+        }
+    } catch (Throwable $exception) {
+        http_response_code(500);
+        echo json_encode([
+            'items' => [],
+            'error' => $exception->getMessage(),
+        ]);
+        exit;
+    }
+
+    echo json_encode(['items' => []]);
+    exit;
+}
+
+if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form'])) {
+    $form = $_POST['form'];
+
+    switch ($form) {
         case 'category_create':
         case 'category_update':
             $activeSection = 'categories';
@@ -943,8 +1026,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             $guestIdInput = trim((string) ($_POST['guest_id'] ?? ''));
+            $guestQueryInput = trim((string) ($_POST['guest_query'] ?? ''));
             $roomIdInput = trim((string) ($_POST['room_id'] ?? ''));
             $companyIdInput = trim((string) ($_POST['company_id'] ?? ''));
+            $companyQueryInput = trim((string) ($_POST['company_query'] ?? ''));
             $arrivalInput = trim((string) ($_POST['arrival_date'] ?? ''));
             $departureInput = trim((string) ($_POST['departure_date'] ?? ''));
             $statusInput = $_POST['status'] ?? 'geplant';
@@ -955,7 +1040,9 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $reservationFormData = [
                 'id' => $form === 'reservation_update' ? (int) ($_POST['id'] ?? 0) : null,
                 'guest_id' => $guestIdInput,
+                'guest_query' => $guestQueryInput,
                 'company_id' => $companyIdInput,
+                'company_query' => $companyQueryInput,
                 'room_id' => $roomIdInput,
                 'arrival_date' => $arrivalInput,
                 'departure_date' => $departureInput,
@@ -1209,6 +1296,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
+            if (($_SESSION['user_role'] ?? '') !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen, um Benutzer zu verwalten.',
+                ];
+                break;
+            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -1337,6 +1431,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
+            if (($_SESSION['user_role'] ?? '') !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen, um Benutzer zu verwalten.',
+                ];
+                break;
+            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
@@ -1373,7 +1474,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             header('Location: index.php?section=users');
             exit;
-        }
     }
 } elseif ($pdo === null && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $alert = [
@@ -1427,6 +1527,44 @@ if ($pdo !== null) {
                 $companyGuestCounts[$companyId] = 0;
             }
             $companyGuestCounts[$companyId]++;
+        }
+    }
+
+    if ($reservationFormData['guest_query'] === '' && $reservationFormData['guest_id'] !== '') {
+        $reservationGuestId = (int) $reservationFormData['guest_id'];
+        if ($reservationGuestId > 0 && isset($guestLookup[$reservationGuestId])) {
+            $reservationFormData['guest_query'] = $buildGuestReservationLabel($guestLookup[$reservationGuestId]);
+        }
+    }
+
+    foreach ($companies as $company) {
+        if (!isset($company['id'])) {
+            continue;
+        }
+
+        $companyLookup[(int) $company['id']] = $company;
+    }
+
+    if ($reservationFormData['company_query'] === '' && $reservationFormData['company_id'] !== '') {
+        $reservationCompanyId = (int) $reservationFormData['company_id'];
+        if ($reservationCompanyId > 0 && isset($companyLookup[$reservationCompanyId])) {
+            $reservationFormData['company_query'] = $buildCompanyReservationLabel($companyLookup[$reservationCompanyId]);
+        }
+    }
+
+    $reservationGuestTooltip = '';
+    if ($reservationFormData['guest_id'] !== '') {
+        $reservationGuestId = (int) $reservationFormData['guest_id'];
+        if ($reservationGuestId > 0 && isset($guestLookup[$reservationGuestId])) {
+            $reservationGuestTooltip = $buildAddressLabel($guestLookup[$reservationGuestId]);
+        }
+    }
+
+    $reservationCompanyTooltip = '';
+    if ($reservationFormData['company_id'] !== '') {
+        $reservationCompanyId = (int) $reservationFormData['company_id'];
+        if ($reservationCompanyId > 0 && isset($companyLookup[$reservationCompanyId])) {
+            $reservationCompanyTooltip = $buildAddressLabel($companyLookup[$reservationCompanyId]);
         }
     }
 
@@ -1681,7 +1819,17 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
             $reservationFormData = [
                 'id' => (int) $reservationToEdit['id'],
                 'guest_id' => (string) $reservationToEdit['guest_id'],
+                'guest_query' => $buildGuestReservationLabel([
+                    'id' => $reservationToEdit['guest_id'],
+                    'first_name' => $reservationToEdit['guest_first_name'] ?? '',
+                    'last_name' => $reservationToEdit['guest_last_name'] ?? '',
+                    'company_name' => $reservationToEdit['company_name'] ?? '',
+                ]),
                 'company_id' => isset($reservationToEdit['company_id']) && $reservationToEdit['company_id'] !== null ? (string) $reservationToEdit['company_id'] : '',
+                'company_query' => isset($reservationToEdit['company_id'], $reservationToEdit['company_name']) && $reservationToEdit['company_name'] !== null ? $buildCompanyReservationLabel([
+                    'id' => $reservationToEdit['company_id'],
+                    'name' => $reservationToEdit['company_name'],
+                ]) : '',
                 'room_id' => (string) $reservationToEdit['room_id'],
                 'arrival_date' => $reservationToEdit['arrival_date'],
                 'departure_date' => $reservationToEdit['departure_date'],
@@ -1965,53 +2113,49 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <input type="hidden" name="form" value="<?= $isReservationEditing ? 'reservation_update' : 'reservation_create' ?>">
                   <?php if ($isReservationEditing): ?>
                     <input type="hidden" name="id" value="<?= (int) $reservationFormData['id'] ?>">
                   <?php endif; ?>
                   <div class="col-12">
-                    <label for="reservation-guest" class="form-label">Gast *</label>
-                    <select class="form-select" id="reservation-guest" name="guest_id" required <?= $pdo === null ? 'disabled' : '' ?>>
-                      <option value="">Bitte auswählen</option>
-                      <?php foreach ($guests as $guest): ?>
-                        <?php
-                          if (!isset($guest['id'])) {
-                              continue;
-                          }
-                          $guestId = (int) $guest['id'];
-                          $guestFirst = trim((string) ($guest['first_name'] ?? ''));
-                          $guestLast = trim((string) ($guest['last_name'] ?? ''));
-                          $guestLabelParts = [];
-                          if ($guestLast !== '') {
-                              $guestLabelParts[] = $guestLast;
-                          }
-                          if ($guestFirst !== '') {
-                              $guestLabelParts[] = $guestFirst;
-                          }
-                          $guestLabel = trim(implode(', ', $guestLabelParts));
-                          if ($guestLabel === '') {
-                              $guestLabel = 'Gast #' . $guestId;
-                          }
-                          $guestCompany = isset($guest['company_name']) ? trim((string) $guest['company_name']) : '';
-                          if ($guestCompany !== '') {
-                              $guestLabel .= ' · ' . $guestCompany;
-                          }
-                        ?>
-                        <option value="<?= $guestId ?>" <?= (string) $reservationFormData['guest_id'] === (string) $guestId ? 'selected' : '' ?>><?= htmlspecialchars($guestLabel) ?></option>
-                      <?php endforeach; ?>
-                    </select>
+                    <label for="reservation-guest-query" class="form-label">Gast *</label>
+                    <div class="typeahead position-relative" data-typeahead="guest" data-endpoint="index.php?ajax=guest_search">
+                      <input type="hidden" name="guest_id" id="reservation-guest-id" value="<?= htmlspecialchars((string) $reservationFormData['guest_id']) ?>">
+                      <input
+                        type="search"
+                        class="form-control typeahead-input"
+                        id="reservation-guest-query"
+                        name="guest_query"
+                        placeholder="z. B. Mustermann oder Musterfirma"
+                        value="<?= htmlspecialchars((string) $reservationFormData['guest_query']) ?>"
+                        autocomplete="off"
+                        data-minlength="2"
+                        <?= $pdo === null ? 'disabled' : 'required' ?>
+                        <?= $reservationGuestTooltip !== '' ? 'title="' . htmlspecialchars($reservationGuestTooltip) . '"' : '' ?>
+                      >
+                      <div class="typeahead-dropdown list-group shadow-sm" role="listbox" aria-label="Gastvorschläge"></div>
+                    </div>
                     <div class="form-text">Neuer Gast? Über das Plus-Menü in der Navigation anlegen.</div>
                   </div>
                   <div class="col-12">
-                    <label for="reservation-company" class="form-label">Firma</label>
-                    <select class="form-select" id="reservation-company" name="company_id" <?= $pdo === null ? 'disabled' : '' ?>>
-                      <option value="">Keine Zuordnung</option>
-                      <?php foreach ($companies as $company): ?>
-                        <?php if (!isset($company['id'])) { continue; } ?>
-                        <option value="<?= (int) $company['id'] ?>" <?= (string) $reservationFormData['company_id'] === (string) $company['id'] ? 'selected' : '' ?>><?= htmlspecialchars((string) $company['name']) ?></option>
-                      <?php endforeach; ?>
-                    </select>
+                    <label for="reservation-company-query" class="form-label">Firma</label>
+                    <div class="typeahead position-relative" data-typeahead="company" data-endpoint="index.php?ajax=company_search">
+                      <input type="hidden" name="company_id" id="reservation-company-id" value="<?= htmlspecialchars((string) $reservationFormData['company_id']) ?>">
+                      <input
+                        type="search"
+                        class="form-control typeahead-input"
+                        id="reservation-company-query"
+                        name="company_query"
+                        placeholder="Optional: Firmenname suchen"
+                        value="<?= htmlspecialchars((string) $reservationFormData['company_query']) ?>"
+                        autocomplete="off"
+                        data-minlength="2"
+                        <?= $pdo === null ? 'disabled' : '' ?>
+                        <?= $reservationCompanyTooltip !== '' ? 'title="' . htmlspecialchars($reservationCompanyTooltip) . '"' : '' ?>
+                      >
+                      <div class="typeahead-dropdown list-group shadow-sm" role="listbox" aria-label="Firmenvorschläge"></div>
+                    </div>
+                    <div class="form-text">Optional: Firma zuordnen.</div>
                   </div>
                   <div class="col-12">
                     <label for="reservation-room" class="form-label">Zimmer *</label>
@@ -2224,7 +2368,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=reservations&amp;editReservation=<?= (int) $reservation['id'] ?>">Bearbeiten</a>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Reservierung wirklich löschen?');">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="form" value="reservation_delete">
                                   <input type="hidden" name="id" value="<?= (int) $reservation['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
@@ -2264,7 +2407,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="category-form">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <input type="hidden" name="form" value="<?= $isEditingCategory ? 'category_update' : 'category_create' ?>">
                   <?php if ($isEditingCategory): ?>
                     <input type="hidden" name="id" value="<?= (int) $categoryFormData['id'] ?>">
@@ -2328,7 +2470,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=categories&editCategory=<?= (int) $category['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Kategorie wirklich löschen?');">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="form" value="category_delete">
                                   <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -2421,7 +2562,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="guest-form">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="form" value="<?= $isEditingGuest ? 'guest_update' : 'guest_create' ?>">
                 <?php if ($isEditingGuest): ?>
                   <input type="hidden" name="id" value="<?= (int) $guestFormData['id'] ?>">
@@ -2732,7 +2872,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2 flex-wrap">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editGuest=<?= (int) $guest['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Gast wirklich löschen?');">
-                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="form" value="guest_delete">
                                 <input type="hidden" name="id" value="<?= (int) $guest['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -2771,7 +2910,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="company-form">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="form" value="<?= $isEditingCompany ? 'company_update' : 'company_create' ?>">
                 <?php if ($isEditingCompany): ?>
                   <input type="hidden" name="id" value="<?= (int) $companyFormData['id'] ?>">
@@ -2887,7 +3025,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editCompany=<?= (int) $company['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Firma wirklich löschen?');">
-                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="form" value="company_delete">
                                 <input type="hidden" name="id" value="<?= (int) $company['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm" <?= ($companyGuestCounts[$companyId] ?? 0) > 0 ? 'disabled title="Zuerst Gästezuordnungen entfernen"' : '' ?>>Löschen</button>
@@ -2929,7 +3066,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="room-form">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <input type="hidden" name="form" value="<?= $isEditingRoom ? 'room_update' : 'room_create' ?>">
                   <?php if ($isEditingRoom): ?>
                     <input type="hidden" name="id" value="<?= (int) $roomFormData['id'] ?>">
@@ -3015,7 +3151,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rooms&editRoom=<?= (int) $room['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Zimmer wirklich löschen?');">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="form" value="room_delete">
                                   <input type="hidden" name="id" value="<?= (int) $room['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -3057,7 +3192,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="user-form">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="form" value="<?= $isEditingUser ? 'user_update' : 'user_create' ?>">
                 <?php if ($isEditingUser): ?>
                   <input type="hidden" name="id" value="<?= (int) $userFormData['id'] ?>">
@@ -3133,7 +3267,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=users&editUser=<?= (int) $user['id'] ?>">Bearbeiten</a>
                               <?php if ((int) $_SESSION['user_id'] !== (int) $user['id']): ?>
                                 <form method="post" onsubmit="return confirm('Benutzer wirklich löschen?');">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="form" value="user_delete">
                                   <input type="hidden" name="id" value="<?= (int) $user['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -3164,37 +3297,317 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
     <script>
-      document.querySelectorAll('#primaryNav .nav-link').forEach(function (link) {
-        link.addEventListener('click', function () {
-          var navbarCollapse = document.getElementById('primaryNav');
-          if (!navbarCollapse || !navbarCollapse.classList.contains('show')) {
-            return;
+      (function () {
+        function collapseNavbarOnClick(selector) {
+          document.querySelectorAll(selector).forEach(function (link) {
+            link.addEventListener('click', function () {
+              var navbarCollapse = document.getElementById('primaryNav');
+              if (!navbarCollapse || !navbarCollapse.classList.contains('show')) {
+                return;
+              }
+
+              if (window.bootstrap && window.bootstrap.Collapse) {
+                var collapse = window.bootstrap.Collapse.getInstance(navbarCollapse);
+                if (collapse) {
+                  collapse.hide();
+                }
+              }
+            });
+          });
+        }
+
+        function debounce(fn, delay) {
+          var timeoutId;
+          return function () {
+            var args = arguments;
+            var context = this;
+            clearTimeout(timeoutId);
+            timeoutId = setTimeout(function () {
+              fn.apply(context, args);
+            }, delay);
+          };
+        }
+
+        function setupTypeahead(container, options) {
+          if (!container) {
+            return null;
           }
 
-          if (window.bootstrap && window.bootstrap.Collapse) {
-            var collapse = window.bootstrap.Collapse.getInstance(navbarCollapse);
-            if (collapse) {
-              collapse.hide();
+          options = options || {};
+
+          var input = container.querySelector('.typeahead-input');
+          var hiddenInput = container.querySelector('input[type="hidden"]');
+          var dropdown = container.querySelector('.typeahead-dropdown');
+          var endpoint = container.getAttribute('data-endpoint');
+
+          if (!input || !hiddenInput || !dropdown || !endpoint) {
+            return null;
+          }
+
+          var minLength = parseInt(input.getAttribute('data-minlength') || '2', 10);
+          if (Number.isNaN(minLength) || minLength < 1) {
+            minLength = 1;
+          }
+
+          var limit = parseInt(container.getAttribute('data-limit') || '20', 10);
+          if (Number.isNaN(limit) || limit < 1) {
+            limit = 20;
+          }
+
+          var currentItems = [];
+          var activeIndex = -1;
+          var abortController = null;
+
+          function setActive(index) {
+            activeIndex = index;
+            var nodes = dropdown.querySelectorAll('.typeahead-item');
+            nodes.forEach(function (node, nodeIndex) {
+              if (nodeIndex === activeIndex) {
+                node.classList.add('active');
+                node.setAttribute('aria-selected', 'true');
+              } else {
+                node.classList.remove('active');
+                node.setAttribute('aria-selected', 'false');
+              }
+            });
+          }
+
+          function hideDropdown() {
+            dropdown.classList.remove('show');
+            dropdown.innerHTML = '';
+            currentItems = [];
+            setActive(-1);
+          }
+
+          function renderItems(items) {
+            dropdown.innerHTML = '';
+            if (!items.length) {
+              var empty = document.createElement('div');
+              empty.className = 'typeahead-empty list-group-item text-muted small';
+              empty.textContent = 'Keine Treffer';
+              dropdown.appendChild(empty);
+              dropdown.classList.add('show');
+              return;
+            }
+
+            items.forEach(function (item, index) {
+              var button = document.createElement('button');
+              button.type = 'button';
+              button.className = 'list-group-item list-group-item-action typeahead-item';
+              button.setAttribute('data-index', String(index));
+              button.setAttribute('role', 'option');
+              button.setAttribute('aria-selected', 'false');
+
+              var label = document.createElement('div');
+              label.className = 'fw-semibold';
+              label.textContent = item.label || '';
+              button.appendChild(label);
+
+              if (item.address) {
+                var details = document.createElement('div');
+                details.className = 'small text-muted';
+                details.textContent = item.address;
+                button.appendChild(details);
+                button.title = item.address;
+              }
+
+              button.addEventListener('mouseenter', function () {
+                setActive(index);
+              });
+
+              button.addEventListener('click', function () {
+                selectItem(index);
+              });
+
+              dropdown.appendChild(button);
+            });
+
+            dropdown.classList.add('show');
+            setActive(-1);
+          }
+
+          function selectItem(index) {
+            var item = currentItems[index];
+            if (!item) {
+              return;
+            }
+
+            hiddenInput.value = item.id != null ? String(item.id) : '';
+            input.value = item.label || '';
+
+            if (item.address) {
+              input.title = item.address;
+            } else {
+              input.removeAttribute('title');
+            }
+
+            if (typeof options.onSelect === 'function') {
+              options.onSelect(item);
+            }
+
+            hideDropdown();
+          }
+
+          function clearSelection(triggerCallback) {
+            hiddenInput.value = '';
+            input.removeAttribute('title');
+
+            if (triggerCallback && typeof options.onClear === 'function') {
+              options.onClear();
+            }
+          }
+
+          var fetchResults = debounce(function (query) {
+            if (!endpoint || input.disabled) {
+              return;
+            }
+
+            if (abortController && typeof abortController.abort === 'function') {
+              abortController.abort();
+            }
+
+            if (window.AbortController) {
+              abortController = new AbortController();
+            } else {
+              abortController = null;
+            }
+
+            var url = endpoint + '&term=' + encodeURIComponent(query) + '&limit=' + encodeURIComponent(String(limit));
+
+            fetch(url, { signal: abortController ? abortController.signal : undefined })
+              .then(function (response) {
+                if (!response.ok) {
+                  throw new Error('Netzwerkfehler: ' + response.status);
+                }
+                return response.json();
+              })
+              .then(function (data) {
+                var items = Array.isArray(data.items) ? data.items : [];
+                currentItems = items;
+                renderItems(items);
+              })
+              .catch(function (error) {
+                if (error.name === 'AbortError') {
+                  return;
+                }
+                console.warn('Typeahead request failed', error);
+                currentItems = [];
+                renderItems([]);
+              });
+          }, 200);
+
+          input.addEventListener('input', function () {
+            clearSelection(false);
+            if (input.value.trim().length < minLength) {
+              hideDropdown();
+              if (input.value.trim().length === 0) {
+                clearSelection(true);
+              }
+              return;
+            }
+
+            fetchResults(input.value.trim());
+          });
+
+          input.addEventListener('focus', function () {
+            if (input.value.trim().length >= minLength) {
+              fetchResults(input.value.trim());
+            }
+          });
+
+          input.addEventListener('keydown', function (event) {
+            if (!dropdown.classList.contains('show')) {
+              return;
+            }
+
+            if (event.key === 'ArrowDown') {
+              event.preventDefault();
+              if (!currentItems.length) {
+                return;
+              }
+              var nextIndex = activeIndex + 1;
+              if (nextIndex >= currentItems.length) {
+                nextIndex = 0;
+              }
+              setActive(nextIndex);
+            } else if (event.key === 'ArrowUp') {
+              event.preventDefault();
+              if (!currentItems.length) {
+                return;
+              }
+              var prevIndex = activeIndex - 1;
+              if (prevIndex < 0) {
+                prevIndex = currentItems.length - 1;
+              }
+              setActive(prevIndex);
+            } else if (event.key === 'Enter') {
+              if (activeIndex >= 0 && currentItems[activeIndex]) {
+                event.preventDefault();
+                selectItem(activeIndex);
+              }
+            } else if (event.key === 'Escape') {
+              hideDropdown();
+            }
+          });
+
+          input.addEventListener('blur', function () {
+            setTimeout(hideDropdown, 150);
+          });
+
+          dropdown.addEventListener('mousedown', function (event) {
+            event.preventDefault();
+          });
+
+          document.addEventListener('click', function (event) {
+            if (!container.contains(event.target)) {
+              hideDropdown();
+            }
+          });
+
+          return {
+            setValue: function (label, id, address) {
+              hiddenInput.value = id != null && id !== '' ? String(id) : '';
+              input.value = label || '';
+              if (address) {
+                input.title = address;
+              } else {
+                input.removeAttribute('title');
+              }
+            },
+            clear: function () {
+              clearSelection(true);
+              input.value = '';
+            }
+          };
+        }
+
+        collapseNavbarOnClick('#primaryNav .nav-link');
+        collapseNavbarOnClick('.quick-action-menu a');
+
+        var companyContainer = document.querySelector('[data-typeahead="company"]');
+        var companyTypeahead = setupTypeahead(companyContainer, {});
+
+        var guestContainer = document.querySelector('[data-typeahead="guest"]');
+        setupTypeahead(guestContainer, {
+          onSelect: function (item) {
+            if (item && item.company && companyTypeahead) {
+              companyTypeahead.setValue(item.company.label || '', item.company.id || '', item.company.address || '');
+            }
+          },
+          onClear: function () {
+            if (!companyContainer || !companyTypeahead) {
+              return;
+            }
+
+            var hidden = companyContainer.querySelector('input[type="hidden"]');
+            var input = companyContainer.querySelector('.typeahead-input');
+            if (hidden && hidden.value === '' && input) {
+              input.value = '';
+              input.removeAttribute('title');
             }
           }
         });
-      });
-
-      document.querySelectorAll('.quick-action-menu a').forEach(function (link) {
-        link.addEventListener('click', function () {
-          var navbarCollapse = document.getElementById('primaryNav');
-          if (!navbarCollapse || !navbarCollapse.classList.contains('show')) {
-            return;
-          }
-
-          if (window.bootstrap && window.bootstrap.Collapse) {
-            var collapse = window.bootstrap.Collapse.getInstance(navbarCollapse);
-            if (collapse) {
-              collapse.hide();
-            }
-          }
-        });
-      });
+      })();
     </script>
   </body>
 </html>

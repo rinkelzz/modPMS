@@ -249,3 +249,37 @@ body {
     max-height: 220px;
     overflow-y: auto;
 }
+
+.typeahead {
+    position: relative;
+}
+
+.typeahead .typeahead-dropdown {
+    position: absolute;
+    top: calc(100% + 0.25rem);
+    left: 0;
+    right: 0;
+    z-index: 1055;
+    max-height: 260px;
+    overflow-y: auto;
+    display: none;
+    border-radius: 0.75rem;
+    box-shadow: 0 1rem 2rem rgba(15, 23, 42, 0.15);
+}
+
+.typeahead .typeahead-dropdown.show {
+    display: block;
+}
+
+.typeahead .typeahead-item.active {
+    background-color: #2563eb;
+    color: #fff;
+}
+
+.typeahead .typeahead-item.active .small {
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.typeahead .typeahead-empty {
+    cursor: default;
+}
