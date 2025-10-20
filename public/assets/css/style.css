@@ -129,10 +129,13 @@ body {
     overflow-x: auto;
 }
 
+
 .room-calendar {
     min-width: 900px;
     border-collapse: separate;
     border-spacing: 0;
+    --category-column-width: 220px;
+    --room-column-width: 240px;
 }
 
 .room-calendar th,
@@ -142,10 +145,19 @@ body {
     white-space: nowrap;
 }
 
-.room-calendar .room-column {
-    min-width: 220px;
+.room-calendar .category-column {
+    min-width: var(--category-column-width);
     position: sticky;
     left: 0;
+    background-color: #dbeafe;
+    box-shadow: inset -1px 0 0 #bfdbfe;
+    z-index: 3;
+}
+
+.room-calendar .room-column {
+    min-width: var(--room-column-width);
+    position: sticky;
+    left: var(--category-column-width);
     background-color: #f8fafc;
     box-shadow: inset -1px 0 0 #e2e8f0;
     z-index: 2;
@@ -155,42 +167,60 @@ body {
     text-align: left;
     background-color: #fff;
     position: sticky;
-    left: 0;
-    z-index: 1;
+    left: var(--category-column-width);
+    z-index: 2;
 }
 
-.room-calendar .category-row .category-label {
+.room-calendar .category-label {
+    position: sticky;
+    left: 0;
+    z-index: 4;
     background-color: #dbeafe;
     border-top: 2px solid #bfdbfe;
     border-bottom: 2px solid #bfdbfe;
     font-weight: 600;
 }
 
-.room-calendar .category-row .category-summary {
+.room-calendar .category-summary {
     margin-top: 0.25rem;
 }
 
-.room-calendar .category-row td {
+.room-calendar .category-cell {
     background-color: #f1f5f9;
+    text-align: left;
 }
 
-.room-calendar .category-row .category-cell {
-    background-color: #f1f5f9;
-    font-weight: 500;
+.room-calendar .category-day-metric {
+    font-size: 0.85rem;
+    margin-bottom: 0.25rem;
+}
+
+.room-calendar .category-day-metric:last-child {
+    margin-bottom: 0;
+}
+
+.room-calendar .room-label-summary {
+    background-color: #e2e8f0;
+    font-weight: 600;
 }
 
 .room-calendar .room-label-room {
-    padding-left: 1.5rem;
+    padding-left: 1.25rem;
 }
 
 .room-calendar .room-label-overbooking {
-    padding-left: 1.5rem;
+    padding-left: 1.25rem;
     background-color: #fef9c3;
     border-left: 4px solid #f59e0b;
 }
 
 .room-calendar .overbooking-row td {
     background-color: #fff7ed;
+}
+
+.room-calendar .overbooking-quantity {
+    display: inline-block;
+    margin-bottom: 0.25rem;
 }
 
 .room-calendar .room-empty-row td {
@@ -202,6 +232,10 @@ body {
     height: 60px;
     background-color: #f8fafc;
     transition: background-color 0.2s ease;
+}
+
+.room-calendar-cell.empty {
+    color: #94a3b8;
 }
 
 .room-calendar-cell:hover {
@@ -297,7 +331,26 @@ body {
 }
 
 .typeahead .typeahead-dropdown.show {
-    display: block;
+  display: block;
+}
+
+.reservation-category-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.reservation-category-item {
+  background-color: var(--bs-body-bg);
+  border-color: var(--bs-border-color);
+}
+
+.reservation-category-item .btn[disabled] {
+  cursor: not-allowed;
+}
+
+.reservation-category-item .reservation-quantity-readonly {
+  background-color: #f1f5f9;
+  pointer-events: none;
 }
 
 .typeahead .typeahead-item.active {

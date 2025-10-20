@@ -200,6 +200,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_reservations_category (category_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS reservation_items (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    reservation_id INT UNSIGNED NOT NULL,
+                    category_id INT UNSIGNED NULL,
+                    room_id INT UNSIGNED NULL,
+                    room_quantity INT UNSIGNED NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP NULL DEFAULT NULL,
+                    updated_at TIMESTAMP NULL DEFAULT NULL,
+                    CONSTRAINT fk_install_reservation_items_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_reservation_items_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_reservation_items_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL,
+                    INDEX idx_install_reservation_items_reservation (reservation_id),
+                    INDEX idx_install_reservation_items_category (category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $seedCategory = $pdo->query('SELECT COUNT(*) AS total FROM room_categories')->fetchColumn();
                 if ((int) $seedCategory === 0) {
                     $stmt = $pdo->prepare('INSERT INTO room_categories (name, description, capacity, status) VALUES (?, ?, ?, ?)');
@@ -330,6 +345,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sampleAdminId,
             ]);
 
+            $reservationId = (int) $pdo->lastInsertId();
+            if ($reservationId > 0) {
+                $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, room_quantity, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())');
+                $itemInsert->execute([
+                    $reservationId,
+                    $sampleCategoryId,
+                    $sampleRoomId,
+                    1,
+                ]);
+            }
+
             $guestUpdate = $pdo->prepare('UPDATE guests SET arrival_date = ?, departure_date = ?, room_id = ?, updated_at = NOW() WHERE id = ?');
             $guestUpdate->execute([
                 $arrival,
@@ -354,6 +380,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sampleAdminId,
                 $sampleAdminId,
             ]);
+
+            $overbookingReservationId = (int) $pdo->lastInsertId();
+            if ($overbookingReservationId > 0) {
+                $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, room_quantity, created_at, updated_at) VALUES (?, ?, NULL, ?, NOW(), NOW())');
+                $itemInsert->execute([
+                    $overbookingReservationId,
+                    $sampleCategoryId,
+                    2,
+                ]);
+            }
         }
 
                 $databaseConfig = [
