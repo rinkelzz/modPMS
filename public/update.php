@@ -14,6 +14,12 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
+if (($_SESSION['user_role'] ?? '') !== 'admin') {
+    http_response_code(403);
+    echo 'Nicht autorisiert';
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
     echo 'Methode nicht erlaubt';
@@ -58,5 +64,5 @@ $_SESSION['alert'] = [
     'message' => $result['message'],
 ];
 
-header('Location: index.php');
+header('Location: index.php?section=updates');
 exit;
