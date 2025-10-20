@@ -23,26 +23,13 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
-/**
- * @return string
- */
-$generateToken = static function (): string {
-    try {
-        return bin2hex(random_bytes(32));
-    } catch (Throwable $exception) {
-        return bin2hex(hash('sha256', uniqid('', true), true));
-    }
-};
-
-$updateToken = $generateToken();
-
-$_SESSION['update_token'] = $updateToken;
-
-if (!isset($_SESSION['form_token'])) {
-    $_SESSION['form_token'] = $generateToken();
+try {
+    $updateToken = bin2hex(random_bytes(32));
+} catch (Throwable $exception) {
+    $updateToken = bin2hex(hash('sha256', uniqid('', true), true));
 }
 
-$formToken = $_SESSION['form_token'];
+$_SESSION['update_token'] = $updateToken;
 
 $alert = null;
 if (isset($_SESSION['alert'])) {
@@ -167,24 +154,9 @@ $normalizeDateInput = static function (string $value): ?string {
 };
 
 if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form'])) {
-    $submittedToken = isset($_POST['csrf_token']) ? (string) $_POST['csrf_token'] : '';
-    $storedToken = isset($_SESSION['form_token']) ? (string) $_SESSION['form_token'] : '';
+    $form = $_POST['form'];
 
-    if ($storedToken === '' || $submittedToken === '' || !hash_equals($storedToken, $submittedToken)) {
-        $alert = [
-            'type' => 'danger',
-            'message' => 'Ihre Sitzung ist abgelaufen oder ungültig. Bitte laden Sie die Seite neu und versuchen Sie es erneut.',
-        ];
-
-        $_SESSION['form_token'] = $generateToken();
-        $formToken = $_SESSION['form_token'];
-    } else {
-        $_SESSION['form_token'] = $generateToken();
-        $formToken = $_SESSION['form_token'];
-
-        $form = $_POST['form'];
-
-        switch ($form) {
+    switch ($form) {
         case 'category_create':
         case 'category_update':
             $activeSection = 'categories';
@@ -600,14 +572,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_create':
         case 'user_update':
-            if (($_SESSION['user_role'] ?? '') !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Sie verfügen nicht über die notwendigen Berechtigungen für diese Aktion.',
-                ];
-                break;
-            }
-
             $activeSection = 'users';
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
@@ -736,14 +700,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             exit;
 
         case 'user_delete':
-            if (($_SESSION['user_role'] ?? '') !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Sie verfügen nicht über die notwendigen Berechtigungen für diese Aktion.',
-                ];
-                break;
-            }
-
             $activeSection = 'users';
             $userId = (int) ($_POST['id'] ?? 0);
 
@@ -781,7 +737,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             header('Location: index.php?section=users');
             exit;
-    }
     }
 } elseif ($pdo === null && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $alert = [
@@ -941,7 +896,8 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
         </div>
       <?php endif; ?>
 
-      <section id="dashboard" class="app-section <?= $activeSection === 'dashboard' ? 'active' : '' ?>">
+      <?php if ($activeSection === 'dashboard'): ?>
+      <section id="dashboard" class="app-section active">
         <div class="row g-4">
         <div class="col-lg-8">
           <div class="card module-card h-100">
@@ -1023,8 +979,10 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
         </div>
         </div>
       </section>
+      <?php endif; ?>
 
-      <section id="categories" class="app-section <?= $activeSection === 'categories' ? 'active' : '' ?>">
+      <?php if ($activeSection === 'categories'): ?>
+      <section id="categories" class="app-section active">
         <?php $isEditingCategory = $categoryFormData['id'] !== null; ?>
         <div class="row g-4">
           <div class="col-12 col-xxl-8">
@@ -1041,7 +999,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               <div class="card-body">
                 <form method="post" class="row g-3" id="category-form">
                   <input type="hidden" name="form" value="<?= $isEditingCategory ? 'category_update' : 'category_create' ?>">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($formToken, ENT_QUOTES, 'UTF-8') ?>">
                   <?php if ($isEditingCategory): ?>
                     <input type="hidden" name="id" value="<?= (int) $categoryFormData['id'] ?>">
                   <?php endif; ?>
@@ -1105,7 +1062,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=categories&editCategory=<?= (int) $category['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Kategorie wirklich löschen?');">
                                   <input type="hidden" name="form" value="category_delete">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($formToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                                 </form>
@@ -1127,8 +1083,10 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           </div>
         </div>
       </section>
+      <?php endif; ?>
 
-      <section id="updates" class="app-section <?= $activeSection === 'updates' ? 'active' : '' ?>">
+      <?php if ($activeSection === 'updates'): ?>
+      <section id="updates" class="app-section active">
         <div class="row g-4">
           <div class="col-12 col-lg-8 col-xl-6">
             <div class="card module-card" id="system-updates">
@@ -1174,8 +1132,10 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           </div>
         </div>
       </section>
+      <?php endif; ?>
 
-      <section id="guests" class="app-section <?= $activeSection === 'guests' ? 'active' : '' ?>">
+      <?php if ($activeSection === 'guests'): ?>
+      <section id="guests" class="app-section active">
         <div class="row g-4">
           <div class="col-12">
           <div class="card module-card" id="guest-management">
@@ -1194,7 +1154,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             <div class="card-body">
               <form method="post" class="row g-3" id="guest-form">
                 <input type="hidden" name="form" value="<?= $isEditingGuest ? 'guest_update' : 'guest_create' ?>">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($formToken, ENT_QUOTES, 'UTF-8') ?>">
                 <?php if ($isEditingGuest): ?>
                   <input type="hidden" name="id" value="<?= (int) $guestFormData['id'] ?>">
                 <?php endif; ?>
@@ -1438,7 +1397,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editGuest=<?= (int) $guest['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Gast wirklich löschen?');">
                                 <input type="hidden" name="form" value="guest_delete">
-                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($formToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="id" value="<?= (int) $guest['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                               </form>
@@ -1462,8 +1420,10 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           </div>
         </div>
       </section>
+      <?php endif; ?>
 
-      <section id="rooms" class="app-section <?= $activeSection === 'rooms' ? 'active' : '' ?>">
+      <?php if ($activeSection === 'rooms'): ?>
+      <section id="rooms" class="app-section active">
         <?php $isEditingRoom = $roomFormData['id'] !== null; ?>
         <div class="row g-4">
           <div class="col-12 col-xxl-10">
@@ -1480,7 +1440,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               <div class="card-body">
                 <form method="post" class="row g-3" id="room-form">
                   <input type="hidden" name="form" value="<?= $isEditingRoom ? 'room_update' : 'room_create' ?>">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($formToken, ENT_QUOTES, 'UTF-8') ?>">
                   <?php if ($isEditingRoom): ?>
                     <input type="hidden" name="id" value="<?= (int) $roomFormData['id'] ?>">
                   <?php endif; ?>
@@ -1566,10 +1525,9 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rooms&editRoom=<?= (int) $room['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Zimmer wirklich löschen?');">
                                   <input type="hidden" name="form" value="room_delete">
-                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($formToken, ENT_QUOTES, 'UTF-8') ?>">
-                                    <input type="hidden" name="id" value="<?= (int) $room['id'] ?>">
-                                    <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
-                                  </form>
+                                  <input type="hidden" name="id" value="<?= (int) $room['id'] ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                                </form>
                               </div>
                             </td>
                           </tr>
@@ -1588,8 +1546,10 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           </div>
         </div>
       </section>
+      <?php endif; ?>
 
-      <section id="users" class="app-section <?= $activeSection === 'users' ? 'active' : '' ?>">
+      <?php if ($activeSection === 'users'): ?>
+      <section id="users" class="app-section active">
         <div class="row g-4">
           <div class="col-12 col-xxl-8">
             <div class="card module-card" id="user-management">
@@ -1606,7 +1566,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             <div class="card-body">
               <form method="post" class="row g-3" id="user-form">
                 <input type="hidden" name="form" value="<?= $isEditingUser ? 'user_update' : 'user_create' ?>">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($formToken, ENT_QUOTES, 'UTF-8') ?>">
                 <?php if ($isEditingUser): ?>
                   <input type="hidden" name="id" value="<?= (int) $userFormData['id'] ?>">
                 <?php endif; ?>
@@ -1682,7 +1641,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <?php if ((int) $_SESSION['user_id'] !== (int) $user['id']): ?>
                                 <form method="post" onsubmit="return confirm('Benutzer wirklich löschen?');">
                                   <input type="hidden" name="form" value="user_delete">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($formToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="id" value="<?= (int) $user['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                                 </form>
@@ -1706,10 +1664,11 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           </div>
         </div>
       </section>
+      <?php endif; ?>
       </div>
     </main>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
     <script>
       document.querySelectorAll('#primaryNav .nav-link').forEach(function (link) {
         link.addEventListener('click', function () {
