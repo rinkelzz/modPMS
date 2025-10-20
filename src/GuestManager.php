@@ -55,18 +55,22 @@ SELECT
 FROM guests g
 LEFT JOIN companies c ON g.company_id = c.id
 WHERE
-    g.last_name LIKE :term
-    OR g.first_name LIKE :term
-    OR CONCAT_WS(' ', g.first_name, g.last_name) LIKE :term
-    OR CONCAT_WS(' ', g.last_name, g.first_name) LIKE :term
-    OR c.name LIKE :term
+    g.last_name LIKE :term_last
+    OR g.first_name LIKE :term_first
+    OR CONCAT_WS(' ', g.first_name, g.last_name) LIKE :term_full
+    OR CONCAT_WS(' ', g.last_name, g.first_name) LIKE :term_full_reverse
+    OR c.name LIKE :term_company
 ORDER BY c.name IS NULL ASC, c.name ASC, g.last_name ASC, g.first_name ASC
 LIMIT :limit
 SQL;
 
         $stmt = $this->pdo->prepare($sql);
         $likeTerm = sprintf('%%%s%%', $term);
-        $stmt->bindValue(':term', $likeTerm);
+        $stmt->bindValue(':term_last', $likeTerm);
+        $stmt->bindValue(':term_first', $likeTerm);
+        $stmt->bindValue(':term_full', $likeTerm);
+        $stmt->bindValue(':term_full_reverse', $likeTerm);
+        $stmt->bindValue(':term_company', $likeTerm);
         $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
         $stmt->execute();
 
