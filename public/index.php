@@ -782,6 +782,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
+
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie benötigen Administratorrechte, um Benutzerkonten zu verwalten.',
+                ];
+                break;
+            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -910,6 +918,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie benötigen Administratorrechte, um Benutzerkonten zu verwalten.',
+                ];
+                break;
+            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
