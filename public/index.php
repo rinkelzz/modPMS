@@ -77,8 +77,6 @@ $guestFormData = [
     'address_country' => '',
     'email' => '',
     'phone' => '',
-    'arrival_date' => '',
-    'departure_date' => '',
     'purpose_of_stay' => 'privat',
     'notes' => '',
     'company_id' => '',
@@ -471,8 +469,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $addressCountry = trim($_POST['address_country'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $phone = trim($_POST['phone'] ?? '');
-            $arrivalDateInput = trim((string) ($_POST['arrival_date'] ?? ''));
-            $departureDateInput = trim((string) ($_POST['departure_date'] ?? ''));
             $purposeInput = $_POST['purpose_of_stay'] ?? 'privat';
             $notes = trim($_POST['notes'] ?? '');
             $companyIdInput = trim((string) ($_POST['company_id'] ?? ''));
@@ -497,8 +493,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 'address_country' => $addressCountry,
                 'email' => $email,
                 'phone' => $phone,
-                'arrival_date' => $arrivalDateInput,
-                'departure_date' => $departureDateInput,
                 'purpose_of_stay' => $purposeInput,
                 'notes' => $notes,
                 'company_id' => $companyIdInput,
@@ -602,32 +596,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 break;
             }
 
-            $normalizedArrivalDate = $normalizeDateInput($arrivalDateInput);
-            if ($arrivalDateInput !== '' && $normalizedArrivalDate === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Das Anreisedatum konnte nicht verarbeitet werden. Bitte verwenden Sie das Format JJJJ-MM-TT.',
-                ];
-                break;
-            }
-
-            $normalizedDepartureDate = $normalizeDateInput($departureDateInput);
-            if ($departureDateInput !== '' && $normalizedDepartureDate === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Das Abreisedatum konnte nicht verarbeitet werden. Bitte verwenden Sie das Format JJJJ-MM-TT.',
-                ];
-                break;
-            }
-
-            if ($normalizedArrivalDate !== null && $normalizedDepartureDate !== null && strcmp($normalizedDepartureDate, $normalizedArrivalDate) < 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Das Abreisedatum darf nicht vor dem Anreisedatum liegen.',
-                ];
-                break;
-            }
-
             $payload = [
                 'salutation' => $salutationInput !== '' ? $salutationInput : null,
                 'first_name' => $firstName,
@@ -642,8 +610,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 'address_country' => $addressCountry !== '' ? $addressCountry : null,
                 'email' => $email !== '' ? $email : null,
                 'phone' => $phone !== '' ? $phone : null,
-                'arrival_date' => $normalizedArrivalDate,
-                'departure_date' => $normalizedDepartureDate,
                 'purpose_of_stay' => $purposeInput,
                 'notes' => $notes !== '' ? $notes : null,
                 'company_id' => $companyId,
@@ -651,7 +617,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             ];
 
             if ($form === 'guest_create') {
-                $guestManager->create($payload);
+                $guestManager->create($payload + [
+                    'arrival_date' => null,
+                    'departure_date' => null,
+                ]);
 
                 $_SESSION['alert'] = [
                     'type' => 'success',
@@ -874,6 +843,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_create':
         case 'user_update':
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen, um Benutzer zu verwalten.',
+                ];
+                break;
+            }
+
             $activeSection = 'users';
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
@@ -1002,6 +979,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             exit;
 
         case 'user_delete':
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen, um Benutzer zu verwalten.',
+                ];
+                break;
+            }
+
             $activeSection = 'users';
             $userId = (int) ($_POST['id'] ?? 0);
 
@@ -1252,8 +1237,6 @@ if ($pdo !== null && isset($_GET['editGuest']) && $guestFormData['id'] === null)
             'address_country' => $guestToEdit['address_country'] ?? '',
             'email' => $guestToEdit['email'] ?? '',
             'phone' => $guestToEdit['phone'] ?? '',
-            'arrival_date' => $guestToEdit['arrival_date'] ?? '',
-            'departure_date' => $guestToEdit['departure_date'] ?? '',
             'purpose_of_stay' => $guestToEdit['purpose_of_stay'] ?? 'privat',
             'notes' => $guestToEdit['notes'] ?? '',
             'company_id' => isset($guestToEdit['company_id']) && $guestToEdit['company_id'] !== null ? (string) $guestToEdit['company_id'] : '',
@@ -1352,6 +1335,17 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             <?php endforeach; ?>
           </ul>
           <div class="d-flex align-items-center gap-3 flex-wrap justify-content-end">
+            <div class="dropdown quick-action-dropdown">
+              <button class="btn btn-primary btn-sm quick-action-toggle" type="button" id="quickActionMenu" data-bs-toggle="dropdown" aria-expanded="false" title="Schnell erstellen">
+                <span class="quick-action-icon" aria-hidden="true">+</span>
+                <span class="visually-hidden">Schnellauswahl öffnen</span>
+              </button>
+              <ul class="dropdown-menu dropdown-menu-end quick-action-menu" aria-labelledby="quickActionMenu">
+                <li><a class="dropdown-item" href="index.php?section=dashboard#reservation-create">Neue Reservierung</a></li>
+                <li><a class="dropdown-item" href="index.php?section=guests#guest-meldeschein">Meldeschein vorbereiten</a></li>
+                <li><a class="dropdown-item" href="index.php?section=guests#guest-form">Neuen Gast anlegen</a></li>
+              </ul>
+            </div>
             <span class="badge rounded-pill text-bg-primary">Version <?= htmlspecialchars($config['version']) ?></span>
             <span class="text-muted small">Angemeldet als <?= htmlspecialchars($_SESSION['user_name'] ?? $_SESSION['user_email'] ?? 'Unbekannt') ?></span>
             <a href="logout.php" class="btn btn-outline-secondary btn-sm">Abmelden</a>
@@ -1380,7 +1374,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
       <section id="dashboard" class="app-section active">
         <div class="row g-4">
         <div class="col-lg-8">
-          <div class="card module-card h-100">
+          <div class="card module-card h-100" id="reservation-create">
             <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
               <div>
                 <h2 class="h5 mb-1">Dashboard</h2>
@@ -1697,7 +1691,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
       <section id="guests" class="app-section active">
         <div class="row g-4">
           <div class="col-12 col-xxl-8">
-          <div class="card module-card" id="guest-management">
+          <div class="card module-card" id="guest-meldeschein" data-section="guest-management">
             <?php $isEditingGuest = $guestFormData['id'] !== null; ?>
             <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
               <div>
@@ -1769,14 +1763,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <option value="<?= isset($roomOption['id']) ? (int) $roomOption['id'] : 0 ?>" <?= $guestFormData['room_id'] !== '' && isset($roomOption['id']) && (int) $guestFormData['room_id'] === (int) $roomOption['id'] ? 'selected' : '' ?>>Zimmer <?= htmlspecialchars($roomOption['number']) ?><?= isset($roomOption['category_name']) && $roomOption['category_name'] !== null ? ' · ' . htmlspecialchars($roomOption['category_name']) : '' ?></option>
                     <?php endforeach; ?>
                   </select>
-                </div>
-                <div class="col-md-6">
-                  <label for="guest-arrival" class="form-label">Anreise</label>
-                  <input type="date" class="form-control" id="guest-arrival" name="arrival_date" value="<?= htmlspecialchars((string) $guestFormData['arrival_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
-                </div>
-                <div class="col-md-6">
-                  <label for="guest-departure" class="form-label">Abreise</label>
-                  <input type="date" class="form-control" id="guest-departure" name="departure_date" value="<?= htmlspecialchars((string) $guestFormData['departure_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                  <div class="form-text">An- und Abreisedaten werden im Reservierungsmodul erfasst.</div>
                 </div>
                 <div class="col-md-6">
                   <label for="guest-document-type" class="form-label">Ausweisart</label>
@@ -1882,8 +1869,11 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                           }
 
                           $stayDetails = [];
-                          if ($arrivalLabel !== null || $departureLabel !== null) {
+                          $hasStayWindow = $arrivalLabel !== null || $departureLabel !== null;
+                          if ($hasStayWindow) {
                               $stayDetails[] = sprintf('%s – %s', $arrivalLabel !== null ? $arrivalLabel : 'offen', $departureLabel !== null ? $departureLabel : 'offen');
+                          } else {
+                              $stayDetails[] = 'Reservierungsdaten folgen';
                           }
                           $stayDetails[] = $guest['purpose_of_stay'] === 'geschäftlich' ? 'Geschäftlich' : 'Privat';
 
@@ -1936,9 +1926,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               $documentParts[] = htmlspecialchars($guest['document_number']);
                           }
 
-                          $hasMeldeschein = !empty($guest['arrival_date'])
-                              && !empty($guest['departure_date'])
-                              && !empty($guest['date_of_birth'])
+                          $hasMeldescheinCore = !empty($guest['date_of_birth'])
                               && !empty($guest['nationality'])
                               && !empty($guest['address_street'])
                               && !empty($guest['address_city'])
@@ -1946,8 +1934,19 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               && !empty($guest['document_type'])
                               && !empty($guest['document_number']);
 
-                          $meldescheinBadgeClass = $hasMeldeschein ? 'text-bg-success' : 'text-bg-warning';
-                          $meldescheinBadgeText = $hasMeldeschein ? 'bereit' : 'unvollständig';
+                          $hasMeldeschein = $hasStayWindow && $hasMeldescheinCore;
+
+                          if (!$hasStayWindow) {
+                              $meldescheinBadgeClass = 'text-bg-warning';
+                              $meldescheinBadgeText = 'wartet auf Reservierung';
+                              $meldescheinStatusMessage = 'Reservierungsdaten werden für den Meldeschein benötigt.';
+                          } else {
+                              $meldescheinBadgeClass = $hasMeldeschein ? 'text-bg-success' : 'text-bg-warning';
+                              $meldescheinBadgeText = $hasMeldeschein ? 'bereit' : 'unvollständig';
+                              $meldescheinStatusMessage = $hasMeldeschein
+                                  ? 'Alle Pflichtfelder befüllt.'
+                                  : 'Bitte fehlende Angaben ergänzen.';
+                          }
                         ?>
                         <tr>
                           <td>
@@ -2011,7 +2010,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                           </td>
                           <td>
                             <span class="badge <?= $meldescheinBadgeClass ?> text-uppercase"><?= $meldescheinBadgeText ?></span>
-                            <div class="small text-muted"><?= $hasMeldeschein ? 'Alle Pflichtfelder befüllt.' : 'Bitte fehlende Angaben ergänzen.' ?></div>
+                            <div class="small text-muted"><?= htmlspecialchars($meldescheinStatusMessage) ?></div>
                           </td>
                           <td class="text-end">
                             <div class="d-flex justify-content-end gap-2 flex-wrap">
@@ -2443,6 +2442,22 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
     <script>
       document.querySelectorAll('#primaryNav .nav-link').forEach(function (link) {
+        link.addEventListener('click', function () {
+          var navbarCollapse = document.getElementById('primaryNav');
+          if (!navbarCollapse || !navbarCollapse.classList.contains('show')) {
+            return;
+          }
+
+          if (window.bootstrap && window.bootstrap.Collapse) {
+            var collapse = window.bootstrap.Collapse.getInstance(navbarCollapse);
+            if (collapse) {
+              collapse.hide();
+            }
+          }
+        });
+      });
+
+      document.querySelectorAll('.quick-action-menu a').forEach(function (link) {
         link.addEventListener('click', function () {
           var navbarCollapse = document.getElementById('primaryNav');
           if (!navbarCollapse || !navbarCollapse.classList.contains('show')) {

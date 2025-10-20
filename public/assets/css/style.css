@@ -46,6 +46,69 @@ body {
     box-shadow: 0 0.5rem 1rem rgba(37, 99, 235, 0.2);
 }
 
+.quick-action-toggle {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 9999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.25rem;
+    font-weight: 600;
+    padding: 0;
+    box-shadow: 0 0.5rem 1rem rgba(37, 99, 235, 0.25);
+}
+
+.quick-action-toggle:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 0.25rem rgba(37, 99, 235, 0.35);
+}
+
+.quick-action-menu {
+    min-width: 230px;
+    box-shadow: 0 1rem 2rem rgba(15, 23, 42, 0.2);
+    border: 0;
+    border-radius: 0.75rem;
+    padding: 0.5rem 0;
+}
+
+.quick-action-menu .dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+}
+
+.quick-action-menu .dropdown-item:hover,
+.quick-action-menu .dropdown-item:focus {
+    background-color: #e0ebff;
+    color: #1d4ed8;
+}
+
+.quick-action-icon {
+    line-height: 1;
+}
+
+.quick-action-dropdown .dropdown-menu-end {
+    inset: auto !important;
+    margin-top: 0.75rem;
+}
+
+@media (max-width: 991.98px) {
+    .quick-action-dropdown {
+        width: 100%;
+    }
+
+    .quick-action-toggle {
+        width: 100%;
+    }
+
+    .quick-action-dropdown .dropdown-menu {
+        min-width: 100%;
+    }
+}
+
 .navbar-brand {
     font-weight: 700;
     letter-spacing: 0.03em;
