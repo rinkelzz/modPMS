@@ -3,29 +3,37 @@
 namespace ModPMS;
 
 use DateTimeImmutable;
-use IntlDateFormatter;
-
 class Calendar
 {
     private DateTimeImmutable $currentDate;
+    private bool $intlAvailable;
 
     public function __construct(?DateTimeImmutable $date = null)
     {
         $this->currentDate = $date ?? new DateTimeImmutable('first day of this month');
+        $this->intlAvailable = class_exists('IntlDateFormatter');
     }
 
     public function monthLabel(): string
     {
-        $formatter = new IntlDateFormatter(
-            'de_DE',
-            IntlDateFormatter::LONG,
-            IntlDateFormatter::NONE,
-            $this->currentDate->getTimezone()->getName(),
-            IntlDateFormatter::GREGORIAN,
-            'LLLL yyyy'
-        );
+        if ($this->intlAvailable) {
+            $formatter = new \IntlDateFormatter(
+                'de_DE',
+                \IntlDateFormatter::LONG,
+                \IntlDateFormatter::NONE,
+                $this->currentDate->getTimezone()->getName(),
+                \IntlDateFormatter::GREGORIAN,
+                'LLLL yyyy'
+            );
 
-        return $formatter->format($this->currentDate) ?: $this->currentDate->format('F Y');
+            $label = $formatter->format($this->currentDate);
+
+            if ($label !== false) {
+                return (string) $label;
+            }
+        }
+
+        return $this->currentDate->format('F Y');
     }
 
     /**
@@ -60,21 +68,26 @@ class Calendar
     {
         $days = [];
         $daysInMonth = (int) $this->currentDate->format('t');
-        $weekdayFormatter = new IntlDateFormatter(
-            'de_DE',
-            IntlDateFormatter::NONE,
-            IntlDateFormatter::NONE,
-            $this->currentDate->getTimezone()->getName(),
-            IntlDateFormatter::GREGORIAN,
-            'EE'
-        );
+        $weekdayFormatter = null;
+
+        if ($this->intlAvailable) {
+            $weekdayFormatter = new \IntlDateFormatter(
+                'de_DE',
+                \IntlDateFormatter::NONE,
+                \IntlDateFormatter::NONE,
+                $this->currentDate->getTimezone()->getName(),
+                \IntlDateFormatter::GREGORIAN,
+                'EE'
+            );
+        }
 
         for ($offset = 0; $offset < $daysInMonth; $offset++) {
             $date = $this->currentDate->modify(sprintf('+%d days', $offset));
+            $weekday = $weekdayFormatter ? $weekdayFormatter->format($date) : false;
 
             $days[] = [
                 'day' => (int) $date->format('j'),
-                'weekday' => $weekdayFormatter->format($date) ?: $date->format('D'),
+                'weekday' => $weekday !== false ? (string) $weekday : $date->format('D'),
                 'isToday' => $date->format('Y-m-d') === (new DateTimeImmutable())->format('Y-m-d'),
                 'date' => $date->format('Y-m-d'),
             ];
