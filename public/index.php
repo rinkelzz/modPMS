@@ -1,6 +1,7 @@
 <?php
 
 use ModPMS\Calendar;
+use ModPMS\CompanyManager;
 use ModPMS\Database;
 use ModPMS\GuestManager;
 use ModPMS\RoomCategoryManager;
@@ -9,6 +10,7 @@ use ModPMS\SystemUpdater;
 use ModPMS\UserManager;
 
 require_once __DIR__ . '/../src/Database.php';
+require_once __DIR__ . '/../src/CompanyManager.php';
 require_once __DIR__ . '/../src/RoomCategoryManager.php';
 require_once __DIR__ . '/../src/Calendar.php';
 require_once __DIR__ . '/../src/RoomManager.php';
@@ -79,6 +81,20 @@ $guestFormData = [
     'departure_date' => '',
     'purpose_of_stay' => 'privat',
     'notes' => '',
+    'company_id' => '',
+];
+
+$companyFormData = [
+    'id' => null,
+    'name' => '',
+    'address_street' => '',
+    'address_postal_code' => '',
+    'address_city' => '',
+    'address_country' => '',
+    'email' => '',
+    'phone' => '',
+    'tax_id' => '',
+    'notes' => '',
 ];
 
 $userFormData = [
@@ -110,6 +126,8 @@ if (isset($_GET['editCategory'])) {
     $activeSection = 'guests';
 } elseif (isset($_GET['editUser'])) {
     $activeSection = 'users';
+} elseif (isset($_GET['editCompany'])) {
+    $activeSection = 'guests';
 }
 
 $config = require __DIR__ . '/../config/app.php';
@@ -118,11 +136,14 @@ $categories = [];
 $rooms = [];
 $calendarCategoryGroups = [];
 $guests = [];
+$companies = [];
+$companyGuestCounts = [];
 $users = [];
 $pdo = null;
 $categoryManager = null;
 $roomManager = null;
 $guestManager = null;
+$companyManager = null;
 $userManager = null;
 
 try {
@@ -130,6 +151,7 @@ try {
     $categoryManager = new RoomCategoryManager($pdo);
     $roomManager = new RoomManager($pdo);
     $guestManager = new GuestManager($pdo);
+    $companyManager = new CompanyManager($pdo);
     $userManager = new UserManager($pdo);
 } catch (Throwable $exception) {
     $dbError = $exception->getMessage();
@@ -395,6 +417,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $departureDateInput = trim((string) ($_POST['departure_date'] ?? ''));
             $purposeInput = $_POST['purpose_of_stay'] ?? 'privat';
             $notes = trim($_POST['notes'] ?? '');
+            $companyIdInput = trim((string) ($_POST['company_id'] ?? ''));
 
             if (!in_array($purposeInput, $guestPurposeOptions, true)) {
                 $purposeInput = 'privat';
@@ -419,6 +442,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 'departure_date' => $departureDateInput,
                 'purpose_of_stay' => $purposeInput,
                 'notes' => $notes,
+                'company_id' => $companyIdInput,
             ];
 
             if ($firstName === '' || $lastName === '') {
@@ -427,6 +451,38 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     'message' => 'Bitte geben Sie mindestens Vor- und Nachnamen des Gastes an.',
                 ];
                 break;
+            }
+
+            $companyId = null;
+            if ($companyIdInput !== '') {
+                $companyIdValue = (int) $companyIdInput;
+
+                if ($companyIdValue <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Firma ist ungültig.',
+                    ];
+                    break;
+                }
+
+                if ($companyManager === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Firmenzuordnungen konnten nicht geladen werden. Bitte versuchen Sie es erneut.',
+                    ];
+                    break;
+                }
+
+                $company = $companyManager->find($companyIdValue);
+                if ($company === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Firma wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $companyId = $companyIdValue;
             }
 
             if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -498,6 +554,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 'departure_date' => $normalizedDepartureDate,
                 'purpose_of_stay' => $purposeInput,
                 'notes' => $notes !== '' ? $notes : null,
+                'company_id' => $companyId,
             ];
 
             if ($form === 'guest_create') {
@@ -571,18 +628,168 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             header('Location: index.php?section=guests');
             exit;
 
-        case 'user_create':
-        case 'user_update':
-            $activeSection = 'users';
+        case 'company_create':
+        case 'company_update':
+            $activeSection = 'guests';
 
-            if (($_SESSION['user_role'] ?? '') !== 'admin') {
+            if ($companyManager === null) {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
+                    'message' => 'Die Firmenverwaltung ist derzeit nicht verfügbar.',
                 ];
                 break;
             }
 
+            $name = trim($_POST['name'] ?? '');
+            $addressStreet = trim($_POST['address_street'] ?? '');
+            $addressPostalCode = trim($_POST['address_postal_code'] ?? '');
+            $addressCity = trim($_POST['address_city'] ?? '');
+            $addressCountry = trim($_POST['address_country'] ?? '');
+            $email = trim($_POST['email'] ?? '');
+            $phone = trim($_POST['phone'] ?? '');
+            $taxId = trim($_POST['tax_id'] ?? '');
+            $notes = trim($_POST['notes'] ?? '');
+
+            $companyFormData = [
+                'id' => $form === 'company_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'name' => $name,
+                'address_street' => $addressStreet,
+                'address_postal_code' => $addressPostalCode,
+                'address_city' => $addressCity,
+                'address_country' => $addressCountry,
+                'email' => $email,
+                'phone' => $phone,
+                'tax_id' => $taxId,
+                'notes' => $notes,
+            ];
+
+            if ($name === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen Firmennamen an.',
+                ];
+                break;
+            }
+
+            if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie eine gültige E-Mail-Adresse für die Firma an.',
+                ];
+                break;
+            }
+
+            $payload = [
+                'name' => $name,
+                'address_street' => $addressStreet !== '' ? $addressStreet : null,
+                'address_postal_code' => $addressPostalCode !== '' ? $addressPostalCode : null,
+                'address_city' => $addressCity !== '' ? $addressCity : null,
+                'address_country' => $addressCountry !== '' ? $addressCountry : null,
+                'email' => $email !== '' ? $email : null,
+                'phone' => $phone !== '' ? $phone : null,
+                'tax_id' => $taxId !== '' ? $taxId : null,
+                'notes' => $notes !== '' ? $notes : null,
+            ];
+
+            if ($form === 'company_create') {
+                $companyManager->create($payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Firma "%s" wurde angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=guests');
+                exit;
+            }
+
+            $companyId = (int) ($_POST['id'] ?? 0);
+            if ($companyId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Firma konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $company = $companyManager->find($companyId);
+            if ($company === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Firma wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $companyManager->update($companyId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Firma "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=guests');
+            exit;
+
+        case 'company_delete':
+            $activeSection = 'guests';
+
+            if ($companyManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Firmenverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $companyId = (int) ($_POST['id'] ?? 0);
+
+            if ($companyId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Firma konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $company = $companyManager->find($companyId);
+            if ($company === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Firma wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            if ($companyManager->hasGuests($companyId)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Firma kann nicht gelöscht werden, solange Gäste zugeordnet sind.',
+                ];
+                break;
+            }
+
+            $companyManager->delete($companyId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Firma "%s" wurde gelöscht.', htmlspecialchars($company['name'], ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=guests');
+            exit;
+
+        case 'user_create':
+        case 'user_update':
+            $activeSection = 'users';
+
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie benötigen Administratorrechte, um Benutzerkonten zu verwalten.',
+                ];
+                break;
+            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -711,15 +918,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
-
-            if (($_SESSION['user_role'] ?? '') !== 'admin') {
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
+                    'message' => 'Sie benötigen Administratorrechte, um Benutzerkonten zu verwalten.',
                 ];
                 break;
             }
-
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
@@ -768,7 +973,20 @@ if ($pdo !== null) {
     $categories = $categoryManager->all();
     $rooms = $roomManager->all();
     $guests = $guestManager->all();
+    if ($companyManager !== null) {
+        $companies = $companyManager->all();
+    }
     $users = $userManager->all();
+
+    foreach ($guests as $guest) {
+        if (isset($guest['company_id']) && $guest['company_id'] !== null) {
+            $companyId = (int) $guest['company_id'];
+            if (!isset($companyGuestCounts[$companyId])) {
+                $companyGuestCounts[$companyId] = 0;
+            }
+            $companyGuestCounts[$companyId]++;
+        }
+    }
 
     $categoryPositions = [];
 
@@ -887,12 +1105,46 @@ if ($pdo !== null && isset($_GET['editGuest']) && $guestFormData['id'] === null)
             'departure_date' => $guestToEdit['departure_date'] ?? '',
             'purpose_of_stay' => $guestToEdit['purpose_of_stay'] ?? 'privat',
             'notes' => $guestToEdit['notes'] ?? '',
+            'company_id' => isset($guestToEdit['company_id']) && $guestToEdit['company_id'] !== null ? (string) $guestToEdit['company_id'] : '',
         ];
     } elseif ($alert === null) {
         $alert = [
             'type' => 'warning',
             'message' => 'Der ausgewählte Gast wurde nicht gefunden.',
         ];
+    }
+}
+
+if ($pdo !== null && isset($_GET['editCompany']) && $companyFormData['id'] === null) {
+    if ($companyManager === null) {
+        if ($alert === null) {
+            $alert = [
+                'type' => 'danger',
+                'message' => 'Die Firmenverwaltung ist derzeit nicht verfügbar.',
+            ];
+        }
+    } else {
+        $companyToEdit = $companyManager->find((int) $_GET['editCompany']);
+
+        if ($companyToEdit) {
+            $companyFormData = [
+                'id' => (int) $companyToEdit['id'],
+                'name' => $companyToEdit['name'],
+                'address_street' => $companyToEdit['address_street'] ?? '',
+                'address_postal_code' => $companyToEdit['address_postal_code'] ?? '',
+                'address_city' => $companyToEdit['address_city'] ?? '',
+                'address_country' => $companyToEdit['address_country'] ?? '',
+                'email' => $companyToEdit['email'] ?? '',
+                'phone' => $companyToEdit['phone'] ?? '',
+                'tax_id' => $companyToEdit['tax_id'] ?? '',
+                'notes' => $companyToEdit['notes'] ?? '',
+            ];
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die ausgewählte Firma wurde nicht gefunden.',
+            ];
+        }
     }
 }
 
@@ -1242,7 +1494,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
       <?php if ($activeSection === 'guests'): ?>
       <section id="guests" class="app-section active">
         <div class="row g-4">
-          <div class="col-12">
+          <div class="col-12 col-xxl-8">
           <div class="card module-card" id="guest-management">
             <?php $isEditingGuest = $guestFormData['id'] !== null; ?>
             <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
@@ -1294,6 +1546,18 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <option value="<?= htmlspecialchars($purpose) ?>" <?= $guestFormData['purpose_of_stay'] === $purpose ? 'selected' : '' ?>><?= $purpose === 'geschäftlich' ? 'Geschäftlich' : 'Privat' ?></option>
                     <?php endforeach; ?>
                   </select>
+                </div>
+                <div class="col-md-8">
+                  <label for="guest-company" class="form-label">Firma</label>
+                  <div class="input-group">
+                    <select class="form-select" id="guest-company" name="company_id" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <option value="">Keine Zuordnung</option>
+                      <?php foreach ($companies as $company): ?>
+                        <option value="<?= (int) $company['id'] ?>" <?= $guestFormData['company_id'] !== '' && (int) $guestFormData['company_id'] === (int) $company['id'] ? 'selected' : '' ?>><?= htmlspecialchars($company['name']) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <a class="btn btn-outline-secondary" href="index.php?section=guests#company-management">Neue Firma</a>
+                  </div>
                 </div>
                 <div class="col-md-6">
                   <label for="guest-arrival" class="form-label">Anreise</label>
@@ -1360,6 +1624,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                         <th scope="col">Gast</th>
                         <th scope="col">Aufenthalt</th>
                         <th scope="col">Kontakt &amp; Adresse</th>
+                        <th scope="col">Firma</th>
                         <th scope="col">Ausweisdaten</th>
                         <th scope="col">Meldeschein</th>
                         <th scope="col" class="text-end">Aktionen</th>
@@ -1417,6 +1682,8 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                           if (!empty($guest['phone'])) {
                               $contactParts[] = htmlspecialchars($guest['phone']);
                           }
+
+                          $companyName = isset($guest['company_name']) && $guest['company_name'] !== null ? (string) $guest['company_name'] : '';
 
                           $addressParts = [];
                           if (!empty($guest['address_street'])) {
@@ -1480,8 +1747,19 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                 <?php endforeach; ?>
                               </div>
                             <?php endif; ?>
-                            <?php if ($contactParts === [] && $addressParts === []): ?>
-                              <span class="text-muted">Keine Kontaktdaten</span>
+                          <?php if ($contactParts === [] && $addressParts === []): ?>
+                            <span class="text-muted">Keine Kontaktdaten</span>
+                          <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($companyName !== ''): ?>
+                              <div class="fw-semibold"><?= htmlspecialchars($companyName) ?></div>
+                              <div class="small text-muted">Zuordnung für Meldeschein</div>
+                            <?php else: ?>
+                              <span class="text-muted">Keine Zuordnung</span>
+                              <?php if ($guest['purpose_of_stay'] === 'geschäftlich'): ?>
+                                <div class="small text-warning">Geschäftsreise ohne Firma</div>
+                              <?php endif; ?>
                             <?php endif; ?>
                           </td>
                           <td>
@@ -1512,13 +1790,164 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <?php endforeach; ?>
                       <?php if (empty($guests)): ?>
                         <tr>
-                          <td colspan="6" class="text-center text-muted py-3">Noch keine Gäste erfasst.</td>
+                          <td colspan="7" class="text-center text-muted py-3">Noch keine Gäste erfasst.</td>
                         </tr>
                       <?php endif; ?>
                     </tbody>
                   </table>
                 </div>
                 <p class="small text-muted mt-3 mb-0">Hinweis: Sobald alle Pflichtfelder gepflegt sind, kann ein Meldeschein aus den gespeicherten Daten generiert werden.</p>
+              <?php endif; ?>
+            </div>
+          </div>
+          </div>
+          <div class="col-12 col-xxl-4">
+          <div class="card module-card h-100" id="company-management">
+            <?php $isEditingCompany = $companyFormData['id'] !== null; ?>
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+              <div>
+                <h2 class="h5 mb-1">Firmen</h2>
+                <p class="text-muted mb-0"><?= $isEditingCompany ? 'Firmendaten anpassen und Zuordnungen prüfen.' : 'Stammdaten für Firmenkunden verwalten.' ?></p>
+              </div>
+              <?php if ($isEditingCompany): ?>
+                <span class="badge text-bg-primary">Bearbeitung</span>
+              <?php else: ?>
+                <span class="badge text-bg-info">Optional</span>
+              <?php endif; ?>
+            </div>
+            <div class="card-body">
+              <form method="post" class="row g-3" id="company-form">
+                <input type="hidden" name="form" value="<?= $isEditingCompany ? 'company_update' : 'company_create' ?>">
+                <?php if ($isEditingCompany): ?>
+                  <input type="hidden" name="id" value="<?= (int) $companyFormData['id'] ?>">
+                <?php endif; ?>
+                <div class="col-12">
+                  <label for="company-name" class="form-label">Firmenname *</label>
+                  <input type="text" class="form-control" id="company-name" name="name" value="<?= htmlspecialchars((string) $companyFormData['name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-12">
+                  <label for="company-address-street" class="form-label">Straße &amp; Hausnummer</label>
+                  <input type="text" class="form-control" id="company-address-street" name="address_street" value="<?= htmlspecialchars((string) $companyFormData['address_street']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="company-address-postal" class="form-label">PLZ</label>
+                  <input type="text" class="form-control" id="company-address-postal" name="address_postal_code" value="<?= htmlspecialchars((string) $companyFormData['address_postal_code']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="company-address-city" class="form-label">Ort</label>
+                  <input type="text" class="form-control" id="company-address-city" name="address_city" value="<?= htmlspecialchars((string) $companyFormData['address_city']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-12">
+                  <label for="company-address-country" class="form-label">Land</label>
+                  <input type="text" class="form-control" id="company-address-country" name="address_country" value="<?= htmlspecialchars((string) $companyFormData['address_country']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="company-email" class="form-label">E-Mail</label>
+                  <input type="email" class="form-control" id="company-email" name="email" value="<?= htmlspecialchars((string) $companyFormData['email']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="company-phone" class="form-label">Telefon</label>
+                  <input type="text" class="form-control" id="company-phone" name="phone" value="<?= htmlspecialchars((string) $companyFormData['phone']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-12">
+                  <label for="company-tax-id" class="form-label">Steuernummer / USt-IdNr.</label>
+                  <input type="text" class="form-control" id="company-tax-id" name="tax_id" value="<?= htmlspecialchars((string) $companyFormData['tax_id']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-12">
+                  <label for="company-notes" class="form-label">Notizen</label>
+                  <textarea class="form-control" id="company-notes" name="notes" rows="2" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $companyFormData['notes']) ?></textarea>
+                </div>
+                <div class="col-12 d-flex justify-content-end align-items-center flex-wrap gap-2">
+                  <?php if ($isEditingCompany): ?>
+                    <a href="index.php?section=guests" class="btn btn-outline-secondary">Abbrechen</a>
+                  <?php endif; ?>
+                  <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isEditingCompany ? 'Firma aktualisieren' : 'Firma speichern' ?></button>
+                </div>
+              </form>
+
+              <?php if ($pdo === null): ?>
+                <p class="text-muted mt-3 mb-0">Erstellen und Bearbeiten von Firmen ist ohne Datenbankverbindung nicht möglich.</p>
+              <?php endif; ?>
+
+              <?php if ($pdo !== null): ?>
+                <div class="table-responsive mt-4">
+                  <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light">
+                      <tr>
+                        <th scope="col">Firma</th>
+                        <th scope="col">Kontakt</th>
+                        <th scope="col" class="text-end">Aktionen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <?php foreach ($companies as $company): ?>
+                        <?php
+                          $companyId = (int) $company['id'];
+                          $assignedGuests = $companyGuestCounts[$companyId] ?? 0;
+                          $contactLines = array_filter([
+                              !empty($company['email']) ? htmlspecialchars($company['email']) : null,
+                              !empty($company['phone']) ? htmlspecialchars($company['phone']) : null,
+                          ]);
+                          $addressLines = array_filter([
+                              !empty($company['address_street']) ? htmlspecialchars($company['address_street']) : null,
+                              trim((($company['address_postal_code'] ?? '') !== '' ? $company['address_postal_code'] . ' ' : '') . ($company['address_city'] ?? '')) !== ''
+                                  ? htmlspecialchars(trim((($company['address_postal_code'] ?? '') !== '' ? $company['address_postal_code'] . ' ' : '') . ($company['address_city'] ?? '')))
+                                  : null,
+                              !empty($company['address_country']) ? htmlspecialchars($company['address_country']) : null,
+                          ]);
+                        ?>
+                        <tr>
+                          <td>
+                            <div class="fw-semibold d-flex align-items-center gap-2">
+                              <?= htmlspecialchars($company['name']) ?>
+                              <?php if ($assignedGuests > 0): ?>
+                                <span class="badge text-bg-secondary">Gäste: <?= $assignedGuests ?></span>
+                              <?php endif; ?>
+                            </div>
+                            <?php if (!empty($company['tax_id'])): ?>
+                              <div class="small text-muted">Steuer-ID: <?= htmlspecialchars($company['tax_id']) ?></div>
+                            <?php endif; ?>
+                            <?php if (!empty($company['notes'])): ?>
+                              <div class="small text-muted mt-1"><?= nl2br(htmlspecialchars($company['notes'])) ?></div>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($contactLines !== []): ?>
+                              <?php foreach ($contactLines as $contactLine): ?>
+                                <div><?= $contactLine ?></div>
+                              <?php endforeach; ?>
+                            <?php endif; ?>
+                            <?php if ($addressLines !== []): ?>
+                              <div class="mt-1">
+                                <?php foreach ($addressLines as $addressLine): ?>
+                                  <div><?= $addressLine ?></div>
+                                <?php endforeach; ?>
+                              </div>
+                            <?php endif; ?>
+                            <?php if ($contactLines === [] && $addressLines === []): ?>
+                              <span class="text-muted">Keine Kontaktdaten</span>
+                            <?php endif; ?>
+                          </td>
+                          <td class="text-end">
+                            <div class="d-flex justify-content-end gap-2">
+                              <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editCompany=<?= (int) $company['id'] ?>">Bearbeiten</a>
+                              <form method="post" onsubmit="return confirm('Firma wirklich löschen?');">
+                                <input type="hidden" name="form" value="company_delete">
+                                <input type="hidden" name="id" value="<?= (int) $company['id'] ?>">
+                                <button type="submit" class="btn btn-outline-danger btn-sm" <?= ($companyGuestCounts[$companyId] ?? 0) > 0 ? 'disabled title="Zuerst Gästezuordnungen entfernen"' : '' ?>>Löschen</button>
+                              </form>
+                            </div>
+                          </td>
+                        </tr>
+                      <?php endforeach; ?>
+                      <?php if (empty($companies)): ?>
+                        <tr>
+                          <td colspan="3" class="text-center text-muted py-3">Noch keine Firmen erfasst.</td>
+                        </tr>
+                      <?php endif; ?>
+                    </tbody>
+                  </table>
+                </div>
               <?php endif; ?>
             </div>
           </div>

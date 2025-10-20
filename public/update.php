@@ -8,13 +8,7 @@ require_once __DIR__ . '/../src/SystemUpdater.php';
 
 session_start();
 
-if (!isset($_SESSION['user_id'])) {
-    http_response_code(403);
-    echo 'Nicht autorisiert';
-    exit;
-}
-
-if (($_SESSION['user_role'] ?? '') !== 'admin') {
+if (!isset($_SESSION['user_id']) || ($_SESSION['user_role'] ?? null) !== 'admin') {
     http_response_code(403);
     echo 'Nicht autorisiert';
     exit;

@@ -126,6 +126,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS companies (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(190) NOT NULL,
+                    address_street VARCHAR(190) NULL,
+                    address_postal_code VARCHAR(20) NULL,
+                    address_city VARCHAR(150) NULL,
+                    address_country VARCHAR(150) NULL,
+                    email VARCHAR(190) NULL,
+                    phone VARCHAR(80) NULL,
+                    tax_id VARCHAR(120) NULL,
+                    notes TEXT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_companies_name (name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS guests (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     salutation VARCHAR(20) NULL,
@@ -145,10 +161,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     departure_date DATE NULL,
                     purpose_of_stay ENUM("privat", "geschäftlich") NOT NULL DEFAULT "privat",
                     notes TEXT NULL,
+                    company_id INT UNSIGNED NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_guests_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
                     INDEX idx_guests_name (last_name, first_name),
-                    INDEX idx_guests_arrival (arrival_date)
+                    INDEX idx_guests_arrival (arrival_date),
+                    INDEX idx_guests_company (company_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
                 $seedCategory = $pdo->query('SELECT COUNT(*) AS total FROM room_categories')->fetchColumn();
@@ -166,6 +185,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute(['201', 2, 'frei', '2']);
                 }
 
+                $sampleCompanyId = null;
+                $companyExists = $pdo->query('SELECT COUNT(*) FROM companies')->fetchColumn();
+                if ((int) $companyExists === 0) {
+                    $stmt = $pdo->prepare('INSERT INTO companies (name, address_street, address_postal_code, address_city, address_country, email, phone, tax_id, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+                    $stmt->execute([
+                        'Musterfirma GmbH',
+                        'Wirtschaftsweg 5',
+                        '80331',
+                        'München',
+                        'Deutschland',
+                        'kontakt@musterfirma.example',
+                        '+49 89 987654',
+                        'DE123456789',
+                        'Beispielfirma für Geschäftsreisende.',
+                    ]);
+                    $sampleCompanyId = (int) $pdo->lastInsertId();
+                } else {
+                    $existingCompanyId = $pdo->query('SELECT id FROM companies ORDER BY id ASC LIMIT 1')->fetchColumn();
+                    if ($existingCompanyId !== false) {
+                        $sampleCompanyId = (int) $existingCompanyId;
+                    }
+                }
+
                 $adminExists = $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
                 if ((int) $adminExists === 0) {
                     $stmt = $pdo->prepare('INSERT INTO users (name, email, role, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())');
@@ -179,7 +221,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $guestExists = $pdo->query('SELECT COUNT(*) FROM guests')->fetchColumn();
                 if ((int) $guestExists === 0) {
-                    $stmt = $pdo->prepare('INSERT INTO guests (salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+                    $stmt = $pdo->prepare('INSERT INTO guests (salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, company_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
                     $stmt->execute([
                         'Herr',
                         'Max',
@@ -196,8 +238,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         '+49 30 1234567',
                         (new DateTimeImmutable('today'))->format('Y-m-d'),
                         (new DateTimeImmutable('+3 days'))->format('Y-m-d'),
-                        'privat',
+                        'geschäftlich',
                         'Beispielgast für den Einstieg.',
+                        $sampleCompanyId !== null ? $sampleCompanyId : null,
                     ]);
                 }
 
