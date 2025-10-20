@@ -2,12 +2,12 @@
 
 Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP und MySQL. Dieses Repository enthält das Basis-Modul mit Dashboard, Kalender, Zimmerkategorien und integriertem Update-Workflow.
 
-## Features Basis-Modul (Version 1.3.1)
+## Features Basis-Modul (Version 1.4.0)
 
-- **Dashboard** mit tagesbasiertem Zimmerkalender (Zimmer auf Y-Achse, Tage auf X-Achse) inklusive Kategorie-Summen (gesamt/frei) und Schnellstatistik.
+- **Dashboard** mit gleitendem 8-Tage-Zimmerkalender (Zimmer auf Y-Achse, Tage auf X-Achse) inklusive Kategorie-Summen (gesamt/frei), Anzeige der aktuellen Belegung pro Zimmer (Gastnachname bzw. Firmenname) und flexiblen Datums-Navigation (−2 Tage bis +5 Tage).
 - **Zimmerkategorien-Verwaltung** inklusive Bearbeiten/Löschen und **Zimmerstamm** mit CRUD-Funktionen – alles direkt in MySQL gespeichert.
 - **Zimmerübersicht** mit Beispielzimmern aus der Datenbank, die sich leicht erweitern lassen.
-- **Gästeverwaltung** inklusive aller für den Meldeschein benötigten Stammdaten, Firmenzuordnung und Vollständigkeitsprüfung.
+- **Gästeverwaltung** inklusive aller für den Meldeschein benötigten Stammdaten, Firmen- und Zimmerzuordnung sowie Vollständigkeitsprüfung.
 - **Firmenverwaltung** mit eigenem Formular, Kontakt- & Adressdaten sowie Löschschutz bei zugeordneten Gästen.
 - **Systemupdates** direkt aus der Weboberfläche anstoßen – inklusive Git-Prüfungen, ZIP-Fallback und aussagekräftigen Fehlermeldungen.
 - **Benutzerverwaltung** mit Rollen (Administrator/Mitarbeiter), Passwort-Reset und Login-Tracking.
@@ -43,6 +43,7 @@ Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP un
 - Erfassung von Anrede, Name, Geburtsdatum, Nationalität und Kontaktdaten.
 - Hinterlegung von Aufenthaltszeitraum, Reisezweck sowie Ausweis- und Adressdaten.
 - Optionale Zuordnung zu Firmenkunden inkl. eigenem Firmenstamm und Zuordnungsübersicht.
+- Freie Zimmerzuordnung je Gast für die grafische Darstellung im Dashboard-Kalender.
 - Automatische Prüfung, ob alle Pflichtfelder für die Meldeschein-Erstellung ausgefüllt sind.
 - Export-Schaltfläche als Platzhalter für den kommenden PDF-/Druck-Workflow.
 

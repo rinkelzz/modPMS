@@ -33,16 +33,6 @@ try {
 
 $_SESSION['update_token'] = $updateToken;
 
-if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_SESSION['csrf_token'] === '') {
-    try {
-        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-    } catch (Throwable $exception) {
-        $_SESSION['csrf_token'] = bin2hex(hash('sha256', uniqid('', true), true));
-    }
-}
-
-$csrfToken = $_SESSION['csrf_token'];
-
 $alert = null;
 if (isset($_SESSION['alert'])) {
     $alert = $_SESSION['alert'];
@@ -92,6 +82,7 @@ $guestFormData = [
     'purpose_of_stay' => 'privat',
     'notes' => '',
     'company_id' => '',
+    'room_id' => '',
 ];
 
 $companyFormData = [
@@ -140,6 +131,27 @@ if (isset($_GET['editCategory'])) {
     $activeSection = 'guests';
 }
 
+$calendarPastDays = 2;
+$calendarFutureDays = 5;
+$requestedCalendarDate = isset($_GET['date']) ? trim((string) $_GET['date']) : '';
+$calendarReferenceDate = null;
+
+if ($requestedCalendarDate !== '') {
+    $candidate = DateTimeImmutable::createFromFormat('Y-m-d', $requestedCalendarDate);
+    if ($candidate instanceof DateTimeImmutable) {
+        $calendarReferenceDate = $candidate;
+    }
+}
+
+$calendar = new Calendar($calendarReferenceDate);
+$days = $calendar->daysAround($calendarPastDays, $calendarFutureDays);
+$calendarRangeLabel = $calendar->rangeLabel($calendarPastDays, $calendarFutureDays);
+$calendarViewLength = $calendar->viewLength($calendarPastDays, $calendarFutureDays);
+$calendarPrevDate = $calendar->currentDate()->modify(sprintf('-%d days', $calendarViewLength));
+$calendarNextDate = $calendar->currentDate()->modify(sprintf('+%d days', $calendarViewLength));
+$calendarCurrentDateValue = $calendar->currentDate()->format('Y-m-d');
+$todayDateValue = (new DateTimeImmutable('today'))->format('Y-m-d');
+
 $config = require __DIR__ . '/../config/app.php';
 $dbError = null;
 $categories = [];
@@ -149,6 +161,8 @@ $guests = [];
 $companies = [];
 $companyGuestCounts = [];
 $users = [];
+$roomLookup = [];
+$roomOccupancies = [];
 $pdo = null;
 $categoryManager = null;
 $roomManager = null;
@@ -186,91 +200,117 @@ $normalizeDateInput = static function (string $value): ?string {
     return $date->format('Y-m-d');
 };
 
+$createDateImmutable = static function (?string $value): ?DateTimeImmutable {
+    if ($value === null || $value === '') {
+        return null;
+    }
+
+    try {
+        return new DateTimeImmutable($value);
+    } catch (Throwable $exception) {
+        return null;
+    }
+};
+
+$buildGuestCalendarLabel = static function (array $guest): string {
+    $companyName = isset($guest['company_name']) ? trim((string) $guest['company_name']) : '';
+    if ($companyName !== '') {
+        return $companyName;
+    }
+
+    $lastName = isset($guest['last_name']) ? trim((string) $guest['last_name']) : '';
+    $firstName = isset($guest['first_name']) ? trim((string) $guest['first_name']) : '';
+
+    if ($lastName !== '' && $firstName !== '') {
+        $initial = function_exists('mb_substr') ? mb_substr($firstName, 0, 1) : substr($firstName, 0, 1);
+
+        return sprintf('%s %s.', $lastName, strtoupper((string) $initial));
+    }
+
+    if ($lastName !== '') {
+        return $lastName;
+    }
+
+    return $firstName !== '' ? $firstName : 'Gast';
+};
+
 if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form'])) {
     $form = $_POST['form'];
-    $sessionCsrfToken = $_SESSION['csrf_token'] ?? null;
-    $submittedCsrfToken = $_POST['csrf_token'] ?? null;
 
-    if (!is_string($sessionCsrfToken) || $sessionCsrfToken === '' || !is_string($submittedCsrfToken) || !hash_equals($sessionCsrfToken, $submittedCsrfToken)) {
-        $alert = [
-            'type' => 'danger',
-            'message' => 'Die Formularübermittlung ist fehlgeschlagen. Bitte laden Sie die Seite neu und versuchen Sie es erneut.',
-        ];
-    } else {
-        switch ($form) {
-            case 'category_create':
-            case 'category_update':
-                $activeSection = 'categories';
-                $name = trim($_POST['name'] ?? '');
-                $description = trim($_POST['description'] ?? '');
-                $capacityInput = trim((string) ($_POST['capacity'] ?? ''));
-                $capacityValue = (int) $capacityInput;
-                $status = $_POST['status'] ?? 'aktiv';
-                if (!in_array($status, $categoryStatuses, true)) {
-                    $status = 'aktiv';
-                }
+    switch ($form) {
+        case 'category_create':
+        case 'category_update':
+            $activeSection = 'categories';
+            $name = trim($_POST['name'] ?? '');
+            $description = trim($_POST['description'] ?? '');
+            $capacityInput = trim((string) ($_POST['capacity'] ?? ''));
+            $capacityValue = (int) $capacityInput;
+            $status = $_POST['status'] ?? 'aktiv';
+            if (!in_array($status, $categoryStatuses, true)) {
+                $status = 'aktiv';
+            }
 
-                $categoryFormData = [
-                    'id' => $form === 'category_update' ? (int) ($_POST['id'] ?? 0) : null,
-                    'name' => $name,
-                    'description' => $description,
-                    'capacity' => $capacityInput !== '' ? $capacityInput : '',
-                    'status' => $status,
+            $categoryFormData = [
+                'id' => $form === 'category_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'name' => $name,
+                'description' => $description,
+                'capacity' => $capacityInput !== '' ? $capacityInput : '',
+                'status' => $status,
+            ];
+
+            if ($name === '' || $capacityValue <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen Namen und eine gültige Kapazität an.',
                 ];
+                break;
+            }
 
-                if ($name === '' || $capacityValue <= 0) {
-                    $alert = [
-                        'type' => 'danger',
-                        'message' => 'Bitte geben Sie einen Namen und eine gültige Kapazität an.',
-                    ];
-                    break;
-                }
+            $payload = [
+                'name' => $name,
+                'description' => $description,
+                'capacity' => $capacityValue,
+                'status' => $status,
+            ];
 
-                $payload = [
-                    'name' => $name,
-                    'description' => $description,
-                    'capacity' => $capacityValue,
-                    'status' => $status,
-                ];
-
-                if ($form === 'category_create') {
-                    $categoryManager->add($payload);
-
-                    $_SESSION['alert'] = [
-                        'type' => 'success',
-                        'message' => sprintf('Kategorie "%s" erfolgreich angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
-                    ];
-
-                    header('Location: index.php?section=categories');
-                    exit;
-                }
-
-                $categoryId = (int) ($_POST['id'] ?? 0);
-                if ($categoryId <= 0) {
-                    $alert = [
-                        'type' => 'danger',
-                        'message' => 'Die Kategorie konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
-                    ];
-                    break;
-                }
-
-                if ($categoryManager->find($categoryId) === null) {
-                    $alert = [
-                        'type' => 'danger',
-                        'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
-                    ];
-                    break;
-                }
-
-                $categoryManager->update($categoryId, $payload);
+            if ($form === 'category_create') {
+                $categoryManager->add($payload);
 
                 $_SESSION['alert'] = [
                     'type' => 'success',
-                    'message' => sprintf('Kategorie "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                    'message' => sprintf('Kategorie "%s" erfolgreich angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
                 ];
 
                 header('Location: index.php?section=categories');
                 exit;
+            }
+
+            $categoryId = (int) ($_POST['id'] ?? 0);
+            if ($categoryId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Kategorie konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            if ($categoryManager->find($categoryId) === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $categoryManager->update($categoryId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Kategorie "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=categories');
+            exit;
 
         case 'category_delete':
             $activeSection = 'categories';
@@ -436,6 +476,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $purposeInput = $_POST['purpose_of_stay'] ?? 'privat';
             $notes = trim($_POST['notes'] ?? '');
             $companyIdInput = trim((string) ($_POST['company_id'] ?? ''));
+            $roomIdInput = trim((string) ($_POST['room_id'] ?? ''));
 
             if (!in_array($purposeInput, $guestPurposeOptions, true)) {
                 $purposeInput = 'privat';
@@ -461,6 +502,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 'purpose_of_stay' => $purposeInput,
                 'notes' => $notes,
                 'company_id' => $companyIdInput,
+                'room_id' => $roomIdInput,
             ];
 
             if ($firstName === '' || $lastName === '') {
@@ -501,6 +543,38 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 }
 
                 $companyId = $companyIdValue;
+            }
+
+            $roomId = null;
+            if ($roomIdInput !== '') {
+                $roomIdValue = (int) $roomIdInput;
+
+                if ($roomIdValue <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das ausgewählte Zimmer ist ungültig.',
+                    ];
+                    break;
+                }
+
+                if ($roomManager === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Zimmer konnten nicht geladen werden. Bitte versuchen Sie es erneut.',
+                    ];
+                    break;
+                }
+
+                $room = $roomManager->find($roomIdValue);
+                if ($room === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das ausgewählte Zimmer wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $roomId = $roomIdValue;
             }
 
             if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -573,6 +647,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 'purpose_of_stay' => $purposeInput,
                 'notes' => $notes !== '' ? $notes : null,
                 'company_id' => $companyId,
+                'room_id' => $roomId,
             ];
 
             if ($form === 'guest_create') {
@@ -964,7 +1039,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             header('Location: index.php?section=users');
             exit;
-        }
     }
 } elseif ($pdo === null && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $alert = [
@@ -982,6 +1056,14 @@ if ($pdo !== null) {
     }
     $users = $userManager->all();
 
+    foreach ($rooms as $room) {
+        if (!isset($room['id'])) {
+            continue;
+        }
+
+        $roomLookup[(int) $room['id']] = $room;
+    }
+
     foreach ($guests as $guest) {
         if (isset($guest['company_id']) && $guest['company_id'] !== null) {
             $companyId = (int) $guest['company_id'];
@@ -989,6 +1071,71 @@ if ($pdo !== null) {
                 $companyGuestCounts[$companyId] = 0;
             }
             $companyGuestCounts[$companyId]++;
+        }
+    }
+
+    $roomStays = [];
+
+    foreach ($guests as $guest) {
+        if (!isset($guest['room_id']) || $guest['room_id'] === null) {
+            continue;
+        }
+
+        $roomId = (int) $guest['room_id'];
+        if ($roomId <= 0) {
+            continue;
+        }
+
+        $roomStays[$roomId][] = [
+            'label' => $buildGuestCalendarLabel($guest),
+            'arrival' => $createDateImmutable($guest['arrival_date'] ?? null),
+            'departure' => $createDateImmutable($guest['departure_date'] ?? null),
+        ];
+    }
+
+    if ($days !== []) {
+        $viewStart = new DateTimeImmutable($days[0]['date']);
+        $viewEnd = new DateTimeImmutable($days[count($days) - 1]['date']);
+        $viewEndExclusive = $viewEnd->modify('+1 day');
+
+        foreach ($roomStays as $roomId => $stays) {
+            foreach ($stays as $stay) {
+                $arrival = $stay['arrival'];
+                $departure = $stay['departure'];
+
+                if ($arrival === null && $departure === null) {
+                    continue;
+                }
+
+                $stayStart = $arrival ?? $viewStart;
+                if ($arrival === null && $departure !== null && $departure <= $viewStart) {
+                    continue;
+                }
+
+                $exclusiveEnd = $viewEndExclusive;
+                if ($departure !== null) {
+                    $exclusiveEnd = $departure;
+                    if ($arrival !== null && $departure <= $arrival) {
+                        $exclusiveEnd = $arrival->modify('+1 day');
+                    }
+                }
+
+                $effectiveStart = $stayStart > $viewStart ? $stayStart : $viewStart;
+                $effectiveEnd = $exclusiveEnd < $viewEndExclusive ? $exclusiveEnd : $viewEndExclusive;
+
+                if ($arrival === null && $departure !== null && $effectiveEnd <= $effectiveStart) {
+                    $effectiveEnd = $departure;
+                }
+
+                if ($effectiveStart >= $effectiveEnd) {
+                    continue;
+                }
+
+                for ($cursor = $effectiveStart; $cursor < $effectiveEnd; $cursor = $cursor->modify('+1 day')) {
+                    $dateKey = $cursor->format('Y-m-d');
+                    $roomOccupancies[$roomId][$dateKey][] = $stay['label'];
+                }
+            }
         }
     }
 
@@ -1110,6 +1257,7 @@ if ($pdo !== null && isset($_GET['editGuest']) && $guestFormData['id'] === null)
             'purpose_of_stay' => $guestToEdit['purpose_of_stay'] ?? 'privat',
             'notes' => $guestToEdit['notes'] ?? '',
             'company_id' => isset($guestToEdit['company_id']) && $guestToEdit['company_id'] !== null ? (string) $guestToEdit['company_id'] : '',
+            'room_id' => isset($guestToEdit['room_id']) && $guestToEdit['room_id'] !== null ? (string) $guestToEdit['room_id'] : '',
         ];
     } elseif ($alert === null) {
         $alert = [
@@ -1170,9 +1318,6 @@ if ($pdo !== null && isset($_GET['editUser']) && $userFormData['id'] === null) {
     }
 }
 
-$calendar = new Calendar();
-$days = $calendar->daysOfMonth();
-
 $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], $config['repository']['url']);
 
 ?>
@@ -1196,7 +1341,13 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           <ul class="navbar-nav me-auto mb-2 mb-lg-0">
             <?php foreach ($navItems as $sectionKey => $label): ?>
               <li class="nav-item">
-                <a class="nav-link <?= $activeSection === $sectionKey ? 'active' : '' ?>" href="index.php?section=<?= htmlspecialchars($sectionKey) ?>"><?= htmlspecialchars($label) ?></a>
+                <?php
+                  $navUrl = 'index.php?section=' . rawurlencode($sectionKey);
+                  if ($sectionKey === 'dashboard' && $calendarReferenceDate instanceof DateTimeImmutable) {
+                      $navUrl .= '&date=' . rawurlencode($calendarCurrentDateValue);
+                  }
+                ?>
+                <a class="nav-link <?= $activeSection === $sectionKey ? 'active' : '' ?>" href="<?= htmlspecialchars($navUrl) ?>"><?= htmlspecialchars($label) ?></a>
               </li>
             <?php endforeach; ?>
           </ul>
@@ -1238,9 +1389,23 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               <span class="badge text-bg-info">Basis-Modul</span>
             </div>
             <div class="card-body">
-              <div class="d-flex justify-content-between align-items-center mb-3">
-                <h3 class="h4 mb-0"><?= htmlspecialchars($calendar->monthLabel()) ?></h3>
-                <span class="text-muted">Heute: <?= (new DateTime())->format('d.m.Y') ?></span>
+              <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-3 calendar-toolbar">
+                <div>
+                  <h3 class="h4 mb-1"><?= htmlspecialchars($calendarRangeLabel) ?></h3>
+                  <div class="text-muted small">Referenzdatum: <?= (new DateTimeImmutable($calendarCurrentDateValue))->format('d.m.Y') ?></div>
+                  <div class="text-muted small">Heute: <?= (new DateTimeImmutable($todayDateValue))->format('d.m.Y') ?></div>
+                </div>
+                <div class="calendar-controls d-flex flex-wrap align-items-center gap-2">
+                  <a class="btn btn-outline-secondary btn-sm" href="index.php?section=dashboard&amp;date=<?= $calendarPrevDate->format('Y-m-d') ?>" title="Vorherige <?= $calendarViewLength ?> Tage" aria-label="Vorherige <?= $calendarViewLength ?> Tage">&laquo;</a>
+                  <a class="btn btn-outline-secondary btn-sm" href="index.php?section=dashboard" title="Zurück zu heute">Heute</a>
+                  <a class="btn btn-outline-secondary btn-sm" href="index.php?section=dashboard&amp;date=<?= $calendarNextDate->format('Y-m-d') ?>" title="Nächste <?= $calendarViewLength ?> Tage" aria-label="Nächste <?= $calendarViewLength ?> Tage">&raquo;</a>
+                  <form method="get" class="d-flex align-items-center gap-2">
+                    <input type="hidden" name="section" value="dashboard">
+                    <label for="calendar-date" class="visually-hidden">Datum auswählen</label>
+                    <input type="date" id="calendar-date" name="date" class="form-control form-control-sm" value="<?= htmlspecialchars($calendarCurrentDateValue) ?>">
+                    <button type="submit" class="btn btn-primary btn-sm">Springen</button>
+                  </form>
+                </div>
               </div>
               <div class="calendar-grid-wrapper">
                 <table class="table table-bordered align-middle room-calendar">
@@ -1283,14 +1448,47 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                         </tr>
                         <?php if (!empty($group['rooms'])): ?>
                           <?php foreach ($group['rooms'] as $room): ?>
+                            <?php
+                              $roomId = isset($room['id']) ? (int) $room['id'] : 0;
+                              $roomStatus = isset($room['status']) ? (string) $room['status'] : '';
+                            ?>
                             <tr>
                               <th scope="row" class="room-label room-label-room">
                                 <div class="fw-semibold">Zimmer <?= htmlspecialchars($room['number']) ?></div>
                                 <small class="text-muted">Status: <?= htmlspecialchars(ucfirst($room['status'])) ?></small>
                               </th>
                               <?php foreach ($days as $day): ?>
-                                <td class="room-calendar-cell <?= $day['isToday'] ? 'today' : '' ?>" data-date="<?= $day['date'] ?>" data-room="<?= htmlspecialchars($room['number']) ?>">
-                                  <span class="visually-hidden">Zimmer <?= htmlspecialchars($room['number']) ?> am <?= $day['date'] ?></span>
+                                <?php
+                                  $cellOccupants = [];
+                                  if ($roomId > 0 && isset($roomOccupancies[$roomId][$day['date']])) {
+                                      $cellOccupants = $roomOccupancies[$roomId][$day['date']];
+                                  }
+
+                                  $cellClasses = ['room-calendar-cell'];
+                                  if ($day['isToday']) {
+                                      $cellClasses[] = 'today';
+                                  }
+                                  if ($cellOccupants !== []) {
+                                      $cellClasses[] = 'occupied';
+                                  } else {
+                                      $cellClasses[] = $roomStatus === 'wartung' ? 'maintenance' : 'free';
+                                  }
+                                ?>
+                                <td class="<?= htmlspecialchars(implode(' ', $cellClasses)) ?>" data-date="<?= htmlspecialchars($day['date']) ?>" data-room="<?= htmlspecialchars($room['number']) ?>"<?= $roomId > 0 ? ' data-room-id="' . $roomId . '"' : '' ?>>
+                                  <span class="visually-hidden">Zimmer <?= htmlspecialchars($room['number']) ?> am <?= htmlspecialchars($day['date']) ?></span>
+                                  <?php if ($cellOccupants !== []): ?>
+                                    <?php foreach ($cellOccupants as $occupantLabel): ?>
+                                      <div class="occupancy-entry"><?= htmlspecialchars($occupantLabel) ?></div>
+                                    <?php endforeach; ?>
+                                  <?php else: ?>
+                                    <?php if ($roomStatus === 'wartung'): ?>
+                                      <span class="badge text-bg-warning">Wartung</span>
+                                    <?php elseif ($roomStatus === 'belegt'): ?>
+                                      <span class="text-muted small">Belegt</span>
+                                    <?php else: ?>
+                                      <span class="text-muted small">Frei</span>
+                                    <?php endif; ?>
+                                  <?php endif; ?>
                                 </td>
                               <?php endforeach; ?>
                             </tr>
@@ -1359,7 +1557,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="category-form">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <input type="hidden" name="form" value="<?= $isEditingCategory ? 'category_update' : 'category_create' ?>">
                   <?php if ($isEditingCategory): ?>
                     <input type="hidden" name="id" value="<?= (int) $categoryFormData['id'] ?>">
@@ -1423,7 +1620,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=categories&editCategory=<?= (int) $category['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Kategorie wirklich löschen?');">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="form" value="category_delete">
                                   <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -1462,7 +1658,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" action="update.php" class="d-flex flex-column gap-3">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <input type="hidden" name="token" value="<?= htmlspecialchars($updateToken, ENT_QUOTES, 'UTF-8') ?>">
                   <div>
                     <label class="form-label">Repository</label>
@@ -1517,7 +1712,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="guest-form">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="form" value="<?= $isEditingGuest ? 'guest_update' : 'guest_create' ?>">
                 <?php if ($isEditingGuest): ?>
                   <input type="hidden" name="id" value="<?= (int) $guestFormData['id'] ?>">
@@ -1566,6 +1760,15 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                     </select>
                     <a class="btn btn-outline-secondary" href="index.php?section=guests#company-management">Neue Firma</a>
                   </div>
+                </div>
+                <div class="col-md-4">
+                  <label for="guest-room" class="form-label">Zimmerzuordnung</label>
+                  <select class="form-select" id="guest-room" name="room_id" <?= $pdo === null ? 'disabled' : '' ?>>
+                    <option value="">Keine Zuordnung</option>
+                    <?php foreach ($rooms as $roomOption): ?>
+                      <option value="<?= isset($roomOption['id']) ? (int) $roomOption['id'] : 0 ?>" <?= $guestFormData['room_id'] !== '' && isset($roomOption['id']) && (int) $guestFormData['room_id'] === (int) $roomOption['id'] ? 'selected' : '' ?>>Zimmer <?= htmlspecialchars($roomOption['number']) ?><?= isset($roomOption['category_name']) && $roomOption['category_name'] !== null ? ' · ' . htmlspecialchars($roomOption['category_name']) : '' ?></option>
+                    <?php endforeach; ?>
+                  </select>
                 </div>
                 <div class="col-md-6">
                   <label for="guest-arrival" class="form-label">Anreise</label>
@@ -1631,6 +1834,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <tr>
                         <th scope="col">Gast</th>
                         <th scope="col">Aufenthalt</th>
+                        <th scope="col">Zimmer</th>
                         <th scope="col">Kontakt &amp; Adresse</th>
                         <th scope="col">Firma</th>
                         <th scope="col">Ausweisdaten</th>
@@ -1682,6 +1886,22 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               $stayDetails[] = sprintf('%s – %s', $arrivalLabel !== null ? $arrivalLabel : 'offen', $departureLabel !== null ? $departureLabel : 'offen');
                           }
                           $stayDetails[] = $guest['purpose_of_stay'] === 'geschäftlich' ? 'Geschäftlich' : 'Privat';
+
+                          $roomAssignment = null;
+                          $roomAssignmentStatus = null;
+                          if (isset($guest['room_id']) && $guest['room_id'] !== null) {
+                              $guestRoomId = (int) $guest['room_id'];
+                              if (isset($roomLookup[$guestRoomId])) {
+                                  $guestRoom = $roomLookup[$guestRoomId];
+                                  $roomAssignment = 'Zimmer ' . ($guestRoom['number'] ?? $guestRoomId);
+                                  if (!empty($guestRoom['category_name'])) {
+                                      $roomAssignment .= ' · ' . $guestRoom['category_name'];
+                                  }
+                                  $roomAssignmentStatus = $guestRoom['status'] ?? null;
+                              } else {
+                                  $roomAssignment = 'Zimmer #' . $guestRoomId;
+                              }
+                          }
 
                           $contactParts = [];
                           if (!empty($guest['email'])) {
@@ -1743,6 +1963,16 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <?php endif; ?>
                           </td>
                           <td>
+                            <?php if ($roomAssignment !== null): ?>
+                              <div class="fw-semibold"><?= htmlspecialchars($roomAssignment) ?></div>
+                              <?php if ($roomAssignmentStatus !== null): ?>
+                                <div class="small text-muted">Status: <?= htmlspecialchars(ucfirst($roomAssignmentStatus)) ?></div>
+                              <?php endif; ?>
+                            <?php else: ?>
+                              <span class="text-muted">Keine Zuordnung</span>
+                            <?php endif; ?>
+                          </td>
+                          <td>
                             <?php if ($contactParts !== []): ?>
                               <?php foreach ($contactParts as $contactPart): ?>
                                 <div><?= $contactPart ?></div>
@@ -1787,7 +2017,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2 flex-wrap">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editGuest=<?= (int) $guest['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Gast wirklich löschen?');">
-                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="form" value="guest_delete">
                                 <input type="hidden" name="id" value="<?= (int) $guest['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -1799,7 +2028,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <?php endforeach; ?>
                       <?php if (empty($guests)): ?>
                         <tr>
-                          <td colspan="7" class="text-center text-muted py-3">Noch keine Gäste erfasst.</td>
+                          <td colspan="8" class="text-center text-muted py-3">Noch keine Gäste erfasst.</td>
                         </tr>
                       <?php endif; ?>
                     </tbody>
@@ -1826,7 +2055,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="company-form">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="form" value="<?= $isEditingCompany ? 'company_update' : 'company_create' ?>">
                 <?php if ($isEditingCompany): ?>
                   <input type="hidden" name="id" value="<?= (int) $companyFormData['id'] ?>">
@@ -1942,7 +2170,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editCompany=<?= (int) $company['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Firma wirklich löschen?');">
-                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="form" value="company_delete">
                                 <input type="hidden" name="id" value="<?= (int) $company['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm" <?= ($companyGuestCounts[$companyId] ?? 0) > 0 ? 'disabled title="Zuerst Gästezuordnungen entfernen"' : '' ?>>Löschen</button>
@@ -1984,7 +2211,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="room-form">
-                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <input type="hidden" name="form" value="<?= $isEditingRoom ? 'room_update' : 'room_create' ?>">
                   <?php if ($isEditingRoom): ?>
                     <input type="hidden" name="id" value="<?= (int) $roomFormData['id'] ?>">
@@ -2070,7 +2296,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rooms&editRoom=<?= (int) $room['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Zimmer wirklich löschen?');">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="form" value="room_delete">
                                   <input type="hidden" name="id" value="<?= (int) $room['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -2112,7 +2337,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="user-form">
-                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="form" value="<?= $isEditingUser ? 'user_update' : 'user_create' ?>">
                 <?php if ($isEditingUser): ?>
                   <input type="hidden" name="id" value="<?= (int) $userFormData['id'] ?>">
@@ -2188,7 +2412,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=users&editUser=<?= (int) $user['id'] ?>">Bearbeiten</a>
                               <?php if ((int) $_SESSION['user_id'] !== (int) $user['id']): ?>
                                 <form method="post" onsubmit="return confirm('Benutzer wirklich löschen?');">
-                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="form" value="user_delete">
                                   <input type="hidden" name="id" value="<?= (int) $user['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>

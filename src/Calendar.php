@@ -11,7 +11,12 @@ class Calendar
 
     public function __construct(?DateTimeImmutable $date = null)
     {
-        $this->currentDate = $date ?? new DateTimeImmutable('first day of this month');
+        $this->currentDate = ($date ?? new DateTimeImmutable('today'))->setTime(0, 0);
+    }
+
+    public function currentDate(): DateTimeImmutable
+    {
+        return $this->currentDate;
     }
 
     public function monthLabel(): string
@@ -81,5 +86,68 @@ class Calendar
         }
 
         return $days;
+    }
+
+    /**
+     * @return array<int, array<string, int|string|bool>>
+     */
+    public function daysAround(int $pastDays, int $futureDays): array
+    {
+        $days = [];
+        $total = $pastDays + $futureDays + 1;
+        $start = $this->currentDate->modify(sprintf('-%d days', $pastDays));
+
+        $weekdayFormatter = new IntlDateFormatter(
+            'de_DE',
+            IntlDateFormatter::NONE,
+            IntlDateFormatter::NONE,
+            $this->currentDate->getTimezone()->getName(),
+            IntlDateFormatter::GREGORIAN,
+            'EE'
+        );
+
+        for ($offset = 0; $offset < $total; $offset++) {
+            $date = $start->modify(sprintf('+%d days', $offset));
+
+            $days[] = [
+                'day' => (int) $date->format('j'),
+                'weekday' => $weekdayFormatter->format($date) ?: $date->format('D'),
+                'isToday' => $date->format('Y-m-d') === (new DateTimeImmutable('today'))->format('Y-m-d'),
+                'date' => $date->format('Y-m-d'),
+            ];
+        }
+
+        return $days;
+    }
+
+    public function rangeLabel(int $pastDays, int $futureDays): string
+    {
+        $start = $this->currentDate->modify(sprintf('-%d days', $pastDays));
+        $end = $this->currentDate->modify(sprintf('+%d days', $futureDays));
+
+        $sameMonth = $start->format('Y-m') === $end->format('Y-m');
+        $startPattern = $sameMonth ? 'd.' : 'd. MMMM';
+        $endPattern = 'd. MMMM yyyy';
+
+        $formatter = new IntlDateFormatter(
+            'de_DE',
+            IntlDateFormatter::NONE,
+            IntlDateFormatter::NONE,
+            $this->currentDate->getTimezone()->getName(),
+            IntlDateFormatter::GREGORIAN,
+            $startPattern
+        );
+
+        $startLabel = $formatter->format($start) ?: $start->format('d.m.');
+
+        $formatter->setPattern($endPattern);
+        $endLabel = $formatter->format($end) ?: $end->format('d.m.Y');
+
+        return sprintf('%s – %s', $startLabel, $endLabel);
+    }
+
+    public function viewLength(int $pastDays, int $futureDays): int
+    {
+        return $pastDays + $futureDays + 1;
     }
 }

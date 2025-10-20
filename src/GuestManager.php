@@ -3,6 +3,7 @@
 namespace ModPMS;
 
 use PDO;
+use PDOException;
 
 class GuestManager
 {
@@ -11,6 +12,7 @@ class GuestManager
     public function __construct(PDO $pdo)
     {
         $this->pdo = $pdo;
+        $this->ensureRoomAssignmentColumn();
     }
 
     /**
@@ -18,7 +20,7 @@ class GuestManager
      */
     public function all(): array
     {
-        $stmt = $this->pdo->query('SELECT g.id, g.salutation, g.first_name, g.last_name, g.date_of_birth, g.nationality, g.document_type, g.document_number, g.address_street, g.address_postal_code, g.address_city, g.address_country, g.email, g.phone, g.arrival_date, g.departure_date, g.purpose_of_stay, g.notes, g.company_id, g.created_at, g.updated_at, c.name AS company_name FROM guests g LEFT JOIN companies c ON g.company_id = c.id ORDER BY c.name IS NULL ASC, c.name ASC, g.last_name ASC, g.first_name ASC');
+        $stmt = $this->pdo->query('SELECT g.id, g.salutation, g.first_name, g.last_name, g.date_of_birth, g.nationality, g.document_type, g.document_number, g.address_street, g.address_postal_code, g.address_city, g.address_country, g.email, g.phone, g.arrival_date, g.departure_date, g.purpose_of_stay, g.notes, g.company_id, g.room_id, g.created_at, g.updated_at, c.name AS company_name FROM guests g LEFT JOIN companies c ON g.company_id = c.id ORDER BY c.name IS NULL ASC, c.name ASC, g.last_name ASC, g.first_name ASC');
 
         return $stmt->fetchAll();
     }
@@ -28,7 +30,7 @@ class GuestManager
      */
     public function find(int $id): ?array
     {
-        $stmt = $this->pdo->prepare('SELECT id, salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, company_id FROM guests WHERE id = :id');
+        $stmt = $this->pdo->prepare('SELECT id, salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, company_id, room_id FROM guests WHERE id = :id');
         $stmt->execute(['id' => $id]);
         $guest = $stmt->fetch();
 
@@ -40,7 +42,7 @@ class GuestManager
      */
     public function create(array $payload): int
     {
-        $stmt = $this->pdo->prepare('INSERT INTO guests (salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, company_id, created_at, updated_at) VALUES (:salutation, :first_name, :last_name, :date_of_birth, :nationality, :document_type, :document_number, :address_street, :address_postal_code, :address_city, :address_country, :email, :phone, :arrival_date, :departure_date, :purpose_of_stay, :notes, :company_id, NOW(), NOW())');
+        $stmt = $this->pdo->prepare('INSERT INTO guests (salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, company_id, room_id, created_at, updated_at) VALUES (:salutation, :first_name, :last_name, :date_of_birth, :nationality, :document_type, :document_number, :address_street, :address_postal_code, :address_city, :address_country, :email, :phone, :arrival_date, :departure_date, :purpose_of_stay, :notes, :company_id, :room_id, NOW(), NOW())');
         $stmt->execute($payload);
 
         return (int) $this->pdo->lastInsertId();
@@ -75,5 +77,22 @@ class GuestManager
     {
         $stmt = $this->pdo->prepare('DELETE FROM guests WHERE id = :id');
         $stmt->execute(['id' => $id]);
+    }
+
+    private function ensureRoomAssignmentColumn(): void
+    {
+        try {
+            $columnStatement = $this->pdo->query("SHOW COLUMNS FROM guests LIKE 'room_id'");
+
+            if ($columnStatement === false || $columnStatement->fetch() !== false) {
+                return;
+            }
+
+            $this->pdo->exec('ALTER TABLE guests ADD COLUMN room_id INT UNSIGNED NULL AFTER company_id');
+            $this->pdo->exec('ALTER TABLE guests ADD INDEX idx_guests_room (room_id)');
+            $this->pdo->exec('ALTER TABLE guests ADD CONSTRAINT fk_guests_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL');
+        } catch (PDOException $exception) {
+            error_log('GuestManager: unable to ensure room assignment column: ' . $exception->getMessage());
+        }
     }
 }

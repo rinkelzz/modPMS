@@ -136,19 +136,44 @@ body {
 }
 
 .room-calendar-cell.today {
-    background-color: #2563eb;
-    color: #fff;
-    position: relative;
+    border: 2px solid #2563eb;
+    background-color: #eff6ff;
+    color: #0f172a;
 }
 
-.room-calendar-cell.today::after {
-    content: 'Heute';
-    position: absolute;
-    bottom: 6px;
-    right: 6px;
-    font-size: 0.65rem;
+.room-calendar-cell.free {
+    color: #475569;
+}
+
+.room-calendar-cell.maintenance {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.room-calendar-cell.occupied {
+    background-color: #1d4ed8;
+    color: #fff;
+}
+
+.room-calendar-cell.occupied.today {
+    background-color: #1e3a8a;
+}
+
+.room-calendar-cell .occupancy-entry {
     font-weight: 600;
-    text-transform: uppercase;
+    font-size: 0.85rem;
+}
+
+.room-calendar-cell .occupancy-entry + .occupancy-entry {
+    margin-top: 0.25rem;
+}
+
+.calendar-toolbar .calendar-controls .form-control[type="date"] {
+    min-width: 150px;
+}
+
+.calendar-toolbar .calendar-controls .btn {
+    white-space: nowrap;
 }
 
 .update-output {

@@ -162,12 +162,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     purpose_of_stay ENUM("privat", "geschäftlich") NOT NULL DEFAULT "privat",
                     notes TEXT NULL,
                     company_id INT UNSIGNED NULL,
+                    room_id INT UNSIGNED NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     CONSTRAINT fk_guests_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_guests_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL,
                     INDEX idx_guests_name (last_name, first_name),
                     INDEX idx_guests_arrival (arrival_date),
-                    INDEX idx_guests_company (company_id)
+                    INDEX idx_guests_company (company_id),
+                    INDEX idx_guests_room (room_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
                 $seedCategory = $pdo->query('SELECT COUNT(*) AS total FROM room_categories')->fetchColumn();
@@ -183,6 +186,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute(['101', 1, 'frei', '1']);
                     $stmt->execute(['102', 1, 'belegt', '1']);
                     $stmt->execute(['201', 2, 'frei', '2']);
+                }
+
+                $sampleRoomId = null;
+                $existingOccupiedRoom = $pdo->query('SELECT id FROM rooms WHERE status = "belegt" ORDER BY id ASC LIMIT 1')->fetchColumn();
+                if ($existingOccupiedRoom !== false) {
+                    $sampleRoomId = (int) $existingOccupiedRoom;
                 }
 
                 $sampleCompanyId = null;
@@ -221,7 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $guestExists = $pdo->query('SELECT COUNT(*) FROM guests')->fetchColumn();
                 if ((int) $guestExists === 0) {
-                    $stmt = $pdo->prepare('INSERT INTO guests (salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, company_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+                    $stmt = $pdo->prepare('INSERT INTO guests (salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, company_id, room_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
                     $stmt->execute([
                         'Herr',
                         'Max',
@@ -241,6 +250,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'geschäftlich',
                         'Beispielgast für den Einstieg.',
                         $sampleCompanyId !== null ? $sampleCompanyId : null,
+                        $sampleRoomId !== null ? $sampleRoomId : null,
                     ]);
                 }
 
