@@ -46,6 +46,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $dbUser = trim($_POST['db_user'] ?? '');
         $dbPassword = $_POST['db_password'] ?? '';
         $createDatabase = isset($_POST['create_database']);
+        $adminName = trim($_POST['admin_name'] ?? '');
+        $adminEmail = trim($_POST['admin_email'] ?? '');
+        $adminPassword = (string) ($_POST['admin_password'] ?? '');
+        $adminPasswordConfirm = (string) ($_POST['admin_password_confirm'] ?? '');
 
         if ($dbHost === '' || $dbName === '' || $dbUser === '') {
             $errors[] = 'Bitte füllen Sie alle Pflichtfelder aus.';
@@ -57,6 +61,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($dbPort !== '' && !preg_match('/^[0-9]+$/', $dbPort)) {
             $errors[] = 'Der Port darf nur Ziffern enthalten.';
+        }
+
+        if ($adminName === '' || $adminEmail === '' || $adminPassword === '') {
+            $errors[] = 'Bitte hinterlegen Sie Name, E-Mail-Adresse und Passwort für den Administrationsbenutzer.';
+        }
+
+        if ($adminEmail !== '' && !filter_var($adminEmail, FILTER_VALIDATE_EMAIL)) {
+            $errors[] = 'Bitte geben Sie eine gültige E-Mail-Adresse für den Administrationsbenutzer ein.';
+        }
+
+        if ($adminPassword !== '' && strlen($adminPassword) < 8) {
+            $errors[] = 'Das Administrationspasswort muss mindestens 8 Zeichen lang sein.';
+        }
+
+        if ($adminPassword !== $adminPasswordConfirm) {
+            $errors[] = 'Die angegebenen Administrationspasswörter stimmen nicht überein.';
         }
 
         if (!$errors) {
@@ -95,6 +115,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     CONSTRAINT fk_rooms_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE SET NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS users (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(150) NOT NULL,
+                    email VARCHAR(190) NOT NULL UNIQUE,
+                    role VARCHAR(50) NOT NULL DEFAULT "admin",
+                    password_hash VARCHAR(255) NOT NULL,
+                    last_login_at DATETIME NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $seedCategory = $pdo->query('SELECT COUNT(*) AS total FROM room_categories')->fetchColumn();
                 if ((int) $seedCategory === 0) {
                     $stmt = $pdo->prepare('INSERT INTO room_categories (name, description, capacity, status) VALUES (?, ?, ?, ?)');
@@ -108,6 +139,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute(['101', 1, 'frei', '1']);
                     $stmt->execute(['102', 1, 'belegt', '1']);
                     $stmt->execute(['201', 2, 'frei', '2']);
+                }
+
+                $adminExists = $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+                if ((int) $adminExists === 0) {
+                    $stmt = $pdo->prepare('INSERT INTO users (name, email, role, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())');
+                    $stmt->execute([
+                        $adminName,
+                        $adminEmail,
+                        'admin',
+                        password_hash($adminPassword, PASSWORD_DEFAULT),
+                    ]);
                 }
 
                 $databaseConfig = [
@@ -131,6 +173,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'database' => $dbName,
                     'host' => $dbHost,
                     'port' => $dbPort,
+                    'admin_email' => $adminEmail,
                 ];
 
                 header('Location: install.php?step=3');
@@ -274,8 +317,8 @@ if ($step === 3 && !$successData) {
                   <div class="d-flex align-items-center gap-3">
                     <div class="step-badge bg-primary text-white">2</div>
                     <div>
-                      <h2 class="h5 mb-1">Datenbank konfigurieren</h2>
-                      <p class="text-muted mb-0">Bitte geben Sie Ihre MySQL-Zugangsdaten ein.</p>
+                      <h2 class="h5 mb-1">Datenbank &amp; Admin konfigurieren</h2>
+                      <p class="text-muted mb-0">Hinterlegen Sie Zugangsdaten für MySQL und Ihren ersten Administrationsbenutzer.</p>
                     </div>
                   </div>
 
@@ -302,7 +345,7 @@ if ($step === 3 && !$successData) {
                       <label for="db_user" class="form-label">Benutzer *</label>
                       <input type="text" class="form-control" id="db_user" name="db_user" value="<?= htmlspecialchars($prefill['user']) ?>" required>
                     </div>
-                    <div class="col-12">
+                    <div class="col-md-6">
                       <label for="db_password" class="form-label">Passwort</label>
                       <input type="password" class="form-control" id="db_password" name="db_password" value="<?= htmlspecialchars($_POST['db_password'] ?? '') ?>">
                     </div>
@@ -313,6 +356,31 @@ if ($step === 3 && !$successData) {
                           Datenbank automatisch anlegen (falls nicht vorhanden)
                         </label>
                       </div>
+                    </div>
+                  </div>
+
+                  <hr class="my-4">
+
+                  <h3 class="h6 text-uppercase text-muted">Administrationszugang</h3>
+                  <p class="text-muted">Mit diesen Zugangsdaten melden Sie sich später im Dashboard an.</p>
+
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label for="admin_name" class="form-label">Name *</label>
+                      <input type="text" class="form-control" id="admin_name" name="admin_name" value="<?= htmlspecialchars($_POST['admin_name'] ?? '') ?>" required>
+                    </div>
+                    <div class="col-md-6">
+                      <label for="admin_email" class="form-label">E-Mail *</label>
+                      <input type="email" class="form-control" id="admin_email" name="admin_email" value="<?= htmlspecialchars($_POST['admin_email'] ?? '') ?>" required>
+                    </div>
+                    <div class="col-md-6">
+                      <label for="admin_password" class="form-label">Passwort *</label>
+                      <input type="password" class="form-control" id="admin_password" name="admin_password" required>
+                      <div class="form-text">Mindestens 8 Zeichen.</div>
+                    </div>
+                    <div class="col-md-6">
+                      <label for="admin_password_confirm" class="form-label">Passwort wiederholen *</label>
+                      <input type="password" class="form-control" id="admin_password_confirm" name="admin_password_confirm" required>
                     </div>
                   </div>
 
@@ -332,7 +400,7 @@ if ($step === 3 && !$successData) {
 
                 <div class="alert alert-success">
                   <h2 class="h6 mb-2">Verbindung hergestellt</h2>
-                  <p class="mb-0">Die Datenbank <strong><?= htmlspecialchars($successData['database']) ?></strong> auf <strong><?= htmlspecialchars($successData['host']) ?><?= $successData['port'] ? ':' . htmlspecialchars($successData['port']) : '' ?></strong> wurde konfiguriert. Sie können sich jetzt im Dashboard anmelden.</p>
+                  <p class="mb-0">Die Datenbank <strong><?= htmlspecialchars($successData['database']) ?></strong> auf <strong><?= htmlspecialchars($successData['host']) ?><?= $successData['port'] ? ':' . htmlspecialchars($successData['port']) : '' ?></strong> wurde konfiguriert. Sie können sich jetzt mit <strong><?= htmlspecialchars($successData['admin_email']) ?></strong> am Dashboard anmelden.</p>
                 </div>
 
                 <div class="card border-0 shadow-sm">

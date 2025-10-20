@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.0.9',
+    'version' => '1.1.0',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',
@@ -19,6 +19,10 @@ return [
         'updates' => [
             'title' => 'Systemupdates',
             'description' => 'Version anzeigen und Updates aus GitHub abrufen.'
+        ],
+        'users' => [
+            'title' => 'Benutzerverwaltung',
+            'description' => 'Zugangsdaten verwalten und Rollen steuern.'
         ],
     ],
 ];
