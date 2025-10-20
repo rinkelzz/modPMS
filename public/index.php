@@ -2,6 +2,7 @@
 
 use ModPMS\Calendar;
 use ModPMS\Database;
+use ModPMS\GuestManager;
 use ModPMS\RoomCategoryManager;
 use ModPMS\RoomManager;
 use ModPMS\SystemUpdater;
@@ -13,6 +14,7 @@ require_once __DIR__ . '/../src/Calendar.php';
 require_once __DIR__ . '/../src/RoomManager.php';
 require_once __DIR__ . '/../src/SystemUpdater.php';
 require_once __DIR__ . '/../src/UserManager.php';
+require_once __DIR__ . '/../src/GuestManager.php';
 
 session_start();
 
@@ -28,6 +30,17 @@ try {
 }
 
 $_SESSION['update_token'] = $updateToken;
+
+$dashboardCsrfToken = $_SESSION['dashboard_csrf_token'] ?? null;
+if (!is_string($dashboardCsrfToken) || $dashboardCsrfToken === '') {
+    try {
+        $dashboardCsrfToken = bin2hex(random_bytes(32));
+    } catch (Throwable $exception) {
+        $dashboardCsrfToken = bin2hex(hash('sha256', uniqid('', true), true));
+    }
+
+    $_SESSION['dashboard_csrf_token'] = $dashboardCsrfToken;
+}
 
 $alert = null;
 if (isset($_SESSION['alert'])) {
@@ -58,6 +71,27 @@ $roomFormData = [
     'notes' => '',
 ];
 
+$guestFormData = [
+    'id' => null,
+    'salutation' => '',
+    'first_name' => '',
+    'last_name' => '',
+    'date_of_birth' => '',
+    'nationality' => '',
+    'document_type' => '',
+    'document_number' => '',
+    'address_street' => '',
+    'address_postal_code' => '',
+    'address_city' => '',
+    'address_country' => '',
+    'email' => '',
+    'phone' => '',
+    'arrival_date' => '',
+    'departure_date' => '',
+    'purpose_of_stay' => 'privat',
+    'notes' => '',
+];
+
 $userFormData = [
     'id' => null,
     'name' => '',
@@ -69,16 +103,19 @@ $config = require __DIR__ . '/../config/app.php';
 $dbError = null;
 $categories = [];
 $rooms = [];
+$guests = [];
 $users = [];
 $pdo = null;
 $categoryManager = null;
 $roomManager = null;
+$guestManager = null;
 $userManager = null;
 
 try {
     $pdo = Database::getConnection();
     $categoryManager = new RoomCategoryManager($pdo);
     $roomManager = new RoomManager($pdo);
+    $guestManager = new GuestManager($pdo);
     $userManager = new UserManager($pdo);
 } catch (Throwable $exception) {
     $dbError = $exception->getMessage();
@@ -86,403 +123,619 @@ try {
 
 $categoryStatuses = ['aktiv', 'inaktiv'];
 $roomStatuses = ['frei', 'belegt', 'wartung'];
+$guestSalutations = ['Herr', 'Frau', 'Divers'];
+$guestPurposeOptions = ['privat', 'geschäftlich'];
 $userRoles = ['admin', 'mitarbeiter'];
+
+$normalizeDateInput = static function (string $value): ?string {
+    if ($value === '') {
+        return null;
+    }
+
+    $date = DateTimeImmutable::createFromFormat('Y-m-d', $value);
+    if ($date === false) {
+        return null;
+    }
+
+    return $date->format('Y-m-d');
+};
 
 if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form'])) {
     $form = $_POST['form'];
+    $submittedToken = (string) ($_POST['token'] ?? '');
+    $storedToken = $_SESSION['dashboard_csrf_token'] ?? '';
+    $tokenValid = is_string($storedToken) && $storedToken !== '' && $submittedToken !== ''
+        && hash_equals($storedToken, $submittedToken);
 
-    switch ($form) {
-        case 'category_create':
-        case 'category_update':
-            $name = trim($_POST['name'] ?? '');
-            $description = trim($_POST['description'] ?? '');
-            $capacityInput = trim((string) ($_POST['capacity'] ?? ''));
-            $capacityValue = (int) $capacityInput;
-            $status = $_POST['status'] ?? 'aktiv';
-            if (!in_array($status, $categoryStatuses, true)) {
-                $status = 'aktiv';
-            }
+    if (!$tokenValid) {
+        $alert = [
+            'type' => 'danger',
+            'message' => 'Ihre Sitzung ist abgelaufen. Bitte versuchen Sie es erneut.',
+        ];
+    } else {
+        switch ($form) {
+            case 'category_create':
+            case 'category_update':
+                $name = trim($_POST['name'] ?? '');
+                $description = trim($_POST['description'] ?? '');
+                $capacityInput = trim((string) ($_POST['capacity'] ?? ''));
+                $capacityValue = (int) $capacityInput;
+                $status = $_POST['status'] ?? 'aktiv';
+                if (!in_array($status, $categoryStatuses, true)) {
+                    $status = 'aktiv';
+                }
 
-            $categoryFormData = [
-                'id' => $form === 'category_update' ? (int) ($_POST['id'] ?? 0) : null,
-                'name' => $name,
-                'description' => $description,
-                'capacity' => $capacityInput !== '' ? $capacityInput : '',
-                'status' => $status,
-            ];
-
-            if ($name === '' || $capacityValue <= 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Bitte geben Sie einen Namen und eine gültige Kapazität an.',
+                $categoryFormData = [
+                    'id' => $form === 'category_update' ? (int) ($_POST['id'] ?? 0) : null,
+                    'name' => $name,
+                    'description' => $description,
+                    'capacity' => $capacityInput !== '' ? $capacityInput : '',
+                    'status' => $status,
                 ];
-                break;
-            }
 
-            $payload = [
-                'name' => $name,
-                'description' => $description,
-                'capacity' => $capacityValue,
-                'status' => $status,
-            ];
+                if ($name === '' || $capacityValue <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte geben Sie einen Namen und eine gültige Kapazität an.',
+                    ];
+                    break;
+                }
 
-            if ($form === 'category_create') {
-                $categoryManager->add($payload);
+                $payload = [
+                    'name' => $name,
+                    'description' => $description,
+                    'capacity' => $capacityValue,
+                    'status' => $status,
+                ];
+
+                if ($form === 'category_create') {
+                    $categoryManager->add($payload);
+
+                    $_SESSION['alert'] = [
+                        'type' => 'success',
+                        'message' => sprintf('Kategorie "%s" erfolgreich angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                    ];
+
+                    header('Location: index.php#category-management');
+                    exit;
+                }
+
+                $categoryId = (int) ($_POST['id'] ?? 0);
+                if ($categoryId <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die Kategorie konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                    ];
+                    break;
+                }
+
+                if ($categoryManager->find($categoryId) === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $categoryManager->update($categoryId, $payload);
 
                 $_SESSION['alert'] = [
                     'type' => 'success',
-                    'message' => sprintf('Kategorie "%s" erfolgreich angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                    'message' => sprintf('Kategorie "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
                 ];
 
                 header('Location: index.php#category-management');
                 exit;
-            }
 
-            $categoryId = (int) ($_POST['id'] ?? 0);
-            if ($categoryId <= 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die Kategorie konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
-                ];
-                break;
-            }
+            case 'category_delete':
+                $categoryId = (int) ($_POST['id'] ?? 0);
 
-            if ($categoryManager->find($categoryId) === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
-                ];
-                break;
-            }
+                if ($categoryId <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die Kategorie konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                    ];
+                    break;
+                }
 
-            $categoryManager->update($categoryId, $payload);
+                $category = $categoryManager->find($categoryId);
+                if ($category === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
+                    ];
+                    break;
+                }
 
-            $_SESSION['alert'] = [
-                'type' => 'success',
-                'message' => sprintf('Kategorie "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
-            ];
-
-            header('Location: index.php#category-management');
-            exit;
-
-        case 'category_delete':
-            $categoryId = (int) ($_POST['id'] ?? 0);
-
-            if ($categoryId <= 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die Kategorie konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
-                ];
-                break;
-            }
-
-            $category = $categoryManager->find($categoryId);
-            if ($category === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
-                ];
-                break;
-            }
-
-            $categoryManager->delete($categoryId);
-
-            $_SESSION['alert'] = [
-                'type' => 'success',
-                'message' => sprintf('Kategorie "%s" wurde gelöscht.', htmlspecialchars($category['name'], ENT_QUOTES, 'UTF-8')),
-            ];
-
-            header('Location: index.php#category-management');
-            exit;
-
-        case 'room_create':
-        case 'room_update':
-            $roomNumber = trim($_POST['room_number'] ?? '');
-            $roomStatus = $_POST['status'] ?? 'frei';
-            if (!in_array($roomStatus, $roomStatuses, true)) {
-                $roomStatus = 'frei';
-            }
-            $categoryIdInput = trim((string) ($_POST['category_id'] ?? ''));
-            $categoryId = $categoryIdInput === '' ? null : (int) $categoryIdInput;
-            $floor = trim($_POST['floor'] ?? '');
-            $notes = trim($_POST['notes'] ?? '');
-
-            $roomFormData = [
-                'id' => $form === 'room_update' ? (int) ($_POST['id'] ?? 0) : null,
-                'room_number' => $roomNumber,
-                'category_id' => $categoryIdInput,
-                'status' => $roomStatus,
-                'floor' => $floor,
-                'notes' => $notes,
-            ];
-
-            if ($roomNumber === '') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Bitte geben Sie eine Zimmernummer an.',
-                ];
-                break;
-            }
-
-            $payload = [
-                'room_number' => $roomNumber,
-                'category_id' => $categoryId,
-                'status' => $roomStatus,
-                'floor' => $floor,
-                'notes' => $notes,
-            ];
-
-            if ($form === 'room_create') {
-                $roomManager->create($payload);
+                $categoryManager->delete($categoryId);
 
                 $_SESSION['alert'] = [
                     'type' => 'success',
-                    'message' => sprintf('Zimmer "%s" erfolgreich angelegt.', htmlspecialchars($roomNumber, ENT_QUOTES, 'UTF-8')),
+                    'message' => sprintf('Kategorie "%s" wurde gelöscht.', htmlspecialchars($category['name'], ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php#category-management');
+                exit;
+
+            case 'room_create':
+            case 'room_update':
+                $roomNumber = trim($_POST['room_number'] ?? '');
+                $roomStatus = $_POST['status'] ?? 'frei';
+                if (!in_array($roomStatus, $roomStatuses, true)) {
+                    $roomStatus = 'frei';
+                }
+                $categoryIdInput = trim((string) ($_POST['category_id'] ?? ''));
+                $categoryId = $categoryIdInput === '' ? null : (int) $categoryIdInput;
+                $floor = trim($_POST['floor'] ?? '');
+                $notes = trim($_POST['notes'] ?? '');
+
+                $roomFormData = [
+                    'id' => $form === 'room_update' ? (int) ($_POST['id'] ?? 0) : null,
+                    'room_number' => $roomNumber,
+                    'category_id' => $categoryIdInput,
+                    'status' => $roomStatus,
+                    'floor' => $floor,
+                    'notes' => $notes,
+                ];
+
+                if ($roomNumber === '') {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte geben Sie eine Zimmernummer an.',
+                    ];
+                    break;
+                }
+
+                $payload = [
+                    'room_number' => $roomNumber,
+                    'category_id' => $categoryId,
+                    'status' => $roomStatus,
+                    'floor' => $floor,
+                    'notes' => $notes,
+                ];
+
+                if ($form === 'room_create') {
+                    $roomManager->create($payload);
+
+                    $_SESSION['alert'] = [
+                        'type' => 'success',
+                        'message' => sprintf('Zimmer "%s" erfolgreich angelegt.', htmlspecialchars($roomNumber, ENT_QUOTES, 'UTF-8')),
+                    ];
+
+                    header('Location: index.php#room-management');
+                    exit;
+                }
+
+                $roomId = (int) ($_POST['id'] ?? 0);
+                if ($roomId <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das Zimmer konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                    ];
+                    break;
+                }
+
+                if ($roomManager->find($roomId) === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das ausgewählte Zimmer wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $roomManager->update($roomId, $payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Zimmer "%s" wurde aktualisiert.', htmlspecialchars($roomNumber, ENT_QUOTES, 'UTF-8')),
                 ];
 
                 header('Location: index.php#room-management');
                 exit;
-            }
 
-            $roomId = (int) ($_POST['id'] ?? 0);
-            if ($roomId <= 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Das Zimmer konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
-                ];
-                break;
-            }
+            case 'room_delete':
+                $roomId = (int) ($_POST['id'] ?? 0);
 
-            if ($roomManager->find($roomId) === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Das ausgewählte Zimmer wurde nicht gefunden.',
-                ];
-                break;
-            }
+                if ($roomId <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das Zimmer konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                    ];
+                    break;
+                }
 
-            $roomManager->update($roomId, $payload);
+                $room = $roomManager->find($roomId);
+                if ($room === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das ausgewählte Zimmer wurde nicht gefunden.',
+                    ];
+                    break;
+                }
 
-            $_SESSION['alert'] = [
-                'type' => 'success',
-                'message' => sprintf('Zimmer "%s" wurde aktualisiert.', htmlspecialchars($roomNumber, ENT_QUOTES, 'UTF-8')),
-            ];
-
-            header('Location: index.php#room-management');
-            exit;
-
-        case 'room_delete':
-            $roomId = (int) ($_POST['id'] ?? 0);
-
-            if ($roomId <= 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Das Zimmer konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
-                ];
-                break;
-            }
-
-            $room = $roomManager->find($roomId);
-            if ($room === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Das ausgewählte Zimmer wurde nicht gefunden.',
-                ];
-                break;
-            }
-
-            $roomManager->delete($roomId);
-
-            $_SESSION['alert'] = [
-                'type' => 'success',
-                'message' => sprintf('Zimmer "%s" wurde gelöscht.', htmlspecialchars($room['room_number'], ENT_QUOTES, 'UTF-8')),
-            ];
-
-            header('Location: index.php#room-management');
-            exit;
-
-        case 'user_create':
-        case 'user_update':
-            if (($_SESSION['user_role'] ?? '') !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen, um Benutzer zu verwalten.',
-                ];
-                break;
-            }
-
-            $name = trim($_POST['name'] ?? '');
-            $email = trim($_POST['email'] ?? '');
-            $roleInput = $_POST['role'] ?? 'mitarbeiter';
-            $role = in_array($roleInput, $userRoles, true) ? $roleInput : 'mitarbeiter';
-            $password = (string) ($_POST['password'] ?? '');
-            $passwordConfirm = (string) ($_POST['password_confirm'] ?? '');
-
-            $userFormData = [
-                'id' => $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null,
-                'name' => $name,
-                'email' => $email,
-                'role' => $role,
-            ];
-
-            if ($name === '' || $email === '') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Bitte geben Sie einen Namen und eine E-Mail-Adresse an.',
-                ];
-                break;
-            }
-
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Bitte geben Sie eine gültige E-Mail-Adresse ein.',
-                ];
-                break;
-            }
-
-            if ($form === 'user_create' && $password === '') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Bitte vergeben Sie ein Passwort für den neuen Benutzer.',
-                ];
-                break;
-            }
-
-            if ($password !== '' && strlen($password) < 8) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Das Passwort muss mindestens 8 Zeichen lang sein.',
-                ];
-                break;
-            }
-
-            if ($password !== $passwordConfirm) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die eingegebenen Passwörter stimmen nicht überein.',
-                ];
-                break;
-            }
-
-            $existingUser = $userManager->findByEmail($email);
-            $targetUserId = $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null;
-
-            if ($existingUser !== null && ($targetUserId === null || (int) $existingUser['id'] !== $targetUserId)) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die angegebene E-Mail-Adresse wird bereits verwendet.',
-                ];
-                break;
-            }
-
-            if ($form === 'user_create') {
-                $userManager->create([
-                    'name' => $name,
-                    'email' => $email,
-                    'role' => $role,
-                    'password_hash' => password_hash($password, PASSWORD_DEFAULT),
-                ]);
+                $roomManager->delete($roomId);
 
                 $_SESSION['alert'] = [
                     'type' => 'success',
-                    'message' => sprintf('Benutzer "%s" erfolgreich angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                    'message' => sprintf('Zimmer "%s" wurde gelöscht.', htmlspecialchars($room['room_number'], ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php#room-management');
+                exit;
+
+            case 'guest_create':
+            case 'guest_update':
+                $salutationInput = trim($_POST['salutation'] ?? '');
+                if ($salutationInput !== '' && !in_array($salutationInput, $guestSalutations, true)) {
+                    $salutationInput = '';
+                }
+
+                $firstName = trim($_POST['first_name'] ?? '');
+                $lastName = trim($_POST['last_name'] ?? '');
+                $dateOfBirthInput = trim((string) ($_POST['date_of_birth'] ?? ''));
+                $nationality = trim($_POST['nationality'] ?? '');
+                $documentType = trim($_POST['document_type'] ?? '');
+                $documentNumber = trim($_POST['document_number'] ?? '');
+                $addressStreet = trim($_POST['address_street'] ?? '');
+                $addressPostalCode = trim($_POST['address_postal_code'] ?? '');
+                $addressCity = trim($_POST['address_city'] ?? '');
+                $addressCountry = trim($_POST['address_country'] ?? '');
+                $email = trim($_POST['email'] ?? '');
+                $phone = trim($_POST['phone'] ?? '');
+                $arrivalDateInput = trim((string) ($_POST['arrival_date'] ?? ''));
+                $departureDateInput = trim((string) ($_POST['departure_date'] ?? ''));
+                $purposeInput = $_POST['purpose_of_stay'] ?? 'privat';
+                $notes = trim($_POST['notes'] ?? '');
+
+                if (!in_array($purposeInput, $guestPurposeOptions, true)) {
+                    $purposeInput = 'privat';
+                }
+
+                $guestFormData = [
+                    'id' => $form === 'guest_update' ? (int) ($_POST['id'] ?? 0) : null,
+                    'salutation' => $salutationInput,
+                    'first_name' => $firstName,
+                    'last_name' => $lastName,
+                    'date_of_birth' => $dateOfBirthInput,
+                    'nationality' => $nationality,
+                    'document_type' => $documentType,
+                    'document_number' => $documentNumber,
+                    'address_street' => $addressStreet,
+                    'address_postal_code' => $addressPostalCode,
+                    'address_city' => $addressCity,
+                    'address_country' => $addressCountry,
+                    'email' => $email,
+                    'phone' => $phone,
+                    'arrival_date' => $arrivalDateInput,
+                    'departure_date' => $departureDateInput,
+                    'purpose_of_stay' => $purposeInput,
+                    'notes' => $notes,
+                ];
+
+                if ($firstName === '' || $lastName === '') {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte geben Sie mindestens Vor- und Nachnamen des Gastes an.',
+                    ];
+                    break;
+                }
+
+                if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte geben Sie eine gültige E-Mail-Adresse für den Gast an.',
+                    ];
+                    break;
+                }
+
+                if (($documentType === '' && $documentNumber !== '') || ($documentType !== '' && $documentNumber === '')) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte hinterlegen Sie Ausweisart und -nummer gemeinsam.',
+                    ];
+                    break;
+                }
+
+                $normalizedBirthDate = $normalizeDateInput($dateOfBirthInput);
+                if ($dateOfBirthInput !== '' && $normalizedBirthDate === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das angegebene Geburtsdatum ist ungültig. Bitte verwenden Sie das Format JJJJ-MM-TT.',
+                    ];
+                    break;
+                }
+
+                $normalizedArrivalDate = $normalizeDateInput($arrivalDateInput);
+                if ($arrivalDateInput !== '' && $normalizedArrivalDate === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das Anreisedatum konnte nicht verarbeitet werden. Bitte verwenden Sie das Format JJJJ-MM-TT.',
+                    ];
+                    break;
+                }
+
+                $normalizedDepartureDate = $normalizeDateInput($departureDateInput);
+                if ($departureDateInput !== '' && $normalizedDepartureDate === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das Abreisedatum konnte nicht verarbeitet werden. Bitte verwenden Sie das Format JJJJ-MM-TT.',
+                    ];
+                    break;
+                }
+
+                if ($normalizedArrivalDate !== null && $normalizedDepartureDate !== null && strcmp($normalizedDepartureDate, $normalizedArrivalDate) < 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das Abreisedatum darf nicht vor dem Anreisedatum liegen.',
+                    ];
+                    break;
+                }
+
+                $payload = [
+                    'salutation' => $salutationInput !== '' ? $salutationInput : null,
+                    'first_name' => $firstName,
+                    'last_name' => $lastName,
+                    'date_of_birth' => $normalizedBirthDate,
+                    'nationality' => $nationality !== '' ? $nationality : null,
+                    'document_type' => $documentType !== '' ? $documentType : null,
+                    'document_number' => $documentNumber !== '' ? $documentNumber : null,
+                    'address_street' => $addressStreet !== '' ? $addressStreet : null,
+                    'address_postal_code' => $addressPostalCode !== '' ? $addressPostalCode : null,
+                    'address_city' => $addressCity !== '' ? $addressCity : null,
+                    'address_country' => $addressCountry !== '' ? $addressCountry : null,
+                    'email' => $email !== '' ? $email : null,
+                    'phone' => $phone !== '' ? $phone : null,
+                    'arrival_date' => $normalizedArrivalDate,
+                    'departure_date' => $normalizedDepartureDate,
+                    'purpose_of_stay' => $purposeInput,
+                    'notes' => $notes !== '' ? $notes : null,
+                ];
+
+                if ($form === 'guest_create') {
+                    $guestManager->create($payload);
+
+                    $_SESSION['alert'] = [
+                        'type' => 'success',
+                        'message' => sprintf('Gast "%s %s" erfolgreich angelegt.', htmlspecialchars($firstName, ENT_QUOTES, 'UTF-8'), htmlspecialchars($lastName, ENT_QUOTES, 'UTF-8')),
+                    ];
+
+                    header('Location: index.php#guest-management');
+                    exit;
+                }
+
+                $guestId = (int) ($_POST['id'] ?? 0);
+                if ($guestId <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Der Gast konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                    ];
+                    break;
+                }
+
+                $guest = $guestManager->find($guestId);
+                if ($guest === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Der ausgewählte Gast wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $guestManager->update($guestId, $payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Gast "%s %s" wurde aktualisiert.', htmlspecialchars($firstName, ENT_QUOTES, 'UTF-8'), htmlspecialchars($lastName, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php#guest-management');
+                exit;
+
+            case 'guest_delete':
+                $guestId = (int) ($_POST['id'] ?? 0);
+
+                if ($guestId <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Der Gast konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                    ];
+                    break;
+                }
+
+                $guest = $guestManager->find($guestId);
+                if ($guest === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Der ausgewählte Gast wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $guestManager->delete($guestId);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Gast "%s %s" wurde gelöscht.', htmlspecialchars($guest['first_name'], ENT_QUOTES, 'UTF-8'), htmlspecialchars($guest['last_name'], ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php#guest-management');
+                exit;
+
+            case 'user_create':
+            case 'user_update':
+                $name = trim($_POST['name'] ?? '');
+                $email = trim($_POST['email'] ?? '');
+                $roleInput = $_POST['role'] ?? 'mitarbeiter';
+                $role = in_array($roleInput, $userRoles, true) ? $roleInput : 'mitarbeiter';
+                $password = (string) ($_POST['password'] ?? '');
+                $passwordConfirm = (string) ($_POST['password_confirm'] ?? '');
+
+                $userFormData = [
+                    'id' => $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null,
+                    'name' => $name,
+                    'email' => $email,
+                    'role' => $role,
+                ];
+
+                if ($name === '' || $email === '') {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte geben Sie einen Namen und eine E-Mail-Adresse an.',
+                    ];
+                    break;
+                }
+
+                if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte geben Sie eine gültige E-Mail-Adresse ein.',
+                    ];
+                    break;
+                }
+
+                if ($form === 'user_create' && $password === '') {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte vergeben Sie ein Passwort für den neuen Benutzer.',
+                    ];
+                    break;
+                }
+
+                if ($password !== '' && strlen($password) < 8) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Das Passwort muss mindestens 8 Zeichen lang sein.',
+                    ];
+                    break;
+                }
+
+                if ($password !== $passwordConfirm) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die eingegebenen Passwörter stimmen nicht überein.',
+                    ];
+                    break;
+                }
+
+                $existingUser = $userManager->findByEmail($email);
+                $targetUserId = $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null;
+
+                if ($existingUser !== null && ($targetUserId === null || (int) $existingUser['id'] !== $targetUserId)) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die angegebene E-Mail-Adresse wird bereits verwendet.',
+                    ];
+                    break;
+                }
+
+                if ($form === 'user_create') {
+                    $userManager->create([
+                        'name' => $name,
+                        'email' => $email,
+                        'role' => $role,
+                        'password_hash' => password_hash($password, PASSWORD_DEFAULT),
+                    ]);
+
+                    $_SESSION['alert'] = [
+                        'type' => 'success',
+                        'message' => sprintf('Benutzer "%s" erfolgreich angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                    ];
+
+                    header('Location: index.php#user-management');
+                    exit;
+                }
+
+                $userId = $targetUserId;
+                if ($userId === null || $userId <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Der Benutzer konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                    ];
+                    break;
+                }
+
+                $user = $userManager->find($userId);
+                if ($user === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Der ausgewählte Benutzer wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $payload = [
+                    'name' => $name,
+                    'email' => $email,
+                    'role' => $role,
+                ];
+
+                if ($password !== '') {
+                    $payload['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
+                }
+
+                $userManager->update($userId, $payload);
+
+                if ((int) $_SESSION['user_id'] === $userId) {
+                    $_SESSION['user_name'] = $name;
+                    $_SESSION['user_email'] = $email;
+                    $_SESSION['user_role'] = $role;
+                }
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Benutzer "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
                 ];
 
                 header('Location: index.php#user-management');
                 exit;
-            }
 
-            $userId = $targetUserId;
-            if ($userId === null || $userId <= 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Der Benutzer konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+            case 'user_delete':
+                $userId = (int) ($_POST['id'] ?? 0);
+
+                if ($userId <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Der Benutzer konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                    ];
+                    break;
+                }
+
+                if ((int) $_SESSION['user_id'] === $userId) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Sie können Ihr eigenes Konto nicht löschen.',
+                    ];
+                    break;
+                }
+
+                $user = $userManager->find($userId);
+                if ($user === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Der ausgewählte Benutzer wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $userManager->delete($userId);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Benutzer "%s" wurde gelöscht.', htmlspecialchars($user['name'], ENT_QUOTES, 'UTF-8')),
                 ];
-                break;
-            }
 
-            $user = $userManager->find($userId);
-            if ($user === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Der ausgewählte Benutzer wurde nicht gefunden.',
-                ];
-                break;
-            }
-
-            $payload = [
-                'name' => $name,
-                'email' => $email,
-                'role' => $role,
-            ];
-
-            if ($password !== '') {
-                $payload['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
-            }
-
-            $userManager->update($userId, $payload);
-
-            if ((int) $_SESSION['user_id'] === $userId) {
-                $_SESSION['user_name'] = $name;
-                $_SESSION['user_email'] = $email;
-                $_SESSION['user_role'] = $role;
-            }
-
-            $_SESSION['alert'] = [
-                'type' => 'success',
-                'message' => sprintf('Benutzer "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
-            ];
-
-            header('Location: index.php#user-management');
-            exit;
-
-        case 'user_delete':
-            if (($_SESSION['user_role'] ?? '') !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen, um Benutzer zu verwalten.',
-                ];
-                break;
-            }
-
-            $userId = (int) ($_POST['id'] ?? 0);
-
-            if ($userId <= 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Der Benutzer konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
-                ];
-                break;
-            }
-
-            if ((int) $_SESSION['user_id'] === $userId) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Sie können Ihr eigenes Konto nicht löschen.',
-                ];
-                break;
-            }
-
-            $user = $userManager->find($userId);
-            if ($user === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Der ausgewählte Benutzer wurde nicht gefunden.',
-                ];
-                break;
-            }
-
-            $userManager->delete($userId);
-
-            $_SESSION['alert'] = [
-                'type' => 'success',
-                'message' => sprintf('Benutzer "%s" wurde gelöscht.', htmlspecialchars($user['name'], ENT_QUOTES, 'UTF-8')),
-            ];
-
-            header('Location: index.php#user-management');
-            exit;
+                header('Location: index.php#user-management');
+                exit;
+        }
     }
+
+    try {
+        $dashboardCsrfToken = bin2hex(random_bytes(32));
+    } catch (Throwable $exception) {
+        $dashboardCsrfToken = bin2hex(hash('sha256', uniqid('', true), true));
+    }
+
+    $_SESSION['dashboard_csrf_token'] = $dashboardCsrfToken;
 } elseif ($pdo === null && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $alert = [
         'type' => 'danger',
@@ -493,6 +746,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 if ($pdo !== null) {
     $categories = $categoryManager->all();
     $rooms = $roomManager->all();
+    $guests = $guestManager->all();
     $users = $userManager->all();
 }
 
@@ -531,6 +785,38 @@ if ($pdo !== null && isset($_GET['editRoom']) && $roomFormData['id'] === null) {
         $alert = [
             'type' => 'warning',
             'message' => 'Das ausgewählte Zimmer wurde nicht gefunden.',
+        ];
+    }
+}
+
+if ($pdo !== null && isset($_GET['editGuest']) && $guestFormData['id'] === null) {
+    $guestToEdit = $guestManager->find((int) $_GET['editGuest']);
+
+    if ($guestToEdit) {
+        $guestFormData = [
+            'id' => (int) $guestToEdit['id'],
+            'salutation' => $guestToEdit['salutation'] ?? '',
+            'first_name' => $guestToEdit['first_name'],
+            'last_name' => $guestToEdit['last_name'],
+            'date_of_birth' => $guestToEdit['date_of_birth'] ?? '',
+            'nationality' => $guestToEdit['nationality'] ?? '',
+            'document_type' => $guestToEdit['document_type'] ?? '',
+            'document_number' => $guestToEdit['document_number'] ?? '',
+            'address_street' => $guestToEdit['address_street'] ?? '',
+            'address_postal_code' => $guestToEdit['address_postal_code'] ?? '',
+            'address_city' => $guestToEdit['address_city'] ?? '',
+            'address_country' => $guestToEdit['address_country'] ?? '',
+            'email' => $guestToEdit['email'] ?? '',
+            'phone' => $guestToEdit['phone'] ?? '',
+            'arrival_date' => $guestToEdit['arrival_date'] ?? '',
+            'departure_date' => $guestToEdit['departure_date'] ?? '',
+            'purpose_of_stay' => $guestToEdit['purpose_of_stay'] ?? 'privat',
+            'notes' => $guestToEdit['notes'] ?? '',
+        ];
+    } elseif ($alert === null) {
+        $alert = [
+            'type' => 'warning',
+            'message' => 'Der ausgewählte Gast wurde nicht gefunden.',
         ];
     }
 }
@@ -692,6 +978,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             <div class="card-body">
               <form method="post" class="row g-3" id="category-form">
                 <input type="hidden" name="form" value="<?= $isEditingCategory ? 'category_update' : 'category_create' ?>">
+                <input type="hidden" name="token" value="<?= htmlspecialchars($dashboardCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <?php if ($isEditingCategory): ?>
                   <input type="hidden" name="id" value="<?= (int) $categoryFormData['id'] ?>">
                 <?php endif; ?>
@@ -755,6 +1042,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?editCategory=<?= (int) $category['id'] ?>#category-management">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Kategorie wirklich löschen?');">
                                 <input type="hidden" name="form" value="category_delete">
+                                <input type="hidden" name="token" value="<?= htmlspecialchars($dashboardCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                               </form>
@@ -821,6 +1109,292 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
 
       <div class="row g-4 mt-1">
         <div class="col-12">
+          <div class="card module-card" id="guest-management">
+            <?php $isEditingGuest = $guestFormData['id'] !== null; ?>
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+              <div>
+                <h2 class="h5 mb-1">Gäste &amp; Meldescheine</h2>
+                <p class="text-muted mb-0"><?= $isEditingGuest ? 'Gastdaten prüfen und für den Meldeschein vervollständigen.' : 'Neue Gäste aufnehmen und Meldeschein-relevante Informationen sammeln.' ?></p>
+              </div>
+              <?php if ($isEditingGuest): ?>
+                <span class="badge text-bg-primary">Bearbeitung</span>
+              <?php else: ?>
+                <span class="badge text-bg-success">Meldeschein-Ready</span>
+              <?php endif; ?>
+            </div>
+            <div class="card-body">
+              <form method="post" class="row g-3" id="guest-form">
+                <input type="hidden" name="form" value="<?= $isEditingGuest ? 'guest_update' : 'guest_create' ?>">
+                <input type="hidden" name="token" value="<?= htmlspecialchars($dashboardCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                <?php if ($isEditingGuest): ?>
+                  <input type="hidden" name="id" value="<?= (int) $guestFormData['id'] ?>">
+                <?php endif; ?>
+                <div class="col-md-2">
+                  <label for="guest-salutation" class="form-label">Anrede</label>
+                  <select class="form-select" id="guest-salutation" name="salutation" <?= $pdo === null ? 'disabled' : '' ?>>
+                    <option value="">Keine Angabe</option>
+                    <?php foreach ($guestSalutations as $salutation): ?>
+                      <option value="<?= htmlspecialchars($salutation) ?>" <?= $guestFormData['salutation'] === $salutation ? 'selected' : '' ?>><?= htmlspecialchars($salutation) ?></option>
+                    <?php endforeach; ?>
+                  </select>
+                </div>
+                <div class="col-md-5">
+                  <label for="guest-first-name" class="form-label">Vorname *</label>
+                  <input type="text" class="form-control" id="guest-first-name" name="first_name" value="<?= htmlspecialchars((string) $guestFormData['first_name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-5">
+                  <label for="guest-last-name" class="form-label">Nachname *</label>
+                  <input type="text" class="form-control" id="guest-last-name" name="last_name" value="<?= htmlspecialchars((string) $guestFormData['last_name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-4">
+                  <label for="guest-dob" class="form-label">Geburtsdatum</label>
+                  <input type="date" class="form-control" id="guest-dob" name="date_of_birth" value="<?= htmlspecialchars((string) $guestFormData['date_of_birth']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-4">
+                  <label for="guest-nationality" class="form-label">Staatsangehörigkeit</label>
+                  <input type="text" class="form-control" id="guest-nationality" name="nationality" value="<?= htmlspecialchars((string) $guestFormData['nationality']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-4">
+                  <label for="guest-purpose" class="form-label">Reisezweck</label>
+                  <select class="form-select" id="guest-purpose" name="purpose_of_stay" <?= $pdo === null ? 'disabled' : '' ?>>
+                    <?php foreach ($guestPurposeOptions as $purpose): ?>
+                      <option value="<?= htmlspecialchars($purpose) ?>" <?= $guestFormData['purpose_of_stay'] === $purpose ? 'selected' : '' ?>><?= $purpose === 'geschäftlich' ? 'Geschäftlich' : 'Privat' ?></option>
+                    <?php endforeach; ?>
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-arrival" class="form-label">Anreise</label>
+                  <input type="date" class="form-control" id="guest-arrival" name="arrival_date" value="<?= htmlspecialchars((string) $guestFormData['arrival_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-departure" class="form-label">Abreise</label>
+                  <input type="date" class="form-control" id="guest-departure" name="departure_date" value="<?= htmlspecialchars((string) $guestFormData['departure_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-document-type" class="form-label">Ausweisart</label>
+                  <input type="text" class="form-control" id="guest-document-type" name="document_type" value="<?= htmlspecialchars((string) $guestFormData['document_type']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-document-number" class="form-label">Ausweisnummer</label>
+                  <input type="text" class="form-control" id="guest-document-number" name="document_number" value="<?= htmlspecialchars((string) $guestFormData['document_number']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-8">
+                  <label for="guest-address-street" class="form-label">Straße &amp; Hausnummer</label>
+                  <input type="text" class="form-control" id="guest-address-street" name="address_street" value="<?= htmlspecialchars((string) $guestFormData['address_street']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-4">
+                  <label for="guest-address-postal" class="form-label">PLZ</label>
+                  <input type="text" class="form-control" id="guest-address-postal" name="address_postal_code" value="<?= htmlspecialchars((string) $guestFormData['address_postal_code']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-address-city" class="form-label">Ort</label>
+                  <input type="text" class="form-control" id="guest-address-city" name="address_city" value="<?= htmlspecialchars((string) $guestFormData['address_city']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-address-country" class="form-label">Land</label>
+                  <input type="text" class="form-control" id="guest-address-country" name="address_country" value="<?= htmlspecialchars((string) $guestFormData['address_country']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-email" class="form-label">E-Mail</label>
+                  <input type="email" class="form-control" id="guest-email" name="email" value="<?= htmlspecialchars((string) $guestFormData['email']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-md-6">
+                  <label for="guest-phone" class="form-label">Telefon</label>
+                  <input type="text" class="form-control" id="guest-phone" name="phone" value="<?= htmlspecialchars((string) $guestFormData['phone']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                </div>
+                <div class="col-12">
+                  <label for="guest-notes" class="form-label">Notizen</label>
+                  <textarea class="form-control" id="guest-notes" name="notes" rows="2" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $guestFormData['notes']) ?></textarea>
+                  <div class="form-text">Freitext für Meldeschein-Hinweise, z. B. Begleitpersonen oder Besonderheiten.</div>
+                </div>
+                <div class="col-12 d-flex justify-content-end align-items-center flex-wrap gap-2">
+                  <?php if ($isEditingGuest): ?>
+                    <a href="index.php#guest-management" class="btn btn-outline-secondary">Abbrechen</a>
+                  <?php endif; ?>
+                  <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isEditingGuest ? 'Gast aktualisieren' : 'Gast speichern' ?></button>
+                </div>
+              </form>
+
+              <?php if ($pdo === null): ?>
+                <p class="text-muted mt-3 mb-0">Die Formularfelder sind deaktiviert, bis eine gültige Datenbankverbindung besteht.</p>
+              <?php endif; ?>
+
+              <?php if ($pdo !== null): ?>
+                <div class="table-responsive mt-4">
+                  <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light">
+                      <tr>
+                        <th scope="col">Gast</th>
+                        <th scope="col">Aufenthalt</th>
+                        <th scope="col">Kontakt &amp; Adresse</th>
+                        <th scope="col">Ausweisdaten</th>
+                        <th scope="col">Meldeschein</th>
+                        <th scope="col" class="text-end">Aktionen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <?php foreach ($guests as $guest): ?>
+                        <?php
+                          $guestNameParts = [];
+                          if (!empty($guest['salutation'])) {
+                              $guestNameParts[] = $guest['salutation'];
+                          }
+                          $guestNameParts[] = trim(($guest['first_name'] ?? '') . ' ' . ($guest['last_name'] ?? ''));
+                          $guestName = trim(implode(' ', array_filter($guestNameParts)));
+
+                          $birthLabel = '<span class="text-muted">unbekannt</span>';
+                          if (!empty($guest['date_of_birth'])) {
+                              try {
+                                  $birthLabel = htmlspecialchars((new DateTimeImmutable($guest['date_of_birth']))->format('d.m.Y'));
+                              } catch (Throwable $exception) {
+                                  $birthLabel = htmlspecialchars($guest['date_of_birth']);
+                              }
+                          }
+
+                          $nationalityLabel = !empty($guest['nationality']) ? htmlspecialchars($guest['nationality']) : '—';
+
+                          $arrivalLabel = null;
+                          if (!empty($guest['arrival_date'])) {
+                              try {
+                                  $arrivalLabel = (new DateTimeImmutable($guest['arrival_date']))->format('d.m.Y');
+                              } catch (Throwable $exception) {
+                                  $arrivalLabel = $guest['arrival_date'];
+                              }
+                          }
+
+                          $departureLabel = null;
+                          if (!empty($guest['departure_date'])) {
+                              try {
+                                  $departureLabel = (new DateTimeImmutable($guest['departure_date']))->format('d.m.Y');
+                              } catch (Throwable $exception) {
+                                  $departureLabel = $guest['departure_date'];
+                              }
+                          }
+
+                          $stayDetails = [];
+                          if ($arrivalLabel !== null || $departureLabel !== null) {
+                              $stayDetails[] = sprintf('%s – %s', $arrivalLabel !== null ? $arrivalLabel : 'offen', $departureLabel !== null ? $departureLabel : 'offen');
+                          }
+                          $stayDetails[] = $guest['purpose_of_stay'] === 'geschäftlich' ? 'Geschäftlich' : 'Privat';
+
+                          $contactParts = [];
+                          if (!empty($guest['email'])) {
+                              $contactParts[] = htmlspecialchars($guest['email']);
+                          }
+                          if (!empty($guest['phone'])) {
+                              $contactParts[] = htmlspecialchars($guest['phone']);
+                          }
+
+                          $addressParts = [];
+                          if (!empty($guest['address_street'])) {
+                              $addressParts[] = htmlspecialchars($guest['address_street']);
+                          }
+                          $cityLineParts = array_filter([
+                              $guest['address_postal_code'] !== null ? trim((string) $guest['address_postal_code']) : '',
+                              $guest['address_city'] !== null ? trim((string) $guest['address_city']) : '',
+                          ]);
+                          if ($cityLineParts !== []) {
+                              $addressParts[] = htmlspecialchars(implode(' ', $cityLineParts));
+                          }
+                          if (!empty($guest['address_country'])) {
+                              $addressParts[] = htmlspecialchars($guest['address_country']);
+                          }
+
+                          $documentParts = [];
+                          if (!empty($guest['document_type'])) {
+                              $documentParts[] = htmlspecialchars($guest['document_type']);
+                          }
+                          if (!empty($guest['document_number'])) {
+                              $documentParts[] = htmlspecialchars($guest['document_number']);
+                          }
+
+                          $hasMeldeschein = !empty($guest['arrival_date'])
+                              && !empty($guest['departure_date'])
+                              && !empty($guest['date_of_birth'])
+                              && !empty($guest['nationality'])
+                              && !empty($guest['address_street'])
+                              && !empty($guest['address_city'])
+                              && !empty($guest['address_country'])
+                              && !empty($guest['document_type'])
+                              && !empty($guest['document_number']);
+
+                          $meldescheinBadgeClass = $hasMeldeschein ? 'text-bg-success' : 'text-bg-warning';
+                          $meldescheinBadgeText = $hasMeldeschein ? 'bereit' : 'unvollständig';
+                        ?>
+                        <tr>
+                          <td>
+                            <div class="fw-semibold"><?= htmlspecialchars($guestName) ?></div>
+                            <div class="small text-muted">Geburtsdatum: <?= $birthLabel ?><?= $nationalityLabel !== '—' ? ' · ' . $nationalityLabel : '' ?></div>
+                          </td>
+                          <td>
+                            <?php foreach ($stayDetails as $stayDetail): ?>
+                              <div><?= htmlspecialchars($stayDetail) ?></div>
+                            <?php endforeach; ?>
+                            <?php if (empty($stayDetails)): ?>
+                              <span class="text-muted">Keine Angaben</span>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($contactParts !== []): ?>
+                              <?php foreach ($contactParts as $contactPart): ?>
+                                <div><?= $contactPart ?></div>
+                              <?php endforeach; ?>
+                            <?php endif; ?>
+                            <?php if ($addressParts !== []): ?>
+                              <div class="mt-1">
+                                <?php foreach ($addressParts as $addressPart): ?>
+                                  <div><?= $addressPart ?></div>
+                                <?php endforeach; ?>
+                              </div>
+                            <?php endif; ?>
+                            <?php if ($contactParts === [] && $addressParts === []): ?>
+                              <span class="text-muted">Keine Kontaktdaten</span>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($documentParts !== []): ?>
+                              <?php foreach ($documentParts as $documentPart): ?>
+                                <div><?= $documentPart ?></div>
+                              <?php endforeach; ?>
+                            <?php else: ?>
+                              <span class="text-muted">Keine Angaben</span>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <span class="badge <?= $meldescheinBadgeClass ?> text-uppercase"><?= $meldescheinBadgeText ?></span>
+                            <div class="small text-muted"><?= $hasMeldeschein ? 'Alle Pflichtfelder befüllt.' : 'Bitte fehlende Angaben ergänzen.' ?></div>
+                          </td>
+                          <td class="text-end">
+                            <div class="d-flex justify-content-end gap-2 flex-wrap">
+                              <a class="btn btn-outline-secondary btn-sm" href="index.php?editGuest=<?= (int) $guest['id'] ?>#guest-management">Bearbeiten</a>
+                              <form method="post" onsubmit="return confirm('Gast wirklich löschen?');">
+                                <input type="hidden" name="form" value="guest_delete">
+                                <input type="hidden" name="token" value="<?= htmlspecialchars($dashboardCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
+                                <input type="hidden" name="id" value="<?= (int) $guest['id'] ?>">
+                                <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                              </form>
+                              <button type="button" class="btn btn-outline-primary btn-sm" title="Export folgt in einem späteren Release" disabled>Meldeschein</button>
+                            </div>
+                          </td>
+                        </tr>
+                      <?php endforeach; ?>
+                      <?php if (empty($guests)): ?>
+                        <tr>
+                          <td colspan="6" class="text-center text-muted py-3">Noch keine Gäste erfasst.</td>
+                        </tr>
+                      <?php endif; ?>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="small text-muted mt-3 mb-0">Hinweis: Sobald alle Pflichtfelder gepflegt sind, kann ein Meldeschein aus den gespeicherten Daten generiert werden.</p>
+              <?php endif; ?>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row g-4 mt-1">
+        <div class="col-12">
           <div class="card module-card" id="room-management">
             <?php $isEditingRoom = $roomFormData['id'] !== null; ?>
             <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
@@ -835,6 +1409,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             <div class="card-body">
               <form method="post" class="row g-3" id="room-form">
                 <input type="hidden" name="form" value="<?= $isEditingRoom ? 'room_update' : 'room_create' ?>">
+                <input type="hidden" name="token" value="<?= htmlspecialchars($dashboardCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <?php if ($isEditingRoom): ?>
                   <input type="hidden" name="id" value="<?= (int) $roomFormData['id'] ?>">
                 <?php endif; ?>
@@ -920,6 +1495,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?editRoom=<?= (int) $room['id'] ?>#room-management">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Zimmer wirklich löschen?');">
                                 <input type="hidden" name="form" value="room_delete">
+                                <input type="hidden" name="token" value="<?= htmlspecialchars($dashboardCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="id" value="<?= (int) $room['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                               </form>
@@ -957,6 +1533,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             <div class="card-body">
               <form method="post" class="row g-3" id="user-form">
                 <input type="hidden" name="form" value="<?= $isEditingUser ? 'user_update' : 'user_create' ?>">
+                <input type="hidden" name="token" value="<?= htmlspecialchars($dashboardCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <?php if ($isEditingUser): ?>
                   <input type="hidden" name="id" value="<?= (int) $userFormData['id'] ?>">
                 <?php endif; ?>
@@ -1032,6 +1609,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <?php if ((int) $_SESSION['user_id'] !== (int) $user['id']): ?>
                                 <form method="post" onsubmit="return confirm('Benutzer wirklich löschen?');">
                                   <input type="hidden" name="form" value="user_delete">
+                                  <input type="hidden" name="token" value="<?= htmlspecialchars($dashboardCsrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="id" value="<?= (int) $user['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                                 </form>

@@ -2,11 +2,12 @@
 
 Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP und MySQL. Dieses Repository enthält das Basis-Modul mit Dashboard, Kalender, Zimmerkategorien und integriertem Update-Workflow.
 
-## Features Basis-Modul (Version 1.1.0)
+## Features Basis-Modul (Version 1.2.0)
 
 - **Dashboard** mit tagesbasiertem Zimmerkalender (Zimmer auf Y-Achse, Tage auf X-Achse) und Schnellstatistik.
 - **Zimmerkategorien-Verwaltung** inklusive Bearbeiten/Löschen und **Zimmerstamm** mit CRUD-Funktionen – alles direkt in MySQL gespeichert.
 - **Zimmerübersicht** mit Beispielzimmern aus der Datenbank, die sich leicht erweitern lassen.
+- **Gästeverwaltung** inklusive aller für den Meldeschein benötigten Stammdaten und Vollständigkeitsprüfung.
 - **Systemupdates** direkt aus der Weboberfläche anstoßen – inklusive Git-Prüfungen, ZIP-Fallback und aussagekräftigen Fehlermeldungen.
 - **Benutzerverwaltung** mit Rollen (Administrator/Mitarbeiter), Passwort-Reset und Login-Tracking.
 - **Anmeldung & Logout** über `login.php` inkl. Session-Schutz des Dashboards.
@@ -36,12 +37,18 @@ Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP un
 - Über den Bereich **Systemupdates** im Dashboard lässt sich per Button ein Update starten. Ist Git verfügbar, wird ein `fetch/reset/pull` ausgeführt (inklusive automatischer Remote-Konfiguration). Scheitert dies oder steht Git nicht bereit, lädt der Updater ein ZIP-Archiv der gewählten Branch herunter und spielt es per PHP auf.
 - Voraussetzung für den Git-Weg ist ein Checkout mit `.git` sowie ausreichende Rechte des Webserver-Benutzers. Für den ZIP-Fallback muss die PHP-Erweiterung `zip` aktiv sein und ausgehende HTTPS-Verbindungen erlaubt sein.
 
+## Gästeverwaltung & Meldescheinvorbereitung
+
+- Erfassung von Anrede, Name, Geburtsdatum, Nationalität und Kontaktdaten.
+- Hinterlegung von Aufenthaltszeitraum, Reisezweck sowie Ausweis- und Adressdaten.
+- Automatische Prüfung, ob alle Pflichtfelder für die Meldeschein-Erstellung ausgefüllt sind.
+- Export-Schaltfläche als Platzhalter für den kommenden PDF-/Druck-Workflow.
+
 ## Nächste Module
 
 - Ratenplan & Kalender
 - Putzplan
 - Externe API-Anbindungen
-- Kundenverwaltung
 - Berichte
 
 Feedback & Issues sind jederzeit willkommen!

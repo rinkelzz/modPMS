@@ -126,6 +126,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS guests (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    salutation VARCHAR(20) NULL,
+                    first_name VARCHAR(120) NOT NULL,
+                    last_name VARCHAR(150) NOT NULL,
+                    date_of_birth DATE NULL,
+                    nationality VARCHAR(100) NULL,
+                    document_type VARCHAR(100) NULL,
+                    document_number VARCHAR(100) NULL,
+                    address_street VARCHAR(190) NULL,
+                    address_postal_code VARCHAR(20) NULL,
+                    address_city VARCHAR(150) NULL,
+                    address_country VARCHAR(150) NULL,
+                    email VARCHAR(190) NULL,
+                    phone VARCHAR(80) NULL,
+                    arrival_date DATE NULL,
+                    departure_date DATE NULL,
+                    purpose_of_stay ENUM("privat", "geschäftlich") NOT NULL DEFAULT "privat",
+                    notes TEXT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_guests_name (last_name, first_name),
+                    INDEX idx_guests_arrival (arrival_date)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $seedCategory = $pdo->query('SELECT COUNT(*) AS total FROM room_categories')->fetchColumn();
                 if ((int) $seedCategory === 0) {
                     $stmt = $pdo->prepare('INSERT INTO room_categories (name, description, capacity, status) VALUES (?, ?, ?, ?)');
@@ -149,6 +174,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $adminEmail,
                         'admin',
                         password_hash($adminPassword, PASSWORD_DEFAULT),
+                    ]);
+                }
+
+                $guestExists = $pdo->query('SELECT COUNT(*) FROM guests')->fetchColumn();
+                if ((int) $guestExists === 0) {
+                    $stmt = $pdo->prepare('INSERT INTO guests (salutation, first_name, last_name, date_of_birth, nationality, document_type, document_number, address_street, address_postal_code, address_city, address_country, email, phone, arrival_date, departure_date, purpose_of_stay, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+                    $stmt->execute([
+                        'Herr',
+                        'Max',
+                        'Mustermann',
+                        '1985-04-12',
+                        'Deutschland',
+                        'Personalausweis',
+                        'D1234567',
+                        'Musterstraße 1',
+                        '10115',
+                        'Berlin',
+                        'Deutschland',
+                        'max.mustermann@example.com',
+                        '+49 30 1234567',
+                        (new DateTimeImmutable('today'))->format('Y-m-d'),
+                        (new DateTimeImmutable('+3 days'))->format('Y-m-d'),
+                        'privat',
+                        'Beispielgast für den Einstieg.',
                     ]);
                 }
 
