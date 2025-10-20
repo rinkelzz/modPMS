@@ -1,0 +1,285 @@
+body {
+    background-color: #f5f7fa;
+    font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.app-main {
+    min-height: calc(100vh - 4rem);
+}
+
+.app-section {
+    display: none;
+    margin-bottom: 2.5rem;
+}
+
+.app-section.active {
+    display: block;
+    animation: fadeIn 0.25s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.navbar-nav .nav-link {
+    border-radius: 0.75rem;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    color: #1f2937;
+}
+
+.navbar-nav .nav-link.active,
+.navbar-nav .nav-link:focus,
+.navbar-nav .nav-link:hover {
+    background-color: #2563eb;
+    color: #fff !important;
+}
+
+.navbar-nav .nav-link.active {
+    box-shadow: 0 0.5rem 1rem rgba(37, 99, 235, 0.2);
+}
+
+.quick-action-toggle {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 9999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.25rem;
+    font-weight: 600;
+    padding: 0;
+    box-shadow: 0 0.5rem 1rem rgba(37, 99, 235, 0.25);
+}
+
+.quick-action-toggle:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 0.25rem rgba(37, 99, 235, 0.35);
+}
+
+.quick-action-menu {
+    min-width: 230px;
+    box-shadow: 0 1rem 2rem rgba(15, 23, 42, 0.2);
+    border: 0;
+    border-radius: 0.75rem;
+    padding: 0.5rem 0;
+}
+
+.quick-action-menu .dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+}
+
+.quick-action-menu .dropdown-item:hover,
+.quick-action-menu .dropdown-item:focus {
+    background-color: #e0ebff;
+    color: #1d4ed8;
+}
+
+.quick-action-icon {
+    line-height: 1;
+}
+
+.quick-action-dropdown .dropdown-menu-end {
+    inset: auto !important;
+    margin-top: 0.75rem;
+}
+
+@media (max-width: 991.98px) {
+    .quick-action-dropdown {
+        width: 100%;
+    }
+
+    .quick-action-toggle {
+        width: 100%;
+    }
+
+    .quick-action-dropdown .dropdown-menu {
+        min-width: 100%;
+    }
+}
+
+.navbar-brand {
+    font-weight: 700;
+    letter-spacing: 0.03em;
+}
+
+.module-card {
+    border-radius: 0.75rem;
+    box-shadow: 0 1rem 2rem rgba(15, 23, 42, 0.08);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.module-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 1.5rem 3rem rgba(15, 23, 42, 0.12);
+}
+
+.calendar-grid-wrapper {
+    overflow-x: auto;
+}
+
+.room-calendar {
+    min-width: 900px;
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.room-calendar th,
+.room-calendar td {
+    text-align: center;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.room-calendar .room-column {
+    min-width: 220px;
+    position: sticky;
+    left: 0;
+    background-color: #f8fafc;
+    box-shadow: inset -1px 0 0 #e2e8f0;
+    z-index: 2;
+}
+
+.room-calendar .room-label {
+    text-align: left;
+    background-color: #fff;
+    position: sticky;
+    left: 0;
+    z-index: 1;
+}
+
+.room-calendar .category-row .category-label {
+    background-color: #dbeafe;
+    border-top: 2px solid #bfdbfe;
+    border-bottom: 2px solid #bfdbfe;
+    font-weight: 600;
+}
+
+.room-calendar .category-row .category-summary {
+    margin-top: 0.25rem;
+}
+
+.room-calendar .category-row td {
+    background-color: #f1f5f9;
+}
+
+.room-calendar .category-row .category-cell {
+    background-color: #f1f5f9;
+    font-weight: 500;
+}
+
+.room-calendar .room-label-room {
+    padding-left: 1.5rem;
+}
+
+.room-calendar .room-empty-row td {
+    background-color: #fff;
+}
+
+.room-calendar-cell {
+    min-width: 64px;
+    height: 60px;
+    background-color: #f8fafc;
+    transition: background-color 0.2s ease;
+}
+
+.room-calendar-cell:hover {
+    background-color: #e2e8f0;
+}
+
+.room-calendar-cell.today {
+    border: 2px solid #2563eb;
+    background-color: #eff6ff;
+    color: #0f172a;
+}
+
+.room-calendar-cell.free {
+    color: #475569;
+}
+
+.room-calendar-cell.maintenance {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.room-calendar-cell.occupied {
+    background-color: #1d4ed8;
+    color: #fff;
+}
+
+.room-calendar-cell.occupied.today {
+    background-color: #1e3a8a;
+}
+
+.room-calendar-cell .occupancy-entry {
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
+.room-calendar-cell .occupancy-entry + .occupancy-entry {
+    margin-top: 0.25rem;
+}
+
+.calendar-toolbar .calendar-controls .form-control[type="date"] {
+    min-width: 150px;
+}
+
+.calendar-toolbar .calendar-controls .btn {
+    white-space: nowrap;
+}
+
+.update-output {
+    background: #0f172a;
+    color: #e2e8f0;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.85rem;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.typeahead {
+    position: relative;
+}
+
+.typeahead .typeahead-dropdown {
+    position: absolute;
+    top: calc(100% + 0.25rem);
+    left: 0;
+    right: 0;
+    z-index: 1055;
+    max-height: 260px;
+    overflow-y: auto;
+    display: none;
+    border-radius: 0.75rem;
+    box-shadow: 0 1rem 2rem rgba(15, 23, 42, 0.15);
+}
+
+.typeahead .typeahead-dropdown.show {
+    display: block;
+}
+
+.typeahead .typeahead-item.active {
+    background-color: #2563eb;
+    color: #fff;
+}
+
+.typeahead .typeahead-item.active .small {
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.typeahead .typeahead-empty {
+    cursor: default;
+}
