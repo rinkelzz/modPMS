@@ -33,6 +33,16 @@ try {
 
 $_SESSION['update_token'] = $updateToken;
 
+if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || $_SESSION['csrf_token'] === '') {
+    try {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    } catch (Throwable $exception) {
+        $_SESSION['csrf_token'] = bin2hex(hash('sha256', uniqid('', true), true));
+    }
+}
+
+$csrfToken = $_SESSION['csrf_token'];
+
 $alert = null;
 if (isset($_SESSION['alert'])) {
     $alert = $_SESSION['alert'];
@@ -178,81 +188,89 @@ $normalizeDateInput = static function (string $value): ?string {
 
 if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form'])) {
     $form = $_POST['form'];
+    $sessionCsrfToken = $_SESSION['csrf_token'] ?? null;
+    $submittedCsrfToken = $_POST['csrf_token'] ?? null;
 
-    switch ($form) {
-        case 'category_create':
-        case 'category_update':
-            $activeSection = 'categories';
-            $name = trim($_POST['name'] ?? '');
-            $description = trim($_POST['description'] ?? '');
-            $capacityInput = trim((string) ($_POST['capacity'] ?? ''));
-            $capacityValue = (int) $capacityInput;
-            $status = $_POST['status'] ?? 'aktiv';
-            if (!in_array($status, $categoryStatuses, true)) {
-                $status = 'aktiv';
-            }
+    if (!is_string($sessionCsrfToken) || $sessionCsrfToken === '' || !is_string($submittedCsrfToken) || !hash_equals($sessionCsrfToken, $submittedCsrfToken)) {
+        $alert = [
+            'type' => 'danger',
+            'message' => 'Die Formularübermittlung ist fehlgeschlagen. Bitte laden Sie die Seite neu und versuchen Sie es erneut.',
+        ];
+    } else {
+        switch ($form) {
+            case 'category_create':
+            case 'category_update':
+                $activeSection = 'categories';
+                $name = trim($_POST['name'] ?? '');
+                $description = trim($_POST['description'] ?? '');
+                $capacityInput = trim((string) ($_POST['capacity'] ?? ''));
+                $capacityValue = (int) $capacityInput;
+                $status = $_POST['status'] ?? 'aktiv';
+                if (!in_array($status, $categoryStatuses, true)) {
+                    $status = 'aktiv';
+                }
 
-            $categoryFormData = [
-                'id' => $form === 'category_update' ? (int) ($_POST['id'] ?? 0) : null,
-                'name' => $name,
-                'description' => $description,
-                'capacity' => $capacityInput !== '' ? $capacityInput : '',
-                'status' => $status,
-            ];
-
-            if ($name === '' || $capacityValue <= 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Bitte geben Sie einen Namen und eine gültige Kapazität an.',
+                $categoryFormData = [
+                    'id' => $form === 'category_update' ? (int) ($_POST['id'] ?? 0) : null,
+                    'name' => $name,
+                    'description' => $description,
+                    'capacity' => $capacityInput !== '' ? $capacityInput : '',
+                    'status' => $status,
                 ];
-                break;
-            }
 
-            $payload = [
-                'name' => $name,
-                'description' => $description,
-                'capacity' => $capacityValue,
-                'status' => $status,
-            ];
+                if ($name === '' || $capacityValue <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte geben Sie einen Namen und eine gültige Kapazität an.',
+                    ];
+                    break;
+                }
 
-            if ($form === 'category_create') {
-                $categoryManager->add($payload);
+                $payload = [
+                    'name' => $name,
+                    'description' => $description,
+                    'capacity' => $capacityValue,
+                    'status' => $status,
+                ];
+
+                if ($form === 'category_create') {
+                    $categoryManager->add($payload);
+
+                    $_SESSION['alert'] = [
+                        'type' => 'success',
+                        'message' => sprintf('Kategorie "%s" erfolgreich angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                    ];
+
+                    header('Location: index.php?section=categories');
+                    exit;
+                }
+
+                $categoryId = (int) ($_POST['id'] ?? 0);
+                if ($categoryId <= 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die Kategorie konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                    ];
+                    break;
+                }
+
+                if ($categoryManager->find($categoryId) === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
+                    ];
+                    break;
+                }
+
+                $categoryManager->update($categoryId, $payload);
 
                 $_SESSION['alert'] = [
                     'type' => 'success',
-                    'message' => sprintf('Kategorie "%s" erfolgreich angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                    'message' => sprintf('Kategorie "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
                 ];
 
                 header('Location: index.php?section=categories');
                 exit;
-            }
-
-            $categoryId = (int) ($_POST['id'] ?? 0);
-            if ($categoryId <= 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die Kategorie konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
-                ];
-                break;
-            }
-
-            if ($categoryManager->find($categoryId) === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
-                ];
-                break;
-            }
-
-            $categoryManager->update($categoryId, $payload);
-
-            $_SESSION['alert'] = [
-                'type' => 'success',
-                'message' => sprintf('Kategorie "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
-            ];
-
-            header('Location: index.php?section=categories');
-            exit;
 
         case 'category_delete':
             $activeSection = 'categories';
@@ -782,14 +800,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
-
-            if (($_SESSION['user_role'] ?? null) !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Sie benötigen Administratorrechte, um Benutzerkonten zu verwalten.',
-                ];
-                break;
-            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -918,13 +928,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
-            if (($_SESSION['user_role'] ?? null) !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Sie benötigen Administratorrechte, um Benutzerkonten zu verwalten.',
-                ];
-                break;
-            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
@@ -961,6 +964,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             header('Location: index.php?section=users');
             exit;
+        }
     }
 } elseif ($pdo === null && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $alert = [
@@ -1355,6 +1359,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="category-form">
+                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <input type="hidden" name="form" value="<?= $isEditingCategory ? 'category_update' : 'category_create' ?>">
                   <?php if ($isEditingCategory): ?>
                     <input type="hidden" name="id" value="<?= (int) $categoryFormData['id'] ?>">
@@ -1418,6 +1423,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=categories&editCategory=<?= (int) $category['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Kategorie wirklich löschen?');">
+                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="form" value="category_delete">
                                   <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -1456,6 +1462,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" action="update.php" class="d-flex flex-column gap-3">
+                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <input type="hidden" name="token" value="<?= htmlspecialchars($updateToken, ENT_QUOTES, 'UTF-8') ?>">
                   <div>
                     <label class="form-label">Repository</label>
@@ -1510,6 +1517,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="guest-form">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="form" value="<?= $isEditingGuest ? 'guest_update' : 'guest_create' ?>">
                 <?php if ($isEditingGuest): ?>
                   <input type="hidden" name="id" value="<?= (int) $guestFormData['id'] ?>">
@@ -1779,6 +1787,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2 flex-wrap">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editGuest=<?= (int) $guest['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Gast wirklich löschen?');">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="form" value="guest_delete">
                                 <input type="hidden" name="id" value="<?= (int) $guest['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -1817,6 +1826,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="company-form">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="form" value="<?= $isEditingCompany ? 'company_update' : 'company_create' ?>">
                 <?php if ($isEditingCompany): ?>
                   <input type="hidden" name="id" value="<?= (int) $companyFormData['id'] ?>">
@@ -1932,6 +1942,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editCompany=<?= (int) $company['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Firma wirklich löschen?');">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                 <input type="hidden" name="form" value="company_delete">
                                 <input type="hidden" name="id" value="<?= (int) $company['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm" <?= ($companyGuestCounts[$companyId] ?? 0) > 0 ? 'disabled title="Zuerst Gästezuordnungen entfernen"' : '' ?>>Löschen</button>
@@ -1973,6 +1984,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="room-form">
+                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                   <input type="hidden" name="form" value="<?= $isEditingRoom ? 'room_update' : 'room_create' ?>">
                   <?php if ($isEditingRoom): ?>
                     <input type="hidden" name="id" value="<?= (int) $roomFormData['id'] ?>">
@@ -2058,6 +2070,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rooms&editRoom=<?= (int) $room['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Zimmer wirklich löschen?');">
+                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="form" value="room_delete">
                                   <input type="hidden" name="id" value="<?= (int) $room['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -2099,6 +2112,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="user-form">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="form" value="<?= $isEditingUser ? 'user_update' : 'user_create' ?>">
                 <?php if ($isEditingUser): ?>
                   <input type="hidden" name="id" value="<?= (int) $userFormData['id'] ?>">
@@ -2174,6 +2188,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=users&editUser=<?= (int) $user['id'] ?>">Bearbeiten</a>
                               <?php if ((int) $_SESSION['user_id'] !== (int) $user['id']): ?>
                                 <form method="post" onsubmit="return confirm('Benutzer wirklich löschen?');">
+                                  <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') ?>">
                                   <input type="hidden" name="form" value="user_delete">
                                   <input type="hidden" name="id" value="<?= (int) $user['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
