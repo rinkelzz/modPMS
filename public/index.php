@@ -30,13 +30,22 @@ if (!isset($_SESSION['user_id'])) {
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
 
-try {
-    $updateToken = bin2hex(random_bytes(32));
-} catch (Throwable $exception) {
-    $updateToken = bin2hex(hash('sha256', uniqid('', true), true));
-}
+/**
+ * @return string
+ */
+$generateToken = static function (): string {
+    try {
+        return bin2hex(random_bytes(32));
+    } catch (Throwable $exception) {
+        return bin2hex(hash('sha256', uniqid('', true), true));
+    }
+};
 
+$updateToken = $generateToken();
 $_SESSION['update_token'] = $updateToken;
+
+$reservationStatusToken = $generateToken();
+$_SESSION['reservation_status_token'] = $reservationStatusToken;
 
 $alert = null;
 if (isset($_SESSION['alert'])) {
@@ -1502,6 +1511,20 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 header('Location: index.php?' . http_build_query($redirectParams));
                 exit;
             }
+
+            $statusToken = isset($_POST['status_token']) ? (string) $_POST['status_token'] : '';
+            $sessionStatusToken = isset($_SESSION['reservation_status_token']) ? (string) $_SESSION['reservation_status_token'] : '';
+
+            if ($statusToken === '' || $sessionStatusToken === '' || !hash_equals($sessionStatusToken, $statusToken)) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Die Statusänderung konnte nicht verifiziert werden.',
+                ];
+                header('Location: index.php?' . http_build_query($redirectParams));
+                exit;
+            }
+
+            unset($_SESSION['reservation_status_token']);
 
             $reservationId = (int) ($_POST['id'] ?? 0);
             $statusInput = isset($_POST['status']) ? (string) $_POST['status'] : '';
@@ -4224,6 +4247,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           <div class="modal-footer flex-wrap gap-2">
             <form method="post" id="reservation-status-form" class="d-flex flex-wrap gap-2 align-items-center">
               <input type="hidden" name="form" value="reservation_status_update">
+              <input type="hidden" name="status_token" value="<?= htmlspecialchars($reservationStatusToken, ENT_QUOTES, 'UTF-8') ?>">
               <input type="hidden" name="id" id="reservation-status-id">
               <input type="hidden" name="status" id="reservation-status-value">
               <input type="hidden" name="redirect_section" value="<?= htmlspecialchars($activeSection) ?>">
