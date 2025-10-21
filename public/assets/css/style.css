@@ -553,3 +553,82 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
+
+.rate-calendar {
+    display: grid;
+    gap: 1rem;
+}
+
+@media (min-width: 992px) {
+    .rate-calendar {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (min-width: 1400px) {
+    .rate-calendar {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+.rate-calendar-month {
+    background: #ffffff;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    border-radius: 0.75rem;
+    padding: 1rem;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+}
+
+.rate-calendar-month-header {
+    font-weight: 600;
+    color: #0f172a;
+    margin-bottom: 0.75rem;
+}
+
+.rate-calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 0.35rem;
+}
+
+.rate-calendar-cell {
+    background: #f8fafc;
+    border-radius: 0.65rem;
+    min-height: 72px;
+    padding: 0.35rem 0.4rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    border: 1px solid transparent;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rate-calendar-cell:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+}
+
+.rate-calendar-cell-override {
+    background: rgba(37, 99, 235, 0.12);
+    border-color: rgba(37, 99, 235, 0.35);
+}
+
+.rate-calendar-cell-empty {
+    background: transparent;
+    border: none;
+    min-height: 0;
+    padding: 0;
+}
+
+.rate-calendar-day {
+    font-weight: 600;
+    color: #1e293b;
+    margin-bottom: 0.15rem;
+}
+
+.rate-calendar-price {
+    font-size: 0.85rem;
+    color: #334155;
+}

@@ -5,6 +5,7 @@ use ModPMS\Calendar;
 use ModPMS\CompanyManager;
 use ModPMS\Database;
 use ModPMS\GuestManager;
+use ModPMS\RateManager;
 use ModPMS\ReservationManager;
 use ModPMS\SettingManager;
 use ModPMS\RoomCategoryManager;
@@ -23,6 +24,7 @@ require_once __DIR__ . '/../src/UserManager.php';
 require_once __DIR__ . '/../src/GuestManager.php';
 require_once __DIR__ . '/../src/ReservationManager.php';
 require_once __DIR__ . '/../src/SettingManager.php';
+require_once __DIR__ . '/../src/RateManager.php';
 
 session_start();
 
@@ -114,6 +116,57 @@ $reservationFormData = [
 $reservationFormMode = 'create';
 $isEditingReservation = false;
 
+$rateFormData = [
+    'id' => null,
+    'name' => '',
+    'category_id' => '',
+    'base_price' => '',
+    'description' => '',
+];
+$rateFormMode = 'create';
+
+$ratePeriodFormData = [
+    'id' => null,
+    'rate_id' => '',
+    'start_date' => '',
+    'end_date' => '',
+    'price' => '',
+    'days_of_week' => [],
+];
+$ratePeriodFormMode = 'create';
+$ratePeriodWeekdayOptions = [
+    1 => 'Montag',
+    2 => 'Dienstag',
+    3 => 'Mittwoch',
+    4 => 'Donnerstag',
+    5 => 'Freitag',
+    6 => 'Samstag',
+    7 => 'Sonntag',
+];
+
+$requestedRateId = isset($_GET['rateId']) ? (int) $_GET['rateId'] : null;
+if ($requestedRateId !== null && $requestedRateId <= 0) {
+    $requestedRateId = null;
+}
+
+$currentYear = (int) date('Y');
+$rateCalendarYear = $currentYear;
+if (isset($_GET['rateYear'])) {
+    $candidateYear = (int) $_GET['rateYear'];
+    if ($candidateYear >= 2000 && $candidateYear <= 2100) {
+        $rateCalendarYear = $candidateYear;
+    }
+}
+
+$rateCalendarData = [
+    'rate' => null,
+    'year' => $rateCalendarYear,
+    'months' => [],
+];
+$rateCalendarPrevUrl = 'index.php?section=rates';
+$rateCalendarNextUrl = 'index.php?section=rates';
+$rateCalendarResetUrl = 'index.php?section=rates';
+
 $companyFormData = [
     'id' => null,
     'name' => '',
@@ -137,6 +190,7 @@ $userFormData = [
 $navItems = [
     'dashboard' => 'Dashboard',
     'reservations' => 'Reservierungen',
+    'rates' => 'Raten',
     'categories' => 'Kategorien',
     'rooms' => 'Zimmer',
     'guests' => 'Gäste',
@@ -162,6 +216,8 @@ if (isset($_GET['editCategory'])) {
     $activeSection = 'guests';
 } elseif (isset($_GET['editReservation'])) {
     $activeSection = 'reservations';
+} elseif (isset($_GET['editRate']) || isset($_GET['editRatePeriod'])) {
+    $activeSection = 'rates';
 }
 
 $calendarPastDays = 2;
@@ -198,6 +254,9 @@ $guests = [];
 $companies = [];
 $companyGuestCounts = [];
 $companyLookup = [];
+$rates = [];
+$ratePeriods = [];
+$activeRate = null;
 $users = [];
 $reservations = [];
 $roomLookup = [];
@@ -213,6 +272,7 @@ $guestManager = null;
 $companyManager = null;
 $userManager = null;
 $reservationManager = null;
+$rateManager = null;
 $backupManager = null;
 $reservationCategoryOptionsHtml = '<option value="">Bitte auswählen</option>';
 $reservationRoomOptionsHtml = '<option value="">Kein konkretes Zimmer – Überbuchung</option>';
@@ -363,6 +423,7 @@ try {
     $reservationManager = new ReservationManager($pdo);
     $settingsManager = new SettingManager($pdo);
     $backupManager = new BackupManager($pdo);
+    $rateManager = new RateManager($pdo);
 } catch (Throwable $exception) {
     $dbError = $exception->getMessage();
 }
@@ -627,6 +688,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $updatedComponents[] = 'Reservierungen';
                 }
 
+                if ($rateManager instanceof RateManager) {
+                    if (method_exists($rateManager, 'refreshSchema')) {
+                        $rateManager->refreshSchema();
+                    }
+                    $updatedComponents[] = 'Raten';
+                }
+
                 if ($categoryManager instanceof RoomCategoryManager) {
                     if (method_exists($categoryManager, 'refreshSchema')) {
                         $categoryManager->refreshSchema();
@@ -829,6 +897,367 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             break;
+
+        case 'rate_create':
+        case 'rate_update':
+            $activeSection = 'rates';
+            $rateFormMode = $form === 'rate_update' ? 'update' : 'create';
+
+            $name = trim((string) ($_POST['name'] ?? ''));
+            $categoryIdInput = trim((string) ($_POST['category_id'] ?? ''));
+            $basePriceInput = trim((string) ($_POST['base_price'] ?? ''));
+            $description = trim((string) ($_POST['description'] ?? ''));
+
+            $rateFormData = [
+                'id' => $form === 'rate_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'name' => $name,
+                'category_id' => $categoryIdInput,
+                'base_price' => $basePriceInput,
+                'description' => $description,
+            ];
+
+            if ($rateManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Ratenverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            if ($categoryIdInput === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte wählen Sie eine Zimmerkategorie aus.',
+                ];
+                break;
+            }
+
+            $categoryId = (int) $categoryIdInput;
+            if ($categoryId <= 0 || !$categoryManager instanceof RoomCategoryManager || $categoryManager->find($categoryId) === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die gewählte Kategorie ist ungültig.',
+                ];
+                break;
+            }
+
+            if ($name === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen Namen für die Rate ein.',
+                ];
+                break;
+            }
+
+            $normalizedPrice = str_replace(',', '.', preg_replace('/[^0-9,\.]/', '', $basePriceInput));
+            if ($normalizedPrice === '' || !is_numeric($normalizedPrice)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen gültigen Basispreis an.',
+                ];
+                break;
+            }
+
+            $basePriceValue = round((float) $normalizedPrice, 2);
+            if ($basePriceValue < 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Basispreis darf nicht negativ sein.',
+                ];
+                break;
+            }
+
+            $basePriceForDatabase = number_format($basePriceValue, 2, '.', '');
+
+            if ($form === 'rate_create') {
+                $payload = [
+                    'name' => $name,
+                    'category_id' => $categoryId,
+                    'base_price' => $basePriceForDatabase,
+                    'description' => $description !== '' ? $description : null,
+                    'created_by' => $currentUserId > 0 ? $currentUserId : null,
+                    'updated_by' => $currentUserId > 0 ? $currentUserId : null,
+                ];
+
+                $newRateId = $rateManager->create($payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Rate "%s" wurde angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                $redirectParams = ['section' => 'rates'];
+                if ($newRateId > 0) {
+                    $redirectParams['rateId'] = $newRateId;
+                }
+
+                header('Location: index.php?' . http_build_query($redirectParams));
+                exit;
+            }
+
+            $rateId = (int) ($_POST['id'] ?? 0);
+            if ($rateId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Rate konnte nicht aktualisiert werden, da keine gültige ID angegeben wurde.',
+                ];
+                break;
+            }
+
+            $existingRate = $rateManager->find($rateId);
+            if ($existingRate === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Rate wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $payload = [
+                'name' => $name,
+                'category_id' => $categoryId,
+                'base_price' => $basePriceForDatabase,
+                'description' => $description !== '' ? $description : null,
+                'updated_by' => $currentUserId > 0 ? $currentUserId : null,
+            ];
+
+            $rateManager->update($rateId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Rate "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=rates&rateId=' . $rateId);
+            exit;
+
+        case 'rate_delete':
+            $activeSection = 'rates';
+
+            if ($rateManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Ratenverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $rateId = (int) ($_POST['id'] ?? 0);
+            if ($rateId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Rate konnte nicht gelöscht werden, da keine gültige ID übermittelt wurde.',
+                ];
+                break;
+            }
+
+            $existingRate = $rateManager->find($rateId);
+            if ($existingRate === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Rate wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $rateManager->delete($rateId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Rate "%s" wurde gelöscht.', htmlspecialchars((string) $existingRate['name'], ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=rates');
+            exit;
+
+        case 'rate_period_create':
+        case 'rate_period_update':
+            $activeSection = 'rates';
+            $ratePeriodFormMode = $form === 'rate_period_update' ? 'update' : 'create';
+
+            if ($rateManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Ratenverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $rateIdInput = trim((string) ($_POST['rate_id'] ?? ''));
+            $startInput = trim((string) ($_POST['start_date'] ?? ''));
+            $endInput = trim((string) ($_POST['end_date'] ?? ''));
+            $priceInput = trim((string) ($_POST['price'] ?? ''));
+            $daysInput = isset($_POST['days_of_week']) && is_array($_POST['days_of_week']) ? $_POST['days_of_week'] : [];
+
+            $ratePeriodFormData = [
+                'id' => $form === 'rate_period_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'rate_id' => $rateIdInput,
+                'start_date' => $startInput,
+                'end_date' => $endInput,
+                'price' => $priceInput,
+                'days_of_week' => array_map('intval', $daysInput),
+            ];
+
+            $rateId = (int) $rateIdInput;
+            if ($rateId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte wählen Sie eine Rate aus.',
+                ];
+                break;
+            }
+
+            $rate = $rateManager->find($rateId);
+            if ($rate === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Rate wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $startDate = DateTimeImmutable::createFromFormat('Y-m-d', $startInput) ?: DateTimeImmutable::createFromFormat('d.m.Y', $startInput);
+            $endDate = DateTimeImmutable::createFromFormat('Y-m-d', $endInput) ?: DateTimeImmutable::createFromFormat('d.m.Y', $endInput);
+
+            if (!$startDate || !$endDate) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie gültige Start- und Enddaten ein (Format JJJJ-MM-TT).',
+                ];
+                break;
+            }
+
+            if ($endDate < $startDate) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Enddatum darf nicht vor dem Startdatum liegen.',
+                ];
+                break;
+            }
+
+            $normalizedPrice = str_replace(',', '.', preg_replace('/[^0-9,\.]/', '', $priceInput));
+            if ($normalizedPrice === '' || !is_numeric($normalizedPrice)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen gültigen Preis für den Zeitraum ein.',
+                ];
+                break;
+            }
+
+            $priceValue = round((float) $normalizedPrice, 2);
+            if ($priceValue < 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Preis darf nicht negativ sein.',
+                ];
+                break;
+            }
+
+            $daysOfWeek = $rateManager->normaliseDaysOfWeek($daysInput);
+
+            if ($form === 'rate_period_create') {
+                $payload = [
+                    'rate_id' => $rateId,
+                    'start_date' => $startDate->format('Y-m-d'),
+                    'end_date' => $endDate->format('Y-m-d'),
+                    'price' => number_format($priceValue, 2, '.', ''),
+                    'days_of_week' => $daysOfWeek,
+                    'created_by' => $currentUserId > 0 ? $currentUserId : null,
+                    'updated_by' => $currentUserId > 0 ? $currentUserId : null,
+                ];
+
+                $periodId = $rateManager->createPeriod($payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Preiszeitraum wurde hinzugefügt.',
+                ];
+
+                $redirectParams = [
+                    'section' => 'rates',
+                    'rateId' => $rateId,
+                ];
+
+                header('Location: index.php?' . http_build_query($redirectParams) . '#rate-periods');
+                exit;
+            }
+
+            $periodId = (int) ($_POST['id'] ?? 0);
+            if ($periodId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Zeitraum konnte nicht aktualisiert werden, da keine gültige ID übermittelt wurde.',
+                ];
+                break;
+            }
+
+            $existingPeriod = $rateManager->findPeriod($periodId);
+            if ($existingPeriod === null || (int) ($existingPeriod['rate_id'] ?? 0) !== $rateId) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Zeitraum gehört nicht zur aktuellen Rate.',
+                ];
+                break;
+            }
+
+            $payload = [
+                'start_date' => $startDate->format('Y-m-d'),
+                'end_date' => $endDate->format('Y-m-d'),
+                'price' => number_format($priceValue, 2, '.', ''),
+                'days_of_week' => $daysOfWeek,
+                'updated_by' => $currentUserId > 0 ? $currentUserId : null,
+            ];
+
+            $rateManager->updatePeriod($periodId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Preiszeitraum wurde aktualisiert.',
+            ];
+
+            header('Location: index.php?section=rates&rateId=' . $rateId . '#rate-periods');
+            exit;
+
+        case 'rate_period_delete':
+            $activeSection = 'rates';
+
+            if ($rateManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Ratenverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $periodId = (int) ($_POST['id'] ?? 0);
+            $rateId = (int) ($_POST['rate_id'] ?? 0);
+
+            if ($periodId <= 0 || $rateId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Zeitraum konnte nicht gelöscht werden, da Angaben fehlen.',
+                ];
+                break;
+            }
+
+            $existingPeriod = $rateManager->findPeriod($periodId);
+            if ($existingPeriod === null || (int) ($existingPeriod['rate_id'] ?? 0) !== $rateId) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Zeitraum wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $rateManager->deletePeriod($periodId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Preiszeitraum wurde gelöscht.',
+            ];
+
+            header('Location: index.php?section=rates&rateId=' . $rateId . '#rate-periods');
+            exit;
 
         case 'category_move':
             $activeSection = 'categories';
@@ -1916,13 +2345,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
-            if (($_SESSION['user_role'] ?? null) !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Nur Administratoren können Benutzerkonten verwalten.',
-                ];
-                break;
-            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -2051,13 +2473,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
-            if (($_SESSION['user_role'] ?? null) !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Nur Administratoren können Benutzerkonten löschen.',
-                ];
-                break;
-            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
@@ -2103,6 +2518,54 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 }
 
 if ($pdo !== null) {
+    if ($rateManager instanceof RateManager) {
+        $rates = $rateManager->all();
+
+        if ($requestedRateId !== null) {
+            $activeRateId = $requestedRateId;
+        }
+
+        if ($activeRateId === null && $rates !== []) {
+            $firstRateId = isset($rates[0]['id']) ? (int) $rates[0]['id'] : 0;
+            $activeRateId = $firstRateId > 0 ? $firstRateId : null;
+        }
+
+        if ($activeRateId !== null) {
+            $activeRate = $rateManager->find($activeRateId);
+
+            if ($activeRate === null && $rates !== []) {
+                foreach ($rates as $rateRecord) {
+                    if (!isset($rateRecord['id'])) {
+                        continue;
+                    }
+
+                    if ((int) $rateRecord['id'] === $activeRateId) {
+                        $activeRate = $rateRecord;
+                        break;
+                    }
+                }
+            }
+
+            if ($activeRate !== null) {
+                $ratePeriods = $rateManager->periodsForRate($activeRateId);
+                $rateCalendarData = $rateManager->buildYearlyCalendar($activeRateId, $rateCalendarYear);
+            }
+        }
+
+        $rateCalendarBaseParams = ['section' => 'rates'];
+        if ($activeRateId !== null) {
+            $rateCalendarBaseParams['rateId'] = $activeRateId;
+        }
+
+        $rateCalendarPrevUrl = 'index.php?' . http_build_query(array_merge($rateCalendarBaseParams, [
+            'rateYear' => $rateCalendarYear - 1,
+        ]));
+        $rateCalendarNextUrl = 'index.php?' . http_build_query(array_merge($rateCalendarBaseParams, [
+            'rateYear' => $rateCalendarYear + 1,
+        ]));
+        $rateCalendarResetUrl = 'index.php?' . http_build_query($rateCalendarBaseParams);
+    }
+
     $categories = $categoryManager->all();
     $options = ['<option value="">Bitte auswählen</option>'];
     foreach ($categories as $category) {
@@ -2699,6 +3162,94 @@ if ($pdo !== null && isset($_GET['editCategory']) && $categoryFormData['id'] ===
             'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
         ];
     }
+}
+
+if ($pdo !== null && isset($_GET['editRate']) && $rateFormData['id'] === null) {
+    if ($rateManager === null) {
+        if ($alert === null) {
+            $alert = [
+                'type' => 'danger',
+                'message' => 'Die Ratenverwaltung ist derzeit nicht verfügbar.',
+            ];
+        }
+    } else {
+        $rateToEdit = $rateManager->find((int) $_GET['editRate']);
+
+        if ($rateToEdit) {
+            $rateFormMode = 'update';
+            $activeRateId = (int) $rateToEdit['id'];
+            $requestedRateId = $activeRateId;
+            $rateFormData = [
+                'id' => (int) $rateToEdit['id'],
+                'name' => $rateToEdit['name'],
+                'category_id' => isset($rateToEdit['category_id']) ? (string) $rateToEdit['category_id'] : '',
+                'base_price' => isset($rateToEdit['base_price']) ? number_format((float) $rateToEdit['base_price'], 2, ',', '') : '',
+                'description' => $rateToEdit['description'] ?? '',
+            ];
+            $ratePeriods = $rateManager->periodsForRate($activeRateId);
+            $rateCalendarData = $rateManager->buildYearlyCalendar($activeRateId, $rateCalendarYear);
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die ausgewählte Rate wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editRatePeriod']) && $ratePeriodFormData['id'] === null) {
+    if ($rateManager === null) {
+        if ($alert === null) {
+            $alert = [
+                'type' => 'danger',
+                'message' => 'Die Ratenverwaltung ist derzeit nicht verfügbar.',
+            ];
+        }
+    } else {
+        $periodToEdit = $rateManager->findPeriod((int) $_GET['editRatePeriod']);
+
+        if ($periodToEdit) {
+            $ratePeriodFormMode = 'update';
+            $associatedRateId = isset($periodToEdit['rate_id']) ? (int) $periodToEdit['rate_id'] : 0;
+            if ($associatedRateId > 0) {
+                $activeRateId = $associatedRateId;
+                $requestedRateId = $associatedRateId;
+            }
+
+            $ratePeriodFormData = [
+                'id' => (int) $periodToEdit['id'],
+                'rate_id' => $associatedRateId > 0 ? (string) $associatedRateId : '',
+                'start_date' => $periodToEdit['start_date'] ?? '',
+                'end_date' => $periodToEdit['end_date'] ?? '',
+                'price' => isset($periodToEdit['price']) ? number_format((float) $periodToEdit['price'], 2, ',', '') : '',
+                'days_of_week' => $periodToEdit['days_of_week_list'] ?? [],
+            ];
+            if ($associatedRateId > 0) {
+                $ratePeriods = $rateManager->periodsForRate($associatedRateId);
+                $rateCalendarData = $rateManager->buildYearlyCalendar($associatedRateId, $rateCalendarYear);
+            }
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Der ausgewählte Zeitraum wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($rateManager instanceof RateManager) {
+    $rateCalendarBaseParams = ['section' => 'rates'];
+    if ($activeRateId !== null) {
+        $rateCalendarBaseParams['rateId'] = $activeRateId;
+    }
+
+    $rateCalendarPrevUrl = 'index.php?' . http_build_query(array_merge($rateCalendarBaseParams, [
+        'rateYear' => $rateCalendarYear - 1,
+    ]));
+    $rateCalendarNextUrl = 'index.php?' . http_build_query(array_merge($rateCalendarBaseParams, [
+        'rateYear' => $rateCalendarYear + 1,
+    ]));
+    $rateCalendarResetUrl = 'index.php?' . http_build_query($rateCalendarBaseParams);
 }
 
 if ($pdo !== null && isset($_GET['editRoom']) && $roomFormData['id'] === null) {
@@ -3716,6 +4267,350 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                 <form method="post" class="d-inline" onsubmit="return confirm('Reservierung wirklich löschen?');">
                                   <input type="hidden" name="form" value="reservation_delete">
                                   <input type="hidden" name="id" value="<?= (int) $reservation['id'] ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
+                                </form>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php elseif ($activeSection === 'rates'): ?>
+      <?php
+        $isEditingRate = $rateFormMode === 'update' && $rateFormData['id'] !== null;
+        $isEditingRatePeriod = $ratePeriodFormMode === 'update' && $ratePeriodFormData['id'] !== null;
+        $monthNames = [
+            '01' => 'Januar',
+            '02' => 'Februar',
+            '03' => 'März',
+            '04' => 'April',
+            '05' => 'Mai',
+            '06' => 'Juni',
+            '07' => 'Juli',
+            '08' => 'August',
+            '09' => 'September',
+            '10' => 'Oktober',
+            '11' => 'November',
+            '12' => 'Dezember',
+        ];
+        $selectedRateId = $activeRateId !== null ? $activeRateId : ($rates !== [] ? (int) ($rates[0]['id'] ?? 0) : null);
+        $calendarHasData = $rateCalendarData['rate'] !== null && $rateCalendarData['months'] !== [];
+      ?>
+      <section id="rates" class="app-section active">
+        <div class="row g-4">
+          <div class="col-12 col-xxl-5">
+            <div class="card module-card" id="rate-form">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Rate <?= $isEditingRate ? 'bearbeiten' : 'anlegen' ?></h2>
+                  <p class="text-muted mb-0">Tarife je Kategorie verwalten und Basispreise festlegen.</p>
+                </div>
+                <?php if ($isEditingRate): ?>
+                  <span class="badge text-bg-primary">Bearbeitung</span>
+                <?php endif; ?>
+              </div>
+              <div class="card-body">
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="<?= $isEditingRate ? 'rate_update' : 'rate_create' ?>">
+                  <?php if ($isEditingRate): ?>
+                    <input type="hidden" name="id" value="<?= (int) $rateFormData['id'] ?>">
+                  <?php endif; ?>
+                  <div class="col-12">
+                    <label for="rate-name" class="form-label">Bezeichnung *</label>
+                    <input type="text" class="form-control" id="rate-name" name="name" value="<?= htmlspecialchars((string) $rateFormData['name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-12">
+                    <label for="rate-category" class="form-label">Zimmerkategorie *</label>
+                    <select class="form-select" id="rate-category" name="category_id" required <?= $pdo === null ? 'disabled' : '' ?>>
+                      <option value="">Bitte auswählen</option>
+                      <?php foreach ($categories as $category): ?>
+                        <?php if (!isset($category['id'])) { continue; } ?>
+                        <?php $categoryId = (int) $category['id']; ?>
+                        <option value="<?= $categoryId ?>" <?= $rateFormData['category_id'] !== '' && (int) $rateFormData['category_id'] === $categoryId ? 'selected' : '' ?>><?= htmlspecialchars($category['name']) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                  </div>
+                  <div class="col-sm-6">
+                    <label for="rate-base-price" class="form-label">Basispreis (EUR) *</label>
+                    <input type="text" class="form-control" id="rate-base-price" name="base_price" value="<?= htmlspecialchars((string) $rateFormData['base_price']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                    <div class="form-text">Dezimaltrenner Komma oder Punkt.</div>
+                  </div>
+                  <div class="col-12">
+                    <label for="rate-description" class="form-label">Beschreibung</label>
+                    <textarea class="form-control" id="rate-description" name="description" rows="2" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $rateFormData['description']) ?></textarea>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end gap-2 flex-wrap">
+                    <?php if ($isEditingRate): ?>
+                      <a href="index.php?section=rates" class="btn btn-outline-secondary">Abbrechen</a>
+                    <?php endif; ?>
+                    <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isEditingRate ? 'Rate aktualisieren' : 'Rate speichern' ?></button>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mt-3 mb-0">Die Formularfelder werden aktiviert, sobald eine Datenbankverbindung besteht.</p>
+                <?php endif; ?>
+              </div>
+            </div>
+            <div class="card module-card">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <div>
+                  <h2 class="h5 mb-1">Ratenübersicht</h2>
+                  <p class="text-muted mb-0">Alle Tarife nach Kategorie und Basispreis.</p>
+                </div>
+                <span class="badge text-bg-info"><?= count($rates) ?> Einträge</span>
+              </div>
+              <div class="card-body">
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mb-0">Die Raten werden angezeigt, sobald eine Datenbankverbindung besteht.</p>
+                <?php elseif ($rates === []): ?>
+                  <p class="text-muted mb-0">Noch keine Raten angelegt.</p>
+                <?php else: ?>
+                  <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                      <thead class="table-light">
+                        <tr>
+                          <th scope="col">Bezeichnung</th>
+                          <th scope="col">Kategorie</th>
+                          <th scope="col" class="text-end">Basispreis</th>
+                          <th scope="col" class="text-end">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($rates as $rate): ?>
+                          <?php $rateId = isset($rate['id']) ? (int) $rate['id'] : 0; ?>
+                          <tr<?= $selectedRateId !== null && $rateId === $selectedRateId ? ' class="table-primary"' : '' ?>>
+                            <td>
+                              <div class="fw-semibold mb-1"><?= htmlspecialchars((string) ($rate['name'] ?? '')) ?></div>
+                              <?php if (!empty($rate['description'])): ?>
+                                <div class="small text-muted"><?= htmlspecialchars((string) $rate['description']) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td><?= htmlspecialchars((string) ($rate['category_name'] ?? 'Ohne Kategorie')) ?></td>
+                            <td class="text-end">€ <?= number_format((float) ($rate['base_price'] ?? 0), 2, ',', '') ?></td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rates&amp;rateId=<?= $rateId ?>">Anzeigen</a>
+                                <a class="btn btn-outline-primary btn-sm" href="index.php?section=rates&amp;editRate=<?= $rateId ?>">Bearbeiten</a>
+                                <form method="post" class="d-inline" onsubmit="return confirm('Rate wirklich löschen?');">
+                                  <input type="hidden" name="form" value="rate_delete">
+                                  <input type="hidden" name="id" value="<?= $rateId ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
+                                </form>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xxl-7">
+            <div class="card module-card" id="rate-calendar">
+              <div class="card-header bg-transparent border-0 d-flex flex-wrap justify-content-between align-items-start gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Jahresraten</h2>
+                  <p class="text-muted mb-0">Basispreis und Zeitraum-Anpassungen je Tag.</p>
+                </div>
+                <div class="btn-group btn-group-sm" role="group" aria-label="Jahr wechseln">
+                  <a href="<?= htmlspecialchars($rateCalendarPrevUrl) ?>" class="btn btn-outline-secondary">&laquo; Vorjahr</a>
+                  <a href="<?= htmlspecialchars($rateCalendarResetUrl) ?>" class="btn btn-outline-secondary">Aktuelles Jahr</a>
+                  <a href="<?= htmlspecialchars($rateCalendarNextUrl) ?>" class="btn btn-outline-secondary">Nächstes Jahr &raquo;</a>
+                </div>
+              </div>
+              <div class="card-body">
+                <form method="get" class="row g-3 align-items-end mb-4">
+                  <input type="hidden" name="section" value="rates">
+                  <div class="col-12 col-lg-6">
+                    <label for="rate-calendar-select" class="form-label">Rate wählen</label>
+                    <select class="form-select" id="rate-calendar-select" name="rateId" <?= $pdo === null || $rates === [] ? 'disabled' : '' ?>>
+                      <?php if ($rates === []): ?>
+                        <option value="">Keine Rate vorhanden</option>
+                      <?php else: ?>
+                        <?php foreach ($rates as $rate): ?>
+                          <?php if (!isset($rate['id'])) { continue; } ?>
+                          <?php $rateId = (int) $rate['id']; ?>
+                          <option value="<?= $rateId ?>" <?= $selectedRateId !== null && $rateId === $selectedRateId ? 'selected' : '' ?>><?= htmlspecialchars((string) ($rate['name'] ?? 'Rate #' . $rateId)) ?></option>
+                        <?php endforeach; ?>
+                      <?php endif; ?>
+                    </select>
+                  </div>
+                  <div class="col-6 col-lg-3">
+                    <label for="rate-calendar-year" class="form-label">Jahr</label>
+                    <input type="number" class="form-control" id="rate-calendar-year" name="rateYear" value="<?= (int) $rateCalendarYear ?>" min="2000" max="2100">
+                  </div>
+                  <div class="col-6 col-lg-3 d-flex gap-2">
+                    <button type="submit" class="btn btn-outline-primary flex-grow-1">Anzeigen</button>
+                    <a href="<?= htmlspecialchars($rateCalendarResetUrl) ?>" class="btn btn-link">Zurücksetzen</a>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mb-0">Kalenderdarstellung steht nach Verbindungsaufbau zur Verfügung.</p>
+                <?php elseif ($selectedRateId === null): ?>
+                  <p class="text-muted mb-0">Bitte legen Sie zunächst eine Rate an.</p>
+                <?php elseif (!$calendarHasData): ?>
+                  <p class="text-muted mb-0">Für das gewählte Jahr liegen noch keine Preisangaben vor. Der Basispreis wird verwendet.</p>
+                <?php else: ?>
+                  <div class="rate-calendar">
+                    <?php foreach ($rateCalendarData['months'] as $monthKey => $dayEntries): ?>
+                      <?php
+                        $monthNumber = substr($monthKey, -2);
+                        $monthLabel = $monthNames[$monthNumber] ?? $monthKey;
+                        $firstOfMonth = DateTimeImmutable::createFromFormat('Y-m-d', $monthKey . '-01');
+                        $blankCells = $firstOfMonth instanceof DateTimeImmutable ? (int) $firstOfMonth->format('N') - 1 : 0;
+                      ?>
+                      <div class="rate-calendar-month">
+                        <div class="rate-calendar-month-header"><?= htmlspecialchars($monthLabel . ' ' . $rateCalendarYear) ?></div>
+                        <div class="rate-calendar-grid">
+                          <?php for ($i = 0; $i < $blankCells; $i++): ?>
+                            <div class="rate-calendar-cell rate-calendar-cell-empty" aria-hidden="true"></div>
+                          <?php endfor; ?>
+                          <?php foreach ($dayEntries as $dayIndex => $day): ?>
+                            <?php
+                              $dateObj = DateTimeImmutable::createFromFormat('Y-m-d', (string) $day['date']);
+                              $dayNumber = $dateObj instanceof DateTimeImmutable ? (int) $dateObj->format('j') : ($dayIndex + 1);
+                              $priceLabel = number_format((float) ($day['price'] ?? 0), 2, ',', '');
+                              $cellClasses = ['rate-calendar-cell'];
+                              if (($day['source'] ?? '') === 'period') {
+                                  $cellClasses[] = 'rate-calendar-cell-override';
+                              }
+                              $tooltip = $day['period_label'] ?? 'Basispreis';
+                            ?>
+                            <div class="<?= htmlspecialchars(implode(' ', $cellClasses)) ?>" title="<?= htmlspecialchars($tooltip) ?>">
+                              <div class="rate-calendar-day"><?= $dayNumber ?></div>
+                              <div class="rate-calendar-price">€ <?= htmlspecialchars($priceLabel) ?></div>
+                            </div>
+                          <?php endforeach; ?>
+                        </div>
+                      </div>
+                    <?php endforeach; ?>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+            <div class="card module-card" id="rate-periods">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Preiszeiträume</h2>
+                  <p class="text-muted mb-0">Saisonale Anpassungen mit optionalen Wochentagen.</p>
+                </div>
+                <?php if ($isEditingRatePeriod): ?>
+                  <span class="badge text-bg-primary">Bearbeitung</span>
+                <?php endif; ?>
+              </div>
+              <div class="card-body">
+                <form method="post" class="row g-3" id="rate-period-form">
+                  <input type="hidden" name="form" value="<?= $isEditingRatePeriod ? 'rate_period_update' : 'rate_period_create' ?>">
+                  <?php if ($isEditingRatePeriod): ?>
+                    <input type="hidden" name="id" value="<?= (int) $ratePeriodFormData['id'] ?>">
+                  <?php endif; ?>
+                  <div class="col-12 col-lg-6">
+                    <label for="rate-period-rate" class="form-label">Rate *</label>
+                    <select class="form-select" id="rate-period-rate" name="rate_id" required <?= $pdo === null || $rates === [] ? 'disabled' : '' ?>>
+                      <option value="">Bitte auswählen</option>
+                      <?php foreach ($rates as $rate): ?>
+                        <?php if (!isset($rate['id'])) { continue; } ?>
+                        <?php $rateId = (int) $rate['id']; ?>
+                        <option value="<?= $rateId ?>" <?= (int) ($ratePeriodFormData['rate_id'] ?? 0) === $rateId || ($ratePeriodFormData['rate_id'] === '' && $selectedRateId !== null && $rateId === $selectedRateId) ? 'selected' : '' ?>><?= htmlspecialchars((string) ($rate['name'] ?? 'Rate #' . $rateId)) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                  </div>
+                  <div class="col-6 col-lg-3">
+                    <label for="rate-period-start" class="form-label">Start *</label>
+                    <input type="date" class="form-control" id="rate-period-start" name="start_date" value="<?= htmlspecialchars((string) $ratePeriodFormData['start_date']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-6 col-lg-3">
+                    <label for="rate-period-end" class="form-label">Ende *</label>
+                    <input type="date" class="form-control" id="rate-period-end" name="end_date" value="<?= htmlspecialchars((string) $ratePeriodFormData['end_date']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-12 col-lg-4">
+                    <label for="rate-period-price" class="form-label">Preis (EUR) *</label>
+                    <input type="text" class="form-control" id="rate-period-price" name="price" value="<?= htmlspecialchars((string) $ratePeriodFormData['price']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                    <div class="form-text">Leer lassen, um Basispreis zu übernehmen.</div>
+                  </div>
+                  <div class="col-12 col-lg-8">
+                    <label class="form-label">Wochentage</label>
+                    <div class="d-flex flex-wrap gap-2">
+                      <?php foreach ($ratePeriodWeekdayOptions as $weekdayValue => $weekdayLabel): ?>
+                        <div class="form-check form-check-inline">
+                          <input class="form-check-input" type="checkbox" id="weekday-<?= $weekdayValue ?>" name="days_of_week[]" value="<?= $weekdayValue ?>" <?= in_array($weekdayValue, $ratePeriodFormData['days_of_week'], true) ? 'checked' : '' ?> <?= $pdo === null ? 'disabled' : '' ?>>
+                          <label class="form-check-label" for="weekday-<?= $weekdayValue ?>"><?= htmlspecialchars($weekdayLabel) ?></label>
+                        </div>
+                      <?php endforeach; ?>
+                    </div>
+                    <div class="form-text">Ohne Auswahl gilt der Preis für alle Tage.</div>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end gap-2 flex-wrap">
+                    <?php if ($isEditingRatePeriod): ?>
+                      <a href="index.php?section=rates#rate-periods" class="btn btn-outline-secondary">Abbrechen</a>
+                    <?php endif; ?>
+                    <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isEditingRatePeriod ? 'Zeitraum aktualisieren' : 'Zeitraum hinzufügen' ?></button>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mt-3 mb-0">Preiszeiträume lassen sich nach Verbindungsaufbau pflegen.</p>
+                <?php elseif ($selectedRateId === null): ?>
+                  <p class="text-muted mt-3 mb-0">Bitte wählen Sie eine Rate, um Zeiträume zu verwalten.</p>
+                <?php elseif ($ratePeriods === []): ?>
+                  <p class="text-muted mt-3 mb-0">Noch keine spezifischen Preiszeiträume erfasst.</p>
+                <?php else: ?>
+                  <div class="table-responsive mt-4">
+                    <table class="table table-sm align-middle mb-0">
+                      <thead class="table-light">
+                        <tr>
+                          <th scope="col">Zeitraum</th>
+                          <th scope="col">Wochentage</th>
+                          <th scope="col" class="text-end">Preis</th>
+                          <th scope="col" class="text-end">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($ratePeriods as $period): ?>
+                          <?php
+                            $periodId = isset($period['id']) ? (int) $period['id'] : 0;
+                            $daysList = $period['days_of_week_list'] ?? [];
+                            $dayLabels = [];
+                            foreach ($daysList as $weekday) {
+                                $dayLabels[] = $ratePeriodWeekdayOptions[$weekday] ?? ('Tag ' . $weekday);
+                            }
+                            $dayText = $dayLabels !== [] ? implode(', ', $dayLabels) : 'Alle Tage';
+                            $periodStart = $period['start_date'] ?? '';
+                            $periodEnd = $period['end_date'] ?? '';
+                            try {
+                                if ($periodStart !== '') {
+                                    $periodStart = (new DateTimeImmutable($periodStart))->format('d.m.Y');
+                                }
+                            } catch (Throwable $exception) {
+                                // keep original value
+                            }
+                            try {
+                                if ($periodEnd !== '') {
+                                    $periodEnd = (new DateTimeImmutable($periodEnd))->format('d.m.Y');
+                                }
+                            } catch (Throwable $exception) {
+                                // keep original value
+                            }
+                          ?>
+                          <tr>
+                            <td><?= htmlspecialchars($periodStart) ?> – <?= htmlspecialchars($periodEnd) ?></td>
+                            <td><?= htmlspecialchars($dayText) ?></td>
+                            <td class="text-end">€ <?= number_format((float) ($period['price'] ?? 0), 2, ',', '') ?></td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rates&amp;editRatePeriod=<?= $periodId ?>#rate-period-form">Bearbeiten</a>
+                                <form method="post" class="d-inline" onsubmit="return confirm('Preiszeitraum wirklich löschen?');">
+                                  <input type="hidden" name="form" value="rate_period_delete">
+                                  <input type="hidden" name="id" value="<?= $periodId ?>">
+                                  <input type="hidden" name="rate_id" value="<?= $selectedRateId ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
                                 </form>
                               </div>

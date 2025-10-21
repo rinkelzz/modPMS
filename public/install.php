@@ -216,6 +216,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_install_reservation_items_category (category_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rates (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(190) NOT NULL,
+                    category_id INT UNSIGNED NOT NULL,
+                    base_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    description TEXT NULL,
+                    created_by INT UNSIGNED NULL,
+                    updated_by INT UNSIGNED NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rates_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rates_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_rates_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+                    INDEX idx_install_rates_category (category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_periods (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    rate_id INT UNSIGNED NOT NULL,
+                    start_date DATE NOT NULL,
+                    end_date DATE NOT NULL,
+                    price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    days_of_week VARCHAR(32) NULL,
+                    created_by INT UNSIGNED NULL,
+                    updated_by INT UNSIGNED NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rate_periods_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rate_periods_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_rate_periods_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+                    INDEX idx_install_rate_periods_rate (rate_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS settings (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     setting_key VARCHAR(191) NOT NULL UNIQUE,
@@ -413,6 +446,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $overbookingReservationId,
                     $sampleCategoryId,
                     2,
+                ]);
+            }
+        }
+
+        $rateExists = $pdo->query('SELECT COUNT(*) FROM rates')->fetchColumn();
+        if ((int) $rateExists === 0 && $sampleCategoryId !== null) {
+            $rateStmt = $pdo->prepare('INSERT INTO rates (name, category_id, base_price, description, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())');
+            $rateStmt->execute([
+                'Standardtarif',
+                $sampleCategoryId,
+                129.00,
+                'Grundpreis für die Beispielkategorie.',
+                $sampleAdminId,
+                $sampleAdminId,
+            ]);
+
+            $sampleRateId = (int) $pdo->lastInsertId();
+            if ($sampleRateId > 0) {
+                $currentYear = (int) date('Y');
+                $seasonStart = sprintf('%d-07-01', $currentYear);
+                $seasonEnd = sprintf('%d-08-31', $currentYear);
+
+                $periodStmt = $pdo->prepare('INSERT INTO rate_periods (rate_id, start_date, end_date, price, days_of_week, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+                $periodStmt->execute([
+                    $sampleRateId,
+                    $seasonStart,
+                    $seasonEnd,
+                    149.00,
+                    null,
+                    $sampleAdminId,
+                    $sampleAdminId,
+                ]);
+
+                $weekendStmt = $pdo->prepare('INSERT INTO rate_periods (rate_id, start_date, end_date, price, days_of_week, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+                $weekendStmt->execute([
+                    $sampleRateId,
+                    sprintf('%d-01-01', $currentYear),
+                    sprintf('%d-12-31', $currentYear),
+                    139.00,
+                    '6,7',
+                    $sampleAdminId,
+                    $sampleAdminId,
                 ]);
             }
         }
