@@ -1,0 +1,23 @@
+[
+    {
+        "id": 101,
+        "number": "101",
+        "category_id": 1,
+        "name": "Standard Doppelzimmer 101",
+        "status": "frei"
+    },
+    {
+        "id": 102,
+        "number": "102",
+        "category_id": 1,
+        "name": "Standard Doppelzimmer 102",
+        "status": "belegt"
+    },
+    {
+        "id": 201,
+        "number": "201",
+        "category_id": 2,
+        "name": "Deluxe Suite 201",
+        "status": "frei"
+    }
+]
