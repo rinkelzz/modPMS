@@ -1759,41 +1759,24 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
-            $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
-            $currentUserRole = $_SESSION['user_role'] ?? null;
+
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie sind nicht berechtigt, Benutzer zu verwalten.',
+                ];
+                break;
+            }
+
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
             $role = in_array($roleInput, $userRoles, true) ? $roleInput : 'mitarbeiter';
             $password = (string) ($_POST['password'] ?? '');
             $passwordConfirm = (string) ($_POST['password_confirm'] ?? '');
-            $targetUserId = $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null;
-
-            if ($currentUserRole !== 'admin') {
-                if ($form === 'user_create') {
-                    $alert = [
-                        'type' => 'danger',
-                        'message' => 'Sie haben keine Berechtigung, neue Benutzer anzulegen.',
-                    ];
-                    break;
-                }
-
-                if ($form === 'user_update') {
-                    if ($targetUserId === null || $targetUserId !== $currentUserId) {
-                        $alert = [
-                            'type' => 'danger',
-                            'message' => 'Sie können nur Ihr eigenes Konto bearbeiten.',
-                        ];
-                        break;
-                    }
-
-                    // Non-admin users cannot elevate or change their role.
-                    $role = $currentUserRole ?? 'mitarbeiter';
-                }
-            }
 
             $userFormData = [
-                'id' => $targetUserId,
+                'id' => $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null,
                 'name' => $name,
                 'email' => $email,
                 'role' => $role,
@@ -1840,6 +1823,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             $existingUser = $userManager->findByEmail($email);
+            $targetUserId = $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null;
 
             if ($existingUser !== null && ($targetUserId === null || (int) $existingUser['id'] !== $targetUserId)) {
                 $alert = [
@@ -1912,16 +1896,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
-            $userId = (int) ($_POST['id'] ?? 0);
-            $currentUserRole = $_SESSION['user_role'] ?? null;
-
-            if ($currentUserRole !== 'admin') {
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Sie haben keine Berechtigung, Benutzer zu löschen.',
+                    'message' => 'Sie sind nicht berechtigt, Benutzer zu verwalten.',
                 ];
                 break;
             }
+            $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
                 $alert = [
@@ -2221,12 +2203,33 @@ if ($pdo !== null) {
                 ? (string) $item['category_name']
                 : ($itemCategoryId > 0 && isset($categoryLookup[$itemCategoryId]['name']) ? (string) $categoryLookup[$itemCategoryId]['name'] : '');
 
-            $itemLabel = $baseLabel;
-            if ($itemCategoryName !== '') {
-                $itemLabel .= ' – ' . $itemCategoryName;
+            $itemCategoryCapacity = null;
+            if ($itemCategoryId > 0 && isset($categoryLookup[$itemCategoryId]['capacity'])) {
+                $itemCategoryCapacity = (int) $categoryLookup[$itemCategoryId]['capacity'];
+            } elseif (isset($item['room_id']) && (int) $item['room_id'] > 0) {
+                $roomIdForCapacity = (int) $item['room_id'];
+                if (isset($roomLookup[$roomIdForCapacity]['category_id'])) {
+                    $roomCategoryId = (int) $roomLookup[$roomIdForCapacity]['category_id'];
+                    if ($roomCategoryId > 0 && isset($categoryLookup[$roomCategoryId]['capacity'])) {
+                        $itemCategoryCapacity = (int) $categoryLookup[$roomCategoryId]['capacity'];
+                    }
+                }
             }
-            if ($itemQuantity > 1) {
-                $itemLabel .= sprintf(' (%d Zimmer)', $itemQuantity);
+
+            if ($itemCategoryCapacity !== null && $itemCategoryCapacity <= 0) {
+                $itemCategoryCapacity = null;
+            }
+
+            $itemGuestCount = null;
+            if ($itemCategoryCapacity !== null) {
+                $itemGuestCount = $itemCategoryCapacity * $itemQuantity;
+            } elseif ($itemQuantity > 0) {
+                $itemGuestCount = $itemQuantity;
+            }
+
+            $itemLabel = $baseLabel;
+            if ($itemGuestCount !== null && $itemGuestCount > 0) {
+                $itemLabel .= sprintf(' (%d)', $itemGuestCount);
             }
 
             $itemRoomId = isset($item['room_id']) ? (int) $item['room_id'] : 0;
@@ -2247,6 +2250,8 @@ if ($pdo !== null) {
             $itemDetail['roomNumber'] = $itemRoomNumber;
             $itemDetail['roomQuantity'] = $itemQuantity;
             $itemDetail['type'] = $itemRoomId > 0 ? 'room' : 'overbooking';
+            $itemDetail['guestCount'] = $itemGuestCount;
+            $itemDetail['categoryCapacity'] = $itemCategoryCapacity;
 
             if ($itemDetail['type'] === 'overbooking') {
                 $itemDetail['roomName'] = 'Überbuchung' . ($itemCategoryName !== '' ? ' – ' . $itemCategoryName : '');
@@ -2260,6 +2265,7 @@ if ($pdo !== null) {
                     'label' => $itemLabel,
                     'arrival' => $arrivalDate,
                     'departure' => $departureDate,
+                    'guestCount' => $itemGuestCount,
                     'details' => $itemDetail,
                 ];
                 continue;
@@ -2284,6 +2290,7 @@ if ($pdo !== null) {
                 'arrival' => $arrivalDate,
                 'departure' => $departureDate,
                 'quantity' => $itemQuantity,
+                'guestCount' => $itemGuestCount,
                 'details' => $itemDetail,
             ];
         }
@@ -2335,6 +2342,9 @@ if ($pdo !== null) {
                     }
 
                     $entry['label'] = $stay['label'];
+                    if (!isset($entry['guestCount']) && isset($stay['guestCount'])) {
+                        $entry['guestCount'] = $stay['guestCount'];
+                    }
                     $entry['calendarDate'] = $dateKey;
                     $entry['date'] = $dateKey;
                     if (!isset($entry['roomId']) || $entry['roomId'] === null) {
@@ -2417,6 +2427,9 @@ if ($pdo !== null) {
                     }
 
                     $entry['label'] = $stay['label'];
+                    if (!isset($entry['guestCount']) && isset($stay['guestCount'])) {
+                        $entry['guestCount'] = $stay['guestCount'];
+                    }
                     $entry['calendarDate'] = $dateKey;
                     $entry['date'] = $dateKey;
                     $entry['roomQuantity'] = $entry['roomQuantity'] ?? $stayQuantity;
@@ -3005,6 +3018,9 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                             if (!empty($occupantData['roomName'])) {
                                                 $occupantTitleParts[] = $occupantData['roomName'];
                                             }
+                                            if (!empty($occupantData['guestCount'])) {
+                                                $occupantTitleParts[] = 'Gäste: ' . (int) $occupantData['guestCount'];
+                                            }
                                         }
 
                                         $occupantTitle = $occupantTitleParts !== [] ? implode(' • ', array_filter($occupantTitleParts)) : '';
@@ -3110,6 +3126,9 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                     }
                                     if (!empty($entry['roomQuantity'])) {
                                         $entryTitleParts[] = 'Zimmer: ' . (int) $entry['roomQuantity'];
+                                    }
+                                    if (!empty($entry['guestCount'])) {
+                                        $entryTitleParts[] = 'Gäste: ' . (int) $entry['guestCount'];
                                     }
 
                                     $entryTitle = $entryTitleParts !== [] ? implode(' • ', array_filter($entryTitleParts)) : '';
