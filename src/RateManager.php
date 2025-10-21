@@ -29,7 +29,78 @@ class RateManager
         $this->createRateCategoryPricesTable();
         $this->createRatePeriodsTable();
         $this->createRatePeriodPricesTable();
+        $this->createRateEventsTable();
+        $this->createRateEventPricesTable();
+        $this->addDefaultPriceColumnToEvents();
         $this->migrateLegacyRateData();
+    }
+
+    private function createRateEventsTable(): void
+    {
+        try {
+            $this->pdo->exec(
+                'CREATE TABLE IF NOT EXISTS rate_events (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    rate_id INT UNSIGNED NOT NULL,
+                    name VARCHAR(190) NOT NULL,
+                    start_date DATE NOT NULL,
+                    end_date DATE NOT NULL,
+                    default_price DECIMAL(10,2) NULL DEFAULT NULL,
+                    color VARCHAR(16) NULL,
+                    description TEXT NULL,
+                    created_by INT UNSIGNED NULL,
+                    updated_by INT UNSIGNED NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_rate_events_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_rate_events_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_rate_events_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+                    INDEX idx_rate_events_rate (rate_id),
+                    INDEX idx_rate_events_dates (start_date, end_date)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+            );
+        } catch (PDOException $exception) {
+            // Ignore schema creation failure to keep the application usable
+        }
+    }
+
+    private function createRateEventPricesTable(): void
+    {
+        try {
+            $this->pdo->exec(
+                'CREATE TABLE IF NOT EXISTS rate_event_prices (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    event_id INT UNSIGNED NOT NULL,
+                    category_id INT UNSIGNED NOT NULL,
+                    price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_rate_event_price_event FOREIGN KEY (event_id) REFERENCES rate_events(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_rate_event_price_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
+                    UNIQUE KEY uniq_event_category (event_id, category_id),
+                    INDEX idx_rate_event_prices_category (category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+            );
+        } catch (PDOException $exception) {
+            // Ignore creation failure
+        }
+    }
+
+    private function addDefaultPriceColumnToEvents(): void
+    {
+        if (!$this->tableHasColumn('rate_events', 'default_price')) {
+            try {
+                $this->pdo->exec('ALTER TABLE rate_events ADD COLUMN default_price DECIMAL(10,2) NULL DEFAULT NULL AFTER end_date');
+            } catch (PDOException $exception) {
+                // Column already exists or cannot be altered – safe to ignore
+            }
+        }
+
+        try {
+            $this->pdo->exec('ALTER TABLE rate_events MODIFY default_price DECIMAL(10,2) NULL DEFAULT NULL');
+        } catch (PDOException $exception) {
+            // Column might already allow NULL or the alteration failed – ignore to keep installer resilient
+        }
     }
 
     private function createRatesTable(): void
@@ -490,6 +561,7 @@ class RateManager
 
         $calendar = [];
         $periods = $this->periodsForRate($rateId);
+        $events = $this->eventsForRate($rateId);
 
         for ($month = 1; $month <= 12; $month++) {
             $monthKey = sprintf('%04d-%02d', $year, $month);
@@ -501,6 +573,7 @@ class RateManager
                 $price = $basePrice !== null ? (float) $basePrice : 0.0;
                 $source = 'base';
                 $sourcePeriod = null;
+                $sourceEvent = null;
 
                 try {
                     $currentDate = new DateTimeImmutable($dateString);
@@ -537,12 +610,50 @@ class RateManager
                     }
                 }
 
+                $activeEvents = [];
+                foreach ($events as $event) {
+                    $startDate = (string) ($event['start_date'] ?? '');
+                    $endDate = (string) ($event['end_date'] ?? '');
+
+                    if ($dateString < $startDate || $dateString > $endDate) {
+                        continue;
+                    }
+
+                    $activeEvents[] = $event;
+                }
+
+                if ($activeEvents !== []) {
+                    $selectedEvent = null;
+                    foreach ($activeEvents as $event) {
+                        $eventPrices = $event['category_prices'] ?? [];
+                        if (isset($eventPrices[$categoryId])) {
+                            $selectedEvent = $event;
+                            $price = (float) $eventPrices[$categoryId];
+                            break;
+                        }
+                    }
+
+                    if ($selectedEvent === null) {
+                        $selectedEvent = $activeEvents[0];
+                        $eventDefaultPrice = isset($selectedEvent['default_price']) ? (float) $selectedEvent['default_price'] : null;
+                        if ($eventDefaultPrice !== null) {
+                            $price = $eventDefaultPrice;
+                        }
+                    }
+
+                    $source = 'event';
+                    $sourceEvent = $selectedEvent;
+                }
+
                 $calendar[$monthKey][] = [
                     'date' => $dateString,
                     'price' => $price,
                     'source' => $source,
                     'period_id' => $sourcePeriod['id'] ?? null,
                     'period_label' => $sourcePeriod !== null ? $this->formatPeriodLabel($sourcePeriod) : null,
+                    'event_id' => $sourceEvent['id'] ?? null,
+                    'event_label' => $sourceEvent['name'] ?? null,
+                    'event_color' => $sourceEvent['color'] ?? null,
                 ];
             }
         }
@@ -729,6 +840,271 @@ class RateManager
     }
 
     /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function eventsForRate(int $rateId): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT * FROM rate_events WHERE rate_id = :rate_id ORDER BY start_date ASC, end_date ASC, name ASC'
+        );
+
+        if ($statement === false) {
+            return [];
+        }
+
+        $statement->execute(['rate_id' => $rateId]);
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        $events = [];
+        foreach ($rows as $row) {
+            if (!isset($row['id'])) {
+                continue;
+            }
+
+            $eventId = (int) $row['id'];
+            $row['category_prices'] = $this->getEventCategoryPrices($eventId);
+            $row['color'] = $this->normaliseColorValue($row['color'] ?? null);
+            $row['default_price'] = array_key_exists('default_price', $row) && $row['default_price'] !== null
+                ? (float) $row['default_price']
+                : null;
+            $events[] = $row;
+        }
+
+        return $events;
+    }
+
+    public function findEvent(int $eventId): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT * FROM rate_events WHERE id = :id');
+
+        if ($statement === false) {
+            return null;
+        }
+
+        $statement->execute(['id' => $eventId]);
+        $event = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($event)) {
+            return null;
+        }
+
+        $event['category_prices'] = $this->getEventCategoryPrices($eventId);
+        $event['color'] = $this->normaliseColorValue($event['color'] ?? null);
+        $event['default_price'] = array_key_exists('default_price', $event) && $event['default_price'] !== null
+            ? (float) $event['default_price']
+            : null;
+
+        return $event;
+    }
+
+    public function createEvent(array $data): int
+    {
+        $insert = $this->pdo->prepare(
+            'INSERT INTO rate_events (rate_id, name, start_date, end_date, default_price, color, description, created_by, updated_by)
+             VALUES (:rate_id, :name, :start_date, :end_date, :default_price, :color, :description, :created_by, :updated_by)'
+        );
+
+        if ($insert === false) {
+            return 0;
+        }
+
+        $normalizedColor = $this->normaliseColorValue($data['color'] ?? null);
+        $normalizedDefaultPrice = $this->normalisePriceInput($data['default_price'] ?? null);
+
+        $descriptionValue = $data['description'] ?? null;
+        if (is_string($descriptionValue)) {
+            $descriptionValue = trim($descriptionValue);
+            if ($descriptionValue === '') {
+                $descriptionValue = null;
+            }
+        }
+
+        $insert->execute([
+            'rate_id' => (int) ($data['rate_id'] ?? 0),
+            'name' => trim((string) ($data['name'] ?? '')),
+            'start_date' => (string) ($data['start_date'] ?? ''),
+            'end_date' => (string) ($data['end_date'] ?? ''),
+            'default_price' => $normalizedDefaultPrice,
+            'color' => $normalizedColor,
+            'description' => $descriptionValue,
+            'created_by' => $data['created_by'] ?? null,
+            'updated_by' => $data['updated_by'] ?? null,
+        ]);
+
+        $eventId = (int) $this->pdo->lastInsertId();
+
+        if (isset($data['category_prices']) && is_array($data['category_prices'])) {
+            $this->syncEventCategoryPrices($eventId, $data['category_prices']);
+        }
+
+        return $eventId;
+    }
+
+    public function updateEvent(int $eventId, array $data): void
+    {
+        $update = $this->pdo->prepare(
+            'UPDATE rate_events SET
+                name = :name,
+                start_date = :start_date,
+                end_date = :end_date,
+                default_price = :default_price,
+                color = :color,
+                description = :description,
+                updated_by = :updated_by,
+                updated_at = CURRENT_TIMESTAMP
+             WHERE id = :id'
+        );
+
+        if ($update === false) {
+            return;
+        }
+
+        $normalizedColor = $this->normaliseColorValue($data['color'] ?? null);
+        $normalizedDefaultPrice = $this->normalisePriceInput($data['default_price'] ?? null);
+
+        $descriptionValue = $data['description'] ?? null;
+        if (is_string($descriptionValue)) {
+            $descriptionValue = trim($descriptionValue);
+            if ($descriptionValue === '') {
+                $descriptionValue = null;
+            }
+        }
+
+        $update->execute([
+            'id' => $eventId,
+            'name' => trim((string) ($data['name'] ?? '')),
+            'start_date' => (string) ($data['start_date'] ?? ''),
+            'end_date' => (string) ($data['end_date'] ?? ''),
+            'default_price' => $normalizedDefaultPrice,
+            'color' => $normalizedColor,
+            'description' => $descriptionValue,
+            'updated_by' => $data['updated_by'] ?? null,
+        ]);
+
+        if (isset($data['category_prices']) && is_array($data['category_prices'])) {
+            $this->syncEventCategoryPrices($eventId, $data['category_prices']);
+        }
+
+        if (isset($data['category_price_removals']) && is_array($data['category_price_removals'])) {
+            $this->syncEventCategoryPrices($eventId, [], $data['category_price_removals']);
+        }
+    }
+
+    public function deleteEvent(int $eventId): void
+    {
+        $delete = $this->pdo->prepare('DELETE FROM rate_events WHERE id = :id');
+
+        if ($delete === false) {
+            return;
+        }
+
+        $delete->execute(['id' => $eventId]);
+    }
+
+    /**
+     * @return array<int, float>
+     */
+    public function getEventCategoryPrices(int $eventId): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT category_id, price FROM rate_event_prices WHERE event_id = :event_id ORDER BY category_id ASC'
+        );
+
+        if ($statement === false) {
+            return [];
+        }
+
+        $statement->execute(['event_id' => $eventId]);
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        $prices = [];
+        foreach ($rows as $row) {
+            if (!isset($row['category_id'])) {
+                continue;
+            }
+
+            $categoryId = (int) $row['category_id'];
+            $prices[$categoryId] = isset($row['price']) ? (float) $row['price'] : 0.0;
+        }
+
+        return $prices;
+    }
+
+    /**
+     * @param array<int, string|float|null> $prices
+     * @param array<int, int> $removals
+     */
+    public function syncEventCategoryPrices(int $eventId, array $prices, array $removals = []): void
+    {
+        $existing = $this->getEventCategoryPrices($eventId);
+        $processed = [];
+
+        foreach ($prices as $categoryId => $priceValue) {
+            $categoryId = (int) $categoryId;
+            if ($categoryId <= 0) {
+                continue;
+            }
+
+            $normalized = $this->normalisePriceInput($priceValue);
+            if ($normalized === null) {
+                continue;
+            }
+
+            $processed[$categoryId] = true;
+
+            if (array_key_exists($categoryId, $existing)) {
+                $update = $this->pdo->prepare(
+                    'UPDATE rate_event_prices SET price = :price, updated_at = CURRENT_TIMESTAMP
+                     WHERE event_id = :event_id AND category_id = :category_id'
+                );
+
+                if ($update !== false) {
+                    $update->execute([
+                        'price' => $normalized,
+                        'event_id' => $eventId,
+                        'category_id' => $categoryId,
+                    ]);
+                }
+            } else {
+                $insert = $this->pdo->prepare(
+                    'INSERT INTO rate_event_prices (event_id, category_id, price, created_at, updated_at)
+                     VALUES (:event_id, :category_id, :price, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+                );
+
+                if ($insert !== false) {
+                    $insert->execute([
+                        'event_id' => $eventId,
+                        'category_id' => $categoryId,
+                        'price' => $normalized,
+                    ]);
+                }
+            }
+        }
+
+        $removalIds = array_map('intval', $removals);
+        foreach ($existing as $categoryId => $_value) {
+            $categoryId = (int) $categoryId;
+            if (!isset($processed[$categoryId]) && ($removalIds === [] || in_array($categoryId, $removalIds, true))) {
+                $delete = $this->pdo->prepare(
+                    'DELETE FROM rate_event_prices WHERE event_id = :event_id AND category_id = :category_id'
+                );
+
+                if ($delete !== false) {
+                    $delete->execute([
+                        'event_id' => $eventId,
+                        'category_id' => $categoryId,
+                    ]);
+                }
+            }
+        }
+    }
+
+    /**
      * @return array<int, float>
      */
     public function getPeriodCategoryPrices(int $periodId): array
@@ -881,6 +1257,47 @@ class RateManager
         }
 
         return number_format((float) $normalized, 2, '.', '');
+    }
+
+    /**
+     * @param string|null $value
+     */
+    private function normaliseColorValue($value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return null;
+        }
+
+        if ($trimmed[0] !== '#') {
+            $trimmed = '#' . $trimmed;
+        }
+
+        $normalized = strtoupper($trimmed);
+
+        if (!preg_match('/^#([0-9A-F]{3}|[0-9A-F]{6})$/', $normalized)) {
+            return null;
+        }
+
+        if (strlen($normalized) === 4) {
+            // Expand #RGB to #RRGGBB
+            $normalized = sprintf(
+                '#%1$s%1$s%2$s%2$s%3$s%3$s',
+                $normalized[1],
+                $normalized[2],
+                $normalized[3]
+            );
+        }
+
+        return $normalized;
     }
 
     /**

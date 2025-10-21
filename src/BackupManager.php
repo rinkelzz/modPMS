@@ -23,6 +23,8 @@ class BackupManager
         'rate_category_prices' => ['id', 'rate_id', 'category_id', 'base_price', 'created_at', 'updated_at'],
         'rate_periods' => ['id', 'rate_id', 'start_date', 'end_date', 'price', 'days_of_week', 'created_by', 'updated_by', 'created_at', 'updated_at'],
         'rate_period_prices' => ['id', 'period_id', 'category_id', 'price', 'created_at', 'updated_at'],
+        'rate_events' => ['id', 'rate_id', 'name', 'start_date', 'end_date', 'default_price', 'color', 'description', 'created_by', 'updated_by', 'created_at', 'updated_at'],
+        'rate_event_prices' => ['id', 'event_id', 'category_id', 'price', 'created_at', 'updated_at'],
     ];
 
     public function __construct(PDO $pdo)

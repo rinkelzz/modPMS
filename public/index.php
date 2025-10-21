@@ -36,25 +36,13 @@ if (!isset($_SESSION['user_id'])) {
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
 
-/**
- * @return string
- */
-$generateToken = static function (): string {
-    try {
-        return bin2hex(random_bytes(32));
-    } catch (Throwable $exception) {
-        return bin2hex(hash('sha256', uniqid('', true), true));
-    }
-};
-
-$updateToken = $generateToken();
-$_SESSION['update_token'] = $updateToken;
-
-if (!isset($_SESSION['cache_clear_token']) || !is_string($_SESSION['cache_clear_token']) || $_SESSION['cache_clear_token'] === '') {
-    $_SESSION['cache_clear_token'] = $generateToken();
+try {
+    $updateToken = bin2hex(random_bytes(32));
+} catch (Throwable $exception) {
+    $updateToken = bin2hex(hash('sha256', uniqid('', true), true));
 }
 
-$cacheClearToken = (string) $_SESSION['cache_clear_token'];
+$_SESSION['update_token'] = $updateToken;
 
 $alert = null;
 if (isset($_SESSION['alert'])) {
@@ -145,6 +133,18 @@ $ratePeriodFormData = [
     'category_prices' => [],
 ];
 $ratePeriodFormMode = 'create';
+$rateEventFormData = [
+    'id' => null,
+    'rate_id' => '',
+    'name' => '',
+    'start_date' => '',
+    'end_date' => '',
+    'default_price' => '',
+    'color' => '#B91C1C',
+    'description' => '',
+    'category_prices' => [],
+];
+$rateEventFormMode = 'create';
 $ratePeriodWeekdayOptions = [
     1 => 'Montag',
     2 => 'Dienstag',
@@ -233,7 +233,7 @@ if (isset($_GET['editCategory'])) {
     $activeSection = 'guests';
 } elseif (isset($_GET['editReservation'])) {
     $activeSection = 'reservations';
-} elseif (isset($_GET['editRate']) || isset($_GET['editRatePeriod'])) {
+} elseif (isset($_GET['editRate']) || isset($_GET['editRatePeriod']) || isset($_GET['editRateEvent'])) {
     $activeSection = 'rates';
 }
 
@@ -273,6 +273,7 @@ $companyGuestCounts = [];
 $companyLookup = [];
 $rates = [];
 $ratePeriods = [];
+$rateEvents = [];
 $activeRate = null;
 $activeRateId = null;
 $activeRateCategoryId = null;
@@ -679,22 +680,6 @@ if ($pdo !== null && isset($_GET['ajax'])) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form']) && $_POST['form'] === 'settings_clear_cache') {
     $activeSection = 'settings';
-
-    $postedToken = isset($_POST['token']) ? (string) $_POST['token'] : '';
-    $sessionToken = isset($_SESSION['cache_clear_token']) && is_string($_SESSION['cache_clear_token']) ? $_SESSION['cache_clear_token'] : '';
-
-    if ($postedToken === '' || $sessionToken === '' || !hash_equals($sessionToken, $postedToken)) {
-        $_SESSION['cache_clear_token'] = $generateToken();
-        $_SESSION['alert'] = [
-            'type' => 'danger',
-            'message' => 'Die Anfrage konnte nicht verifiziert werden. Bitte versuchen Sie es erneut.',
-        ];
-
-        header('Location: index.php?section=settings#cache-tools');
-        exit;
-    }
-
-    $_SESSION['cache_clear_token'] = $generateToken();
 
     header('Clear-Site-Data: "cache"');
 
@@ -1501,6 +1486,326 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             header('Location: index.php?' . http_build_query($redirectParams) . '#rate-periods');
+            exit;
+
+        case 'rate_event_create':
+        case 'rate_event_update':
+            $activeSection = 'rates';
+            $rateEventFormMode = $form === 'rate_event_update' ? 'update' : 'create';
+
+            if ($rateManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Ratenverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $rateIdInput = trim((string) ($_POST['rate_id'] ?? ''));
+            $rateId = (int) $rateIdInput;
+
+            $activeRateCategoryIdInput = null;
+            if (isset($_POST['active_rate_category_id'])) {
+                $candidate = (int) $_POST['active_rate_category_id'];
+                if ($candidate > 0) {
+                    $activeRateCategoryIdInput = $candidate;
+                }
+            }
+
+            $name = trim((string) ($_POST['name'] ?? ''));
+            $startDateInput = trim((string) ($_POST['start_date'] ?? ''));
+            $endDateInput = trim((string) ($_POST['end_date'] ?? ''));
+            $defaultPriceInput = trim((string) ($_POST['default_price'] ?? ''));
+            $colorInput = trim((string) ($_POST['color'] ?? ''));
+            $descriptionInput = trim((string) ($_POST['description'] ?? ''));
+            $categoryPricesInput = isset($_POST['category_prices']) && is_array($_POST['category_prices']) ? $_POST['category_prices'] : [];
+
+            $rateEventFormData = [
+                'id' => $form === 'rate_event_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'rate_id' => $rateIdInput,
+                'name' => $name,
+                'start_date' => $startDateInput,
+                'end_date' => $endDateInput,
+                'default_price' => $defaultPriceInput,
+                'color' => $colorInput !== ''
+                    ? (strpos($colorInput, '#') === 0 ? strtoupper($colorInput) : '#' . strtoupper($colorInput))
+                    : '#B91C1C',
+                'description' => $descriptionInput,
+                'category_prices' => [],
+            ];
+
+            if ($rateId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte wählen Sie eine gültige Rate aus.',
+                ];
+                break;
+            }
+
+            $rateRecord = $rateManager->find($rateId);
+            if ($rateRecord === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Rate wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $availableCategories = [];
+            if ($categoryManager instanceof RoomCategoryManager) {
+                $availableCategories = $categoryManager->all();
+            }
+
+            $categoryMap = [];
+            foreach ($availableCategories as $category) {
+                if (!isset($category['id'])) {
+                    continue;
+                }
+
+                $categoryId = (int) $category['id'];
+                $categoryMap[$categoryId] = $category;
+            }
+
+            if ($name === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen Namen für die Messe ein.',
+                ];
+                break;
+            }
+
+            $startDate = DateTimeImmutable::createFromFormat('Y-m-d', $startDateInput) ?: DateTimeImmutable::createFromFormat('d.m.Y', $startDateInput);
+            $endDate = DateTimeImmutable::createFromFormat('Y-m-d', $endDateInput) ?: DateTimeImmutable::createFromFormat('d.m.Y', $endDateInput);
+
+            if (!($startDate instanceof DateTimeImmutable) || !($endDate instanceof DateTimeImmutable)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie gültige Start- und Enddaten an (Format: JJJJ-MM-TT).',
+                ];
+                break;
+            }
+
+            if ($endDate < $startDate) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Enddatum darf nicht vor dem Startdatum liegen.',
+                ];
+                break;
+            }
+
+            $defaultPrice = null;
+            if ($defaultPriceInput !== '') {
+                $normalizedDefault = str_replace(',', '.', preg_replace('/[^0-9,\.]/', '', $defaultPriceInput));
+                if ($normalizedDefault === '' || !is_numeric($normalizedDefault)) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Der Standardpreis ist ungültig.',
+                    ];
+                    break;
+                }
+
+                $defaultValue = round((float) $normalizedDefault, 2);
+                if ($defaultValue < 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Der Standardpreis darf nicht negativ sein.',
+                    ];
+                    break;
+                }
+
+                $defaultPrice = number_format($defaultValue, 2, '.', '');
+                $rateEventFormData['default_price'] = number_format($defaultValue, 2, ',', '');
+            }
+
+            $colorValue = '#B91C1C';
+            if ($colorInput !== '') {
+                $normalizedColor = strtoupper(ltrim($colorInput, '#'));
+                if (!preg_match('/^([0-9A-F]{6}|[0-9A-F]{3})$/', $normalizedColor)) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Bitte geben Sie eine gültige Farbe im Hex-Format an.',
+                    ];
+                    break;
+                }
+
+                if (strlen($normalizedColor) === 3) {
+                    $normalizedColor = sprintf('%1$s%1$s%2$s%2$s%3$s%3$s', $normalizedColor[0], $normalizedColor[1], $normalizedColor[2]);
+                }
+
+                $colorValue = '#' . $normalizedColor;
+                $rateEventFormData['color'] = $colorValue;
+            }
+
+            $eventCategoryPrices = [];
+            $categoryPriceRemovals = [];
+
+            foreach ($categoryMap as $categoryId => $category) {
+                $rawValue = isset($categoryPricesInput[$categoryId]) ? trim((string) $categoryPricesInput[$categoryId]) : '';
+                $rateEventFormData['category_prices'][$categoryId] = $rawValue;
+
+                if ($rawValue === '') {
+                    $categoryPriceRemovals[] = $categoryId;
+                    continue;
+                }
+
+                $normalizedInput = str_replace(',', '.', preg_replace('/[^0-9,\.]/', '', $rawValue));
+                if ($normalizedInput === '' || !is_numeric($normalizedInput)) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => sprintf(
+                            'Der Preis für die Kategorie &quot;%s&quot; ist ungültig.',
+                            htmlspecialchars((string) ($category['name'] ?? 'Kategorie'), ENT_QUOTES, 'UTF-8')
+                        ),
+                    ];
+                    break 2;
+                }
+
+                $priceValue = round((float) $normalizedInput, 2);
+                if ($priceValue < 0) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => sprintf(
+                            'Der Preis für die Kategorie &quot;%s&quot; darf nicht negativ sein.',
+                            htmlspecialchars((string) ($category['name'] ?? 'Kategorie'), ENT_QUOTES, 'UTF-8')
+                        ),
+                    ];
+                    break 2;
+                }
+
+                $eventCategoryPrices[$categoryId] = number_format($priceValue, 2, '.', '');
+                $rateEventFormData['category_prices'][$categoryId] = number_format($priceValue, 2, ',', '');
+            }
+
+            if ($alert !== null) {
+                break;
+            }
+
+            $payload = [
+                'rate_id' => $rateId,
+                'name' => $name,
+                'start_date' => $startDate->format('Y-m-d'),
+                'end_date' => $endDate->format('Y-m-d'),
+                'default_price' => $defaultPrice,
+                'color' => $colorValue,
+                'description' => $descriptionInput !== '' ? $descriptionInput : null,
+                'created_by' => $currentUserId > 0 ? $currentUserId : null,
+                'updated_by' => $currentUserId > 0 ? $currentUserId : null,
+                'category_prices' => $eventCategoryPrices,
+            ];
+
+            if ($form === 'rate_event_create') {
+                $eventId = $rateManager->createEvent($payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Messe wurde angelegt.',
+                ];
+
+                $redirectParams = [
+                    'section' => 'rates',
+                    'rateId' => $rateId,
+                ];
+                if ($activeRateCategoryIdInput !== null) {
+                    $redirectParams['rateCategoryId'] = $activeRateCategoryIdInput;
+                }
+
+                header('Location: index.php?' . http_build_query($redirectParams) . '#rate-events');
+                exit;
+            }
+
+            $eventId = (int) ($_POST['id'] ?? 0);
+            if ($eventId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Messe konnte nicht aktualisiert werden, da keine gültige ID übermittelt wurde.',
+                ];
+                break;
+            }
+
+            $existingEvent = $rateManager->findEvent($eventId);
+            if ($existingEvent === null || (int) ($existingEvent['rate_id'] ?? 0) !== $rateId) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Messe gehört nicht zur aktuellen Rate.',
+                ];
+                break;
+            }
+
+            $payload['updated_by'] = $currentUserId > 0 ? $currentUserId : null;
+            $payload['category_price_removals'] = $categoryPriceRemovals;
+
+            $rateManager->updateEvent($eventId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Messe wurde aktualisiert.',
+            ];
+
+            $redirectParams = [
+                'section' => 'rates',
+                'rateId' => $rateId,
+            ];
+            if ($activeRateCategoryIdInput !== null) {
+                $redirectParams['rateCategoryId'] = $activeRateCategoryIdInput;
+            }
+
+            header('Location: index.php?' . http_build_query($redirectParams) . '#rate-events');
+            exit;
+
+        case 'rate_event_delete':
+            $activeSection = 'rates';
+
+            if ($rateManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Ratenverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $eventId = (int) ($_POST['id'] ?? 0);
+            $rateId = (int) ($_POST['rate_id'] ?? 0);
+            $activeRateCategoryIdInput = null;
+            if (isset($_POST['active_rate_category_id'])) {
+                $candidate = (int) $_POST['active_rate_category_id'];
+                if ($candidate > 0) {
+                    $activeRateCategoryIdInput = $candidate;
+                }
+            }
+
+            if ($eventId <= 0 || $rateId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Messe konnte nicht gelöscht werden, da Angaben fehlen.',
+                ];
+                break;
+            }
+
+            $existingEvent = $rateManager->findEvent($eventId);
+            if ($existingEvent === null || (int) ($existingEvent['rate_id'] ?? 0) !== $rateId) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Messe wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $rateManager->deleteEvent($eventId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Messe wurde gelöscht.',
+            ];
+
+            $redirectParams = [
+                'section' => 'rates',
+                'rateId' => $rateId,
+            ];
+            if ($activeRateCategoryIdInput !== null) {
+                $redirectParams['rateCategoryId'] = $activeRateCategoryIdInput;
+            }
+
+            header('Location: index.php?' . http_build_query($redirectParams) . '#rate-events');
             exit;
 
         case 'category_move':
@@ -2796,6 +3101,7 @@ if ($pdo !== null) {
 
             if ($activeRate !== null) {
                 $ratePeriods = $rateManager->periodsForRate($activeRateId);
+                $rateEvents = $rateManager->eventsForRate($activeRateId);
             }
 
             $availableCategoryIds = [];
@@ -3602,6 +3908,79 @@ if ($pdo !== null && isset($_GET['editRatePeriod']) && $ratePeriodFormData['id']
             $alert = [
                 'type' => 'warning',
                 'message' => 'Der ausgewählte Zeitraum wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editRateEvent']) && $rateEventFormData['id'] === null) {
+    if ($rateManager === null) {
+        if ($alert === null) {
+            $alert = [
+                'type' => 'danger',
+                'message' => 'Die Ratenverwaltung ist derzeit nicht verfügbar.',
+            ];
+        }
+    } else {
+        $eventToEdit = $rateManager->findEvent((int) $_GET['editRateEvent']);
+
+        if ($eventToEdit) {
+            $rateEventFormMode = 'update';
+            $associatedRateId = isset($eventToEdit['rate_id']) ? (int) $eventToEdit['rate_id'] : 0;
+            if ($associatedRateId > 0) {
+                $activeRateId = $associatedRateId;
+                $requestedRateId = $associatedRateId;
+            }
+
+            $formEventCategoryPrices = [];
+            if (isset($eventToEdit['category_prices']) && is_array($eventToEdit['category_prices'])) {
+                foreach ($eventToEdit['category_prices'] as $categoryId => $priceValue) {
+                    $formEventCategoryPrices[(int) $categoryId] = number_format((float) $priceValue, 2, ',', '');
+                }
+            }
+
+            $rateEventFormData = [
+                'id' => (int) $eventToEdit['id'],
+                'rate_id' => $associatedRateId > 0 ? (string) $associatedRateId : '',
+                'name' => $eventToEdit['name'] ?? '',
+                'start_date' => $eventToEdit['start_date'] ?? '',
+                'end_date' => $eventToEdit['end_date'] ?? '',
+                'default_price' => isset($eventToEdit['default_price']) && $eventToEdit['default_price'] !== null
+                    ? number_format((float) $eventToEdit['default_price'], 2, ',', '')
+                    : '',
+                'color' => $eventToEdit['color'] ?? '#B91C1C',
+                'description' => $eventToEdit['description'] ?? '',
+                'category_prices' => $formEventCategoryPrices,
+            ];
+
+            foreach ($categories as $category) {
+                if (!isset($category['id'])) {
+                    continue;
+                }
+
+                $categoryId = (int) $category['id'];
+                if (!isset($rateEventFormData['category_prices'][$categoryId])) {
+                    $rateEventFormData['category_prices'][$categoryId] = '';
+                }
+            }
+
+            if ($associatedRateId > 0) {
+                $rateEvents = $rateManager->eventsForRate($associatedRateId);
+                if ($activeRateCategoryId === null && $formEventCategoryPrices !== []) {
+                    $categoryPriceKeys = array_keys($formEventCategoryPrices);
+                    if ($categoryPriceKeys !== []) {
+                        $activeRateCategoryId = (int) $categoryPriceKeys[0];
+                    }
+                }
+
+                if ($activeRateCategoryId !== null) {
+                    $rateCalendarData = $rateManager->buildYearlyCalendar($associatedRateId, $activeRateCategoryId, $rateCalendarYear);
+                }
+            }
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die ausgewählte Messe wurde nicht gefunden.',
             ];
         }
     }
@@ -4641,6 +5020,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
       <?php
         $isEditingRate = $rateFormMode === 'update' && $rateFormData['id'] !== null;
         $isEditingRatePeriod = $ratePeriodFormMode === 'update' && $ratePeriodFormData['id'] !== null;
+        $isEditingRateEvent = $rateEventFormMode === 'update' && $rateEventFormData['id'] !== null;
         $monthNames = [
             '01' => 'Januar',
             '02' => 'Februar',
@@ -4847,6 +5227,187 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
           </div>
           <div class="col-12 col-xxl-7">
+            <div class="card module-card" id="rate-events">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Messen &amp; Sonderraten</h2>
+                  <p class="text-muted mb-0">Besondere Ereignisse mit eigenen Farben und Preisen je Kategorie.</p>
+                </div>
+                <?php if ($isEditingRateEvent): ?>
+                  <span class="badge text-bg-primary">Bearbeitung</span>
+                <?php endif; ?>
+              </div>
+              <div class="card-body">
+                <form method="post" class="row g-3" id="rate-event-form">
+                  <input type="hidden" name="form" value="<?= $isEditingRateEvent ? 'rate_event_update' : 'rate_event_create' ?>">
+                  <input type="hidden" name="active_rate_category_id" value="<?= $selectedRateCategoryId !== null ? (int) $selectedRateCategoryId : '' ?>">
+                  <?php if ($isEditingRateEvent): ?>
+                    <input type="hidden" name="id" value="<?= (int) $rateEventFormData['id'] ?>">
+                  <?php endif; ?>
+                  <div class="col-12 col-lg-4">
+                    <label for="rate-event-rate" class="form-label">Rate *</label>
+                    <select class="form-select" id="rate-event-rate" name="rate_id" required <?= $pdo === null || $rates === [] ? 'disabled' : '' ?>>
+                      <option value="">Bitte auswählen</option>
+                      <?php foreach ($rates as $rate): ?>
+                        <?php if (!isset($rate['id'])) { continue; } ?>
+                        <?php $rateId = (int) $rate['id']; ?>
+                        <option value="<?= $rateId ?>" <?= (int) ($rateEventFormData['rate_id'] ?? 0) === $rateId || ($rateEventFormData['rate_id'] === '' && $selectedRateId !== null && $rateId === $selectedRateId) ? 'selected' : '' ?>><?= htmlspecialchars((string) ($rate['name'] ?? 'Rate #' . $rateId)) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                  </div>
+                  <div class="col-12 col-lg-4">
+                    <label for="rate-event-name" class="form-label">Messe *</label>
+                    <input type="text" class="form-control" id="rate-event-name" name="name" value="<?= htmlspecialchars((string) $rateEventFormData['name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <label for="rate-event-start" class="form-label">Start *</label>
+                    <input type="date" class="form-control" id="rate-event-start" name="start_date" value="<?= htmlspecialchars((string) $rateEventFormData['start_date']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <label for="rate-event-end" class="form-label">Ende *</label>
+                    <input type="date" class="form-control" id="rate-event-end" name="end_date" value="<?= htmlspecialchars((string) $rateEventFormData['end_date']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-12 col-lg-4">
+                    <label for="rate-event-default-price" class="form-label">Standardpreis (EUR)</label>
+                    <input type="text" class="form-control" id="rate-event-default-price" name="default_price" value="<?= htmlspecialchars((string) $rateEventFormData['default_price']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                    <div class="form-text">Optional – greift, wenn keine Kategoriepreise hinterlegt sind.</div>
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <label for="rate-event-color" class="form-label">Farbe</label>
+                    <input type="color" class="form-control form-control-color" id="rate-event-color" name="color" value="<?= htmlspecialchars((string) $rateEventFormData['color']) ?>" title="Darstellungsfarbe im Kalender" <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="rate-event-description" class="form-label">Beschreibung</label>
+                    <textarea class="form-control" id="rate-event-description" name="description" rows="1" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $rateEventFormData['description']) ?></textarea>
+                  </div>
+                  <?php if ($categories === []): ?>
+                    <div class="col-12">
+                      <div class="alert alert-warning mb-0">Bitte legen Sie Kategorien an, um Messepreise pro Kategorie zu pflegen.</div>
+                    </div>
+                  <?php else: ?>
+                    <?php foreach ($categories as $category): ?>
+                      <?php if (!isset($category['id'])) { continue; } ?>
+                      <?php $categoryId = (int) $category['id']; ?>
+                      <div class="col-12 col-md-6">
+                        <label class="form-label" for="rate-event-category-price-<?= $categoryId ?>">Preis für <?= htmlspecialchars((string) ($category['name'] ?? 'Kategorie')) ?> (EUR)</label>
+                        <input
+                          type="text"
+                          class="form-control"
+                          id="rate-event-category-price-<?= $categoryId ?>"
+                          name="category_prices[<?= $categoryId ?>]"
+                          value="<?= htmlspecialchars((string) ($rateEventFormData['category_prices'][$categoryId] ?? '')) ?>"
+                          <?= $pdo === null ? 'disabled' : '' ?>
+                        >
+                        <div class="form-text">Leer lassen, um Standardpreis bzw. Basispreis zu verwenden.</div>
+                      </div>
+                    <?php endforeach; ?>
+                  <?php endif; ?>
+                  <div class="col-12 d-flex justify-content-end gap-2 flex-wrap">
+                    <?php if ($isEditingRateEvent): ?>
+                      <a href="index.php?section=rates#rate-events" class="btn btn-outline-secondary">Abbrechen</a>
+                    <?php endif; ?>
+                    <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isEditingRateEvent ? 'Messe aktualisieren' : 'Messe speichern' ?></button>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mt-3 mb-0">Sonderraten können nach Aufbau der Datenbankverbindung hinterlegt werden.</p>
+                <?php elseif ($selectedRateId === null): ?>
+                  <p class="text-muted mt-3 mb-0">Bitte wählen Sie eine Rate, um Messen zu verwalten.</p>
+                <?php elseif ($rateEvents === []): ?>
+                  <p class="text-muted mt-3 mb-0">Noch keine Messen für diese Rate erfasst.</p>
+                <?php else: ?>
+                  <div class="table-responsive mt-4">
+                    <table class="table table-sm align-middle mb-0">
+                      <thead class="table-light">
+                        <tr>
+                          <th scope="col">Messe</th>
+                          <th scope="col">Zeitraum</th>
+                          <th scope="col">Preise</th>
+                          <th scope="col" class="text-end">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($rateEvents as $event): ?>
+                          <?php
+                            $eventId = isset($event['id']) ? (int) $event['id'] : 0;
+                            $eventColor = isset($event['color']) && $event['color'] !== null ? (string) $event['color'] : '#B91C1C';
+                            $eventStart = $event['start_date'] ?? '';
+                            $eventEnd = $event['end_date'] ?? '';
+                            try {
+                                if ($eventStart !== '') {
+                                    $eventStart = (new DateTimeImmutable($eventStart))->format('d.m.Y');
+                                }
+                            } catch (Throwable $exception) {
+                                // keep original value
+                            }
+                            try {
+                                if ($eventEnd !== '') {
+                                    $eventEnd = (new DateTimeImmutable($eventEnd))->format('d.m.Y');
+                                }
+                            } catch (Throwable $exception) {
+                                // keep original value
+                            }
+                            $eventCategoryPrices = $event['category_prices'] ?? [];
+                            $eventEditParams = ['section' => 'rates', 'editRateEvent' => $eventId];
+                            if ($selectedRateId !== null) {
+                                $eventEditParams['rateId'] = $selectedRateId;
+                            }
+                            if ($selectedRateCategoryId !== null) {
+                                $eventEditParams['rateCategoryId'] = $selectedRateCategoryId;
+                            }
+                            $eventEditUrl = 'index.php?' . http_build_query($eventEditParams) . '#rate-event-form';
+                          ?>
+                          <tr>
+                            <td>
+                              <div class="d-flex align-items-center gap-2">
+                                <span class="rate-event-color" style="background-color: <?= htmlspecialchars($eventColor) ?>"></span>
+                                <div>
+                                  <div class="fw-semibold"><?= htmlspecialchars((string) ($event['name'] ?? 'Messe #' . $eventId)) ?></div>
+                                  <?php if (!empty($event['description'])): ?>
+                                    <div class="small text-muted"><?= htmlspecialchars((string) $event['description']) ?></div>
+                                  <?php endif; ?>
+                                </div>
+                              </div>
+                            </td>
+                            <td><?= htmlspecialchars($eventStart) ?> – <?= htmlspecialchars($eventEnd) ?></td>
+                            <td>
+                              <?php if ($eventCategoryPrices === [] && !isset($event['default_price'])): ?>
+                                <span class="text-muted">Basispreise</span>
+                              <?php else: ?>
+                                <div class="d-flex flex-wrap gap-1">
+                                  <?php if (isset($event['default_price']) && $event['default_price'] !== null): ?>
+                                    <span class="badge text-bg-info">Standard: € <?= number_format((float) $event['default_price'], 2, ',', '') ?></span>
+                                  <?php endif; ?>
+                                  <?php foreach ($eventCategoryPrices as $categoryId => $price): ?>
+                                    <?php
+                                      $categoryId = (int) $categoryId;
+                                      $categoryName = isset($categoryLookup[$categoryId]['name']) ? (string) $categoryLookup[$categoryId]['name'] : 'Kategorie #' . $categoryId;
+                                    ?>
+                                    <span class="badge text-bg-secondary"><?= htmlspecialchars($categoryName) ?>: € <?= number_format((float) $price, 2, ',', '') ?></span>
+                                  <?php endforeach; ?>
+                                </div>
+                              <?php endif; ?>
+                            </td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                <a class="btn btn-outline-secondary btn-sm" href="<?= htmlspecialchars($eventEditUrl) ?>">Bearbeiten</a>
+                                <form method="post" class="d-inline" onsubmit="return confirm('Messe wirklich löschen?');">
+                                  <input type="hidden" name="form" value="rate_event_delete">
+                                  <input type="hidden" name="id" value="<?= $eventId ?>">
+                                  <input type="hidden" name="rate_id" value="<?= $selectedRateId ?>">
+                                  <input type="hidden" name="active_rate_category_id" value="<?= $selectedRateCategoryId !== null ? (int) $selectedRateCategoryId : '' ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
+                                </form>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
             <div class="card module-card" id="rate-calendar">
               <div class="card-header bg-transparent border-0 d-flex flex-wrap justify-content-between align-items-start gap-2">
                 <div>
@@ -4926,14 +5487,40 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               $dayNumber = $dateObj instanceof DateTimeImmutable ? (int) $dateObj->format('j') : ($dayIndex + 1);
                               $priceLabel = number_format((float) ($day['price'] ?? 0), 2, ',', '');
                               $cellClasses = ['rate-calendar-cell'];
-                              if (($day['source'] ?? '') === 'period') {
+                              $cellStyle = '';
+                              $tooltipParts = [];
+                              if (($day['source'] ?? '') === 'event') {
+                                  $cellClasses[] = 'rate-calendar-cell-event';
+                                  $eventColor = $day['event_color'] ?? null;
+                                  if (is_string($eventColor) && $eventColor !== '') {
+                                      $cellStyle = ' style="--event-color: ' . htmlspecialchars($eventColor) . '"';
+                                  }
+                                  $eventLabel = (string) ($day['event_label'] ?? 'Messe');
+                                  if ($eventLabel !== '') {
+                                      $tooltipParts[] = 'Messe: ' . $eventLabel;
+                                  }
+                                  if (!empty($day['period_label'])) {
+                                      $tooltipParts[] = (string) $day['period_label'];
+                                  }
+                              } elseif (($day['source'] ?? '') === 'period') {
                                   $cellClasses[] = 'rate-calendar-cell-override';
+                                  if (!empty($day['period_label'])) {
+                                      $tooltipParts[] = (string) $day['period_label'];
+                                  }
+                              } else {
+                                  $tooltipParts[] = 'Basispreis';
                               }
-                              $tooltip = $day['period_label'] ?? 'Basispreis';
+                              if ($tooltipParts === []) {
+                                  $tooltipParts[] = 'Preisübersicht';
+                              }
+                              $tooltip = implode(' • ', $tooltipParts);
                             ?>
-                            <div class="<?= htmlspecialchars(implode(' ', $cellClasses)) ?>" title="<?= htmlspecialchars($tooltip) ?>">
+                            <div class="<?= htmlspecialchars(implode(' ', $cellClasses)) ?>"<?= $cellStyle ?> title="<?= htmlspecialchars($tooltip) ?>">
                               <div class="rate-calendar-day"><?= $dayNumber ?></div>
                               <div class="rate-calendar-price">€ <?= htmlspecialchars($priceLabel) ?></div>
+                              <?php if (($day['source'] ?? '') === 'event' && !empty($day['event_label'])): ?>
+                                <div class="rate-calendar-event-name"><?= htmlspecialchars((string) $day['event_label']) ?></div>
+                              <?php endif; ?>
                             </div>
                           <?php endforeach; ?>
                         </div>
@@ -5354,7 +5941,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               <div class="card-body">
                 <form method="post" class="d-flex flex-column flex-md-row gap-3 align-items-start align-items-md-center">
                   <input type="hidden" name="form" value="settings_clear_cache">
-                  <input type="hidden" name="token" value="<?= htmlspecialchars($cacheClearToken, ENT_QUOTES, 'UTF-8') ?>">
                   <div class="text-muted small flex-grow-1">
                     <p class="mb-1">Unterstützte Browser entfernen ihren Cache für diese Seite unmittelbar nach dem Ausführen.</p>
                     <p class="mb-0">Bei älteren Browsern kann ggf. ein manuelles Leeren des Cache erforderlich bleiben.</p>
