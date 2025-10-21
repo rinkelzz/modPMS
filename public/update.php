@@ -14,6 +14,13 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
+$userRole = $_SESSION['user_role'] ?? 'mitarbeiter';
+if ($userRole !== 'admin') {
+    http_response_code(403);
+    echo 'Nicht autorisiert';
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
     echo 'Methode nicht erlaubt';
