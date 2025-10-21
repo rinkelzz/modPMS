@@ -182,7 +182,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     company_id INT UNSIGNED NULL,
                     arrival_date DATE NOT NULL,
                     departure_date DATE NOT NULL,
-                    status ENUM("geplant", "eingecheckt", "abgereist", "storniert") NOT NULL DEFAULT "geplant",
+                    status ENUM("geplant", "eingecheckt", "abgereist", "bezahlt", "noshow", "storniert") NOT NULL DEFAULT "geplant",
                     notes TEXT NULL,
                     created_by INT UNSIGNED NULL,
                     updated_by INT UNSIGNED NULL,

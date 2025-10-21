@@ -30,13 +30,22 @@ if (!isset($_SESSION['user_id'])) {
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
 
-try {
-    $updateToken = bin2hex(random_bytes(32));
-} catch (Throwable $exception) {
-    $updateToken = bin2hex(hash('sha256', uniqid('', true), true));
-}
+/**
+ * @return string
+ */
+$generateToken = static function (): string {
+    try {
+        return bin2hex(random_bytes(32));
+    } catch (Throwable $exception) {
+        return bin2hex(hash('sha256', uniqid('', true), true));
+    }
+};
 
+$updateToken = $generateToken();
 $_SESSION['update_token'] = $updateToken;
+
+$reservationStatusToken = $generateToken();
+$_SESSION['reservation_status_token'] = $reservationStatusToken;
 
 $alert = null;
 if (isset($_SESSION['alert'])) {
@@ -211,7 +220,15 @@ $reservationCategoryOptionsHtml = '<option value="">Bitte auswählen</option>';
 $reservationRoomOptionsHtml = '<option value="">Kein konkretes Zimmer – Überbuchung</option>';
 $buildRoomSelectOptions = null;
 $reservationSearchTerm = isset($_GET['reservation_search']) ? trim((string) $_GET['reservation_search']) : '';
-$reservationStatuses = ['geplant', 'eingecheckt', 'abgereist', 'storniert'];
+$reservationStatuses = ['geplant', 'eingecheckt', 'abgereist', 'bezahlt', 'noshow', 'storniert'];
+$reservationStatusMeta = [
+    'geplant' => ['label' => 'Geplant', 'badge' => 'text-bg-primary'],
+    'eingecheckt' => ['label' => 'Angereist', 'badge' => 'text-bg-success'],
+    'abgereist' => ['label' => 'Abgereist', 'badge' => 'text-bg-secondary'],
+    'bezahlt' => ['label' => 'Bezahlt', 'badge' => 'text-bg-info'],
+    'noshow' => ['label' => 'No-Show', 'badge' => 'text-bg-warning text-dark'],
+    'storniert' => ['label' => 'Storniert', 'badge' => 'text-bg-danger'],
+];
 $reservationUserLookup = [];
 $reservationGuestTooltip = '';
 $reservationCompanyTooltip = '';
@@ -1464,6 +1481,85 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             header('Location: index.php?section=reservations');
             exit;
 
+        case 'reservation_status_update':
+            $redirectSection = isset($_POST['redirect_section']) ? trim((string) $_POST['redirect_section']) : 'dashboard';
+            $redirectDate = isset($_POST['redirect_date']) ? trim((string) $_POST['redirect_date']) : '';
+            $redirectDisplay = isset($_POST['redirect_display']) ? trim((string) $_POST['redirect_display']) : '';
+
+            $redirectParams = [];
+            if ($redirectSection !== '') {
+                $redirectParams['section'] = $redirectSection;
+            }
+
+            if ($redirectDate !== '') {
+                $redirectParams['date'] = $redirectDate;
+            }
+
+            if ($redirectDisplay !== '' && array_key_exists($redirectDisplay, $calendarOccupancyDisplayOptions)) {
+                $redirectParams['occupancyDisplay'] = $redirectDisplay;
+            }
+
+            if ($redirectParams === []) {
+                $redirectParams['section'] = 'dashboard';
+            }
+
+            if ($reservationManager === null) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Reservierungen können derzeit nicht aktualisiert werden.',
+                ];
+                header('Location: index.php?' . http_build_query($redirectParams));
+                exit;
+            }
+
+            $statusToken = isset($_POST['status_token']) ? (string) $_POST['status_token'] : '';
+            $sessionStatusToken = isset($_SESSION['reservation_status_token']) ? (string) $_SESSION['reservation_status_token'] : '';
+
+            if ($statusToken === '' || $sessionStatusToken === '' || !hash_equals($sessionStatusToken, $statusToken)) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Die Statusänderung konnte nicht verifiziert werden.',
+                ];
+                header('Location: index.php?' . http_build_query($redirectParams));
+                exit;
+            }
+
+            unset($_SESSION['reservation_status_token']);
+
+            $reservationId = (int) ($_POST['id'] ?? 0);
+            $statusInput = isset($_POST['status']) ? (string) $_POST['status'] : '';
+
+            if ($reservationId <= 0 || !in_array($statusInput, $reservationStatuses, true)) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Der neue Status konnte nicht gesetzt werden.',
+                ];
+                header('Location: index.php?' . http_build_query($redirectParams));
+                exit;
+            }
+
+            $reservation = $reservationManager->find($reservationId);
+            if ($reservation === null) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Reservierung wurde nicht gefunden.',
+                ];
+                header('Location: index.php?' . http_build_query($redirectParams));
+                exit;
+            }
+
+            $reservationManager->updateStatus($reservationId, $statusInput, $currentUserId > 0 ? $currentUserId : null);
+
+            $statusLabel = $reservationStatusMeta[$statusInput]['label'] ?? ucfirst($statusInput);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Status der Reservierung #%d wurde auf "%s" gesetzt.', $reservationId, $statusLabel),
+            ];
+
+            header('Location: index.php?' . http_build_query($redirectParams));
+            exit;
+
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
@@ -1814,6 +1910,16 @@ if ($pdo !== null) {
             continue;
         }
 
+        $reservationId = isset($reservation['id']) ? (int) $reservation['id'] : 0;
+        $reservationStatus = isset($reservation['status']) ? (string) $reservation['status'] : 'geplant';
+        if (!isset($reservationStatusMeta[$reservationStatus])) {
+            $reservationStatus = 'geplant';
+        }
+        $statusMeta = $reservationStatusMeta[$reservationStatus];
+
+        $reservations[$index]['status_label'] = $statusMeta['label'];
+        $reservations[$index]['status_badge_class'] = $statusMeta['badge'];
+
         $baseLabel = $buildGuestCalendarLabel([
             'company_name' => $reservation['company_name'] ?? '',
             'last_name' => $reservation['guest_last_name'] ?? '',
@@ -1822,6 +1928,13 @@ if ($pdo !== null) {
 
         $arrivalDate = $createDateImmutable($reservation['arrival_date'] ?? null);
         $departureDate = $createDateImmutable($reservation['departure_date'] ?? null);
+        $createdAt = $createDateImmutable($reservation['created_at'] ?? null);
+        $updatedAt = $createDateImmutable($reservation['updated_at'] ?? null);
+
+        $guestFirstName = isset($reservation['guest_first_name']) ? trim((string) $reservation['guest_first_name']) : '';
+        $guestLastName = isset($reservation['guest_last_name']) ? trim((string) $reservation['guest_last_name']) : '';
+        $guestFullNameParts = array_filter([$guestFirstName, $guestLastName], static fn ($value) => $value !== '');
+        $guestFullName = trim(implode(' ', $guestFullNameParts));
 
         $items = $reservation['items'] ?? [];
         if ($items === []) {
@@ -1833,6 +1946,35 @@ if ($pdo !== null) {
                 'room_number' => $reservation['room_number'] ?? null,
             ];
         }
+
+        $detailBase = [
+            'reservationId' => $reservationId,
+            'guestId' => isset($reservation['guest_id']) ? (int) $reservation['guest_id'] : null,
+            'guestName' => $guestFullName,
+            'guestEmail' => isset($reservation['guest_email']) ? (string) $reservation['guest_email'] : '',
+            'guestPhone' => isset($reservation['guest_phone']) ? (string) $reservation['guest_phone'] : '',
+            'companyId' => isset($reservation['company_id']) && $reservation['company_id'] !== null ? (int) $reservation['company_id'] : null,
+            'companyName' => isset($reservation['company_name']) ? (string) $reservation['company_name'] : '',
+            'status' => $reservationStatus,
+            'statusLabel' => $statusMeta['label'],
+            'statusBadgeClass' => $statusMeta['badge'],
+            'notes' => isset($reservation['notes']) && $reservation['notes'] !== null ? (string) $reservation['notes'] : '',
+            'arrivalDate' => $arrivalDate instanceof DateTimeImmutable ? $arrivalDate->format('Y-m-d') : null,
+            'arrivalDateFormatted' => $arrivalDate instanceof DateTimeImmutable ? $arrivalDate->format('d.m.Y') : null,
+            'departureDate' => $departureDate instanceof DateTimeImmutable ? $departureDate->format('Y-m-d') : null,
+            'departureDateFormatted' => $departureDate instanceof DateTimeImmutable ? $departureDate->format('d.m.Y') : null,
+            'createdByName' => isset($reservation['created_by_name']) ? (string) $reservation['created_by_name'] : '',
+            'createdById' => isset($reservation['created_by']) ? (int) $reservation['created_by'] : null,
+            'createdAt' => $reservation['created_at'] ?? null,
+            'createdAtFormatted' => $createdAt instanceof DateTimeImmutable ? $createdAt->format('d.m.Y H:i') : '',
+            'updatedByName' => isset($reservation['updated_by_name']) ? (string) $reservation['updated_by_name'] : '',
+            'updatedById' => isset($reservation['updated_by']) ? (int) $reservation['updated_by'] : null,
+            'updatedAt' => $reservation['updated_at'] ?? null,
+            'updatedAtFormatted' => $updatedAt instanceof DateTimeImmutable ? $updatedAt->format('d.m.Y H:i') : '',
+            'editUrl' => $reservationId > 0 ? 'index.php?section=reservations&editReservation=' . $reservationId : '',
+            'displayPreference' => $calendarOccupancyDisplay,
+            'guestLabel' => $baseLabel,
+        ];
 
         $reservations[$index]['items'] = $items;
 
@@ -1856,11 +1998,37 @@ if ($pdo !== null) {
             }
 
             $itemRoomId = isset($item['room_id']) ? (int) $item['room_id'] : 0;
+            $itemId = isset($item['id']) ? (int) $item['id'] : null;
+            $itemRoomNumber = '';
+            if (isset($item['room_number']) && $item['room_number'] !== null) {
+                $itemRoomNumber = trim((string) $item['room_number']);
+            }
+            if ($itemRoomId > 0 && $itemRoomNumber === '' && isset($roomLookup[$itemRoomId]['room_number'])) {
+                $itemRoomNumber = trim((string) $roomLookup[$itemRoomId]['room_number']);
+            }
+
+            $itemDetail = $detailBase;
+            $itemDetail['itemId'] = $itemId;
+            $itemDetail['categoryId'] = $itemCategoryId > 0 ? $itemCategoryId : null;
+            $itemDetail['categoryName'] = $itemCategoryName;
+            $itemDetail['roomId'] = $itemRoomId > 0 ? $itemRoomId : null;
+            $itemDetail['roomNumber'] = $itemRoomNumber;
+            $itemDetail['roomQuantity'] = $itemQuantity;
+            $itemDetail['type'] = $itemRoomId > 0 ? 'room' : 'overbooking';
+
+            if ($itemDetail['type'] === 'overbooking') {
+                $itemDetail['roomName'] = 'Überbuchung' . ($itemCategoryName !== '' ? ' – ' . $itemCategoryName : '');
+            } else {
+                $roomNumberLabel = $itemRoomNumber !== '' ? $itemRoomNumber : ($itemRoomId > 0 ? (string) $itemRoomId : '');
+                $itemDetail['roomName'] = $roomNumberLabel !== '' ? 'Zimmer ' . $roomNumberLabel : 'Zimmer';
+            }
+
             if ($itemRoomId > 0) {
                 $roomStays[$itemRoomId][] = [
                     'label' => $itemLabel,
                     'arrival' => $arrivalDate,
                     'departure' => $departureDate,
+                    'details' => $itemDetail,
                 ];
                 continue;
             }
@@ -1884,6 +2052,7 @@ if ($pdo !== null) {
                 'arrival' => $arrivalDate,
                 'departure' => $departureDate,
                 'quantity' => $itemQuantity,
+                'details' => $itemDetail,
             ];
         }
     }
@@ -1928,7 +2097,36 @@ if ($pdo !== null) {
 
                 for ($cursor = $effectiveStart; $cursor < $effectiveEnd; $cursor = $cursor->modify('+1 day')) {
                     $dateKey = $cursor->format('Y-m-d');
-                    $roomOccupancies[$roomId][$dateKey][] = $stay['label'];
+                    $entry = $stay['details'] ?? [];
+                    if (!is_array($entry)) {
+                        $entry = [];
+                    }
+
+                    $entry['label'] = $stay['label'];
+                    $entry['calendarDate'] = $dateKey;
+                    $entry['date'] = $dateKey;
+                    if (!isset($entry['roomId']) || $entry['roomId'] === null) {
+                        $entry['roomId'] = $roomId > 0 ? $roomId : null;
+                    }
+                    if (!isset($entry['roomNumber']) || $entry['roomNumber'] === '') {
+                        if (isset($roomLookup[$roomId]['room_number']) && $roomLookup[$roomId]['room_number'] !== null) {
+                            $entry['roomNumber'] = trim((string) $roomLookup[$roomId]['room_number']);
+                        } else {
+                            $entry['roomNumber'] = $roomId > 0 ? (string) $roomId : '';
+                        }
+                    }
+                    if (!isset($entry['roomName']) || $entry['roomName'] === '') {
+                        $roomNumberLabel = $entry['roomNumber'] ?? '';
+                        $entry['roomName'] = $roomNumberLabel !== '' ? 'Zimmer ' . $roomNumberLabel : 'Zimmer';
+                    }
+                    if (!isset($entry['roomQuantity'])) {
+                        $entry['roomQuantity'] = 1;
+                    }
+                    if (!isset($entry['type'])) {
+                        $entry['type'] = 'room';
+                    }
+
+                    $roomOccupancies[$roomId][$dateKey][] = $entry;
                 }
             }
         }
@@ -1977,11 +2175,37 @@ if ($pdo !== null) {
                         $categoryOverbookingOccupancies[$categoryId][$dateKey] = [
                             'labels' => [],
                             'quantity' => 0,
+                            'entries' => [],
                         ];
+                    }
+
+                    $entry = $stay['details'] ?? [];
+                    if (!is_array($entry)) {
+                        $entry = [];
+                    }
+
+                    $entry['label'] = $stay['label'];
+                    $entry['calendarDate'] = $dateKey;
+                    $entry['date'] = $dateKey;
+                    $entry['roomQuantity'] = $entry['roomQuantity'] ?? $stayQuantity;
+                    if (!isset($entry['categoryId']) && $categoryId > 0) {
+                        $entry['categoryId'] = $categoryId;
+                    }
+                    if (!isset($entry['categoryName']) || $entry['categoryName'] === '') {
+                        $entry['categoryName'] = isset($categoryLookup[$categoryId]['name']) ? (string) $categoryLookup[$categoryId]['name'] : '';
+                    }
+                    if (!isset($entry['roomName']) || $entry['roomName'] === '') {
+                        $categoryNameForRoom = $entry['categoryName'] !== '' ? $entry['categoryName'] : 'Kategorie';
+                        $entry['roomName'] = 'Überbuchung – ' . $categoryNameForRoom;
+                    }
+                    $entry['type'] = 'overbooking';
+                    if (!isset($entry['roomId'])) {
+                        $entry['roomId'] = null;
                     }
 
                     $categoryOverbookingOccupancies[$categoryId][$dateKey]['labels'][] = $stay['label'];
                     $categoryOverbookingOccupancies[$categoryId][$dateKey]['quantity'] += $stayQuantity;
+                    $categoryOverbookingOccupancies[$categoryId][$dateKey]['entries'][] = $entry;
                 }
             }
         }
@@ -2520,8 +2744,54 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                 <td class="<?= htmlspecialchars(implode(' ', $cellClasses)) ?>" data-date="<?= htmlspecialchars($day['date']) ?>" data-room="<?= htmlspecialchars($roomNumber) ?>"<?= $roomId > 0 ? ' data-room-id="' . $roomId . '"' : '' ?>>
                                   <span class="visually-hidden">Zimmer <?= htmlspecialchars($roomNumber) ?> am <?= htmlspecialchars($day['date']) ?></span>
                                   <?php if ($cellOccupants !== []): ?>
-                                    <?php foreach ($cellOccupants as $occupantLabel): ?>
-                                      <div class="occupancy-entry"><?= htmlspecialchars($occupantLabel) ?></div>
+                                    <?php foreach ($cellOccupants as $occupantEntry): ?>
+                                      <?php
+                                        $occupantLabel = '';
+                                        $occupantData = null;
+                                        if (is_array($occupantEntry)) {
+                                            $occupantLabel = (string) ($occupantEntry['label'] ?? '');
+                                            $occupantData = $occupantEntry;
+                                        } else {
+                                            $occupantLabel = (string) $occupantEntry;
+                                        }
+
+                                        if ($occupantLabel === '') {
+                                            $occupantLabel = 'Belegt';
+                                        }
+
+                                        $occupantTitleParts = [];
+                                        if (is_array($occupantData)) {
+                                            if (!empty($occupantData['statusLabel'])) {
+                                                $occupantTitleParts[] = 'Status: ' . $occupantData['statusLabel'];
+                                            }
+
+                                            $dateRange = trim(trim((string) ($occupantData['arrivalDateFormatted'] ?? '')) . ' – ' . trim((string) ($occupantData['departureDateFormatted'] ?? '')));
+                                            if ($dateRange !== '–' && trim($dateRange) !== '') {
+                                                $occupantTitleParts[] = 'Zeitraum: ' . $dateRange;
+                                            }
+
+                                            if (!empty($occupantData['roomName'])) {
+                                                $occupantTitleParts[] = $occupantData['roomName'];
+                                            }
+                                        }
+
+                                        $occupantTitle = $occupantTitleParts !== [] ? implode(' • ', array_filter($occupantTitleParts)) : '';
+                                        $occupantAria = $occupantTitle !== '' ? $occupantTitle : $occupantLabel;
+                                        $occupantAttributes = ' aria-label="' . htmlspecialchars($occupantAria) . '"';
+                                        if ($occupantTitle !== '') {
+                                            $occupantAttributes .= ' title="' . htmlspecialchars($occupantTitle) . '"';
+                                        }
+
+                                        $occupantDataAttr = '';
+                                        if ($occupantData !== null) {
+                                            $occupantDataAttr = htmlspecialchars(json_encode($occupantData, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE));
+                                        }
+                                      ?>
+                                      <?php if ($occupantData !== null): ?>
+                                        <div class="occupancy-entry occupancy-entry-action" role="button" tabindex="0" data-reservation='<?= $occupantDataAttr ?>'<?= $occupantAttributes ?>><?= htmlspecialchars($occupantLabel) ?></div>
+                                      <?php else: ?>
+                                        <div class="occupancy-entry"<?= $occupantAttributes ?>><?= htmlspecialchars($occupantLabel) ?></div>
+                                      <?php endif; ?>
                                     <?php endforeach; ?>
                                   <?php else: ?>
                                     <?php if ($roomStatus === 'wartung'): ?>
@@ -2555,8 +2825,9 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                           </th>
                           <?php foreach ($days as $day): ?>
                             <?php
-                              $overbookingCell = $overbookingData[$day['date']] ?? ['labels' => [], 'quantity' => 0];
+                              $overbookingCell = $overbookingData[$day['date']] ?? ['labels' => [], 'quantity' => 0, 'entries' => []];
                               $overbookingLabels = isset($overbookingCell['labels']) && is_array($overbookingCell['labels']) ? $overbookingCell['labels'] : [];
+                              $overbookingEntries = isset($overbookingCell['entries']) && is_array($overbookingCell['entries']) ? $overbookingCell['entries'] : [];
                               $overbookingQuantity = isset($overbookingCell['quantity']) ? (int) $overbookingCell['quantity'] : 0;
                               $cellClasses = ['room-calendar-cell', 'overbooking'];
                               if ($day['isToday']) {
@@ -2570,9 +2841,44 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <span class="visually-hidden">Überbuchungen am <?= htmlspecialchars($day['date']) ?></span>
                               <?php if ($overbookingQuantity > 0): ?>
                                 <div class="overbooking-quantity badge text-bg-danger">+<?= $overbookingQuantity ?></div>
-                                <?php foreach ($overbookingLabels as $entry): ?>
-                                  <div class="occupancy-entry"><?= htmlspecialchars($entry) ?></div>
+                                <?php foreach ($overbookingEntries as $entry): ?>
+                                  <?php
+                                    $entryLabel = (string) ($entry['label'] ?? '');
+                                    if ($entryLabel === '') {
+                                        $entryLabel = 'Überbuchung';
+                                    }
+
+                                    $entryTitleParts = [];
+                                    if (!empty($entry['statusLabel'])) {
+                                        $entryTitleParts[] = 'Status: ' . $entry['statusLabel'];
+                                    }
+                                    $entryDateRange = trim(trim((string) ($entry['arrivalDateFormatted'] ?? '')) . ' – ' . trim((string) ($entry['departureDateFormatted'] ?? '')));
+                                    if ($entryDateRange !== '–' && trim($entryDateRange) !== '') {
+                                        $entryTitleParts[] = 'Zeitraum: ' . $entryDateRange;
+                                    }
+                                    if (!empty($entry['categoryName'])) {
+                                        $entryTitleParts[] = 'Kategorie: ' . $entry['categoryName'];
+                                    }
+                                    if (!empty($entry['roomQuantity'])) {
+                                        $entryTitleParts[] = 'Zimmer: ' . (int) $entry['roomQuantity'];
+                                    }
+
+                                    $entryTitle = $entryTitleParts !== [] ? implode(' • ', array_filter($entryTitleParts)) : '';
+                                    $entryAria = $entryTitle !== '' ? $entryTitle : $entryLabel;
+                                    $entryAttributes = ' aria-label="' . htmlspecialchars($entryAria) . '"';
+                                    if ($entryTitle !== '') {
+                                        $entryAttributes .= ' title="' . htmlspecialchars($entryTitle) . '"';
+                                    }
+
+                                    $entryDataAttr = htmlspecialchars(json_encode($entry, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE));
+                                  ?>
+                                  <div class="occupancy-entry occupancy-entry-action" role="button" tabindex="0" data-reservation='<?= $entryDataAttr ?>'<?= $entryAttributes ?>><?= htmlspecialchars($entryLabel) ?></div>
                                 <?php endforeach; ?>
+                                <?php if ($overbookingEntries === []): ?>
+                                  <?php foreach ($overbookingLabels as $entryLabel): ?>
+                                    <div class="occupancy-entry"><?= htmlspecialchars((string) $entryLabel) ?></div>
+                                  <?php endforeach; ?>
+                                <?php endif; ?>
                               <?php else: ?>
                                 <span class="text-muted small">Keine</span>
                               <?php endif; ?>
@@ -2747,7 +3053,8 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                     <label for="reservation-status" class="form-label">Status *</label>
                     <select class="form-select" id="reservation-status" name="status" required <?= $pdo === null ? 'disabled' : '' ?>>
                       <?php foreach ($reservationStatuses as $statusOption): ?>
-                        <option value="<?= htmlspecialchars($statusOption) ?>" <?= $reservationFormData['status'] === $statusOption ? 'selected' : '' ?>><?= htmlspecialchars(ucfirst($statusOption)) ?></option>
+                        <?php $statusLabel = $reservationStatusMeta[$statusOption]['label'] ?? ucfirst($statusOption); ?>
+                        <option value="<?= htmlspecialchars($statusOption) ?>" <?= $reservationFormData['status'] === $statusOption ? 'selected' : '' ?>><?= htmlspecialchars($statusLabel) ?></option>
                       <?php endforeach; ?>
                     </select>
                   </div>
@@ -2799,18 +3106,12 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                   <p class="text-muted mb-0">Noch keine Reservierungen erfasst.</p>
                 <?php else: ?>
                   <?php
-                    $statusBadgeMap = [
-                        'geplant' => 'text-bg-primary',
-                        'eingecheckt' => 'text-bg-success',
-                        'abgereist' => 'text-bg-secondary',
-                        'storniert' => 'text-bg-danger',
-                    ];
-                    $statusLabelMap = [
-                        'geplant' => 'Geplant',
-                        'eingecheckt' => 'Eingecheckt',
-                        'abgereist' => 'Abgereist',
-                        'storniert' => 'Storniert',
-                    ];
+                    $statusBadgeMap = [];
+                    $statusLabelMap = [];
+                    foreach ($reservationStatusMeta as $statusKey => $statusData) {
+                        $statusBadgeMap[$statusKey] = $statusData['badge'];
+                        $statusLabelMap[$statusKey] = $statusData['label'];
+                    }
                   ?>
                   <div class="table-responsive">
                     <table class="table table-sm align-middle">
@@ -3906,6 +4207,65 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
       </div>
     </main>
 
+    <div class="modal fade" id="reservationDetailModal" tabindex="-1" aria-labelledby="reservationDetailModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <div>
+              <h1 class="modal-title fs-5" id="reservationDetailModalLabel" data-detail="title">Reservierung</h1>
+              <div class="small text-muted" data-detail="subtitle"></div>
+            </div>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+          </div>
+          <div class="modal-body">
+            <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-3">
+              <span class="badge d-none" data-detail="status"></span>
+              <a href="#" class="btn btn-outline-secondary btn-sm d-none" data-detail="edit-link">Reservierung öffnen</a>
+            </div>
+            <div class="alert alert-warning d-none" role="status" data-detail="overbooking">Diese Reservierung ist derzeit ohne feste Zimmerzuweisung.</div>
+            <dl class="row reservation-detail-list">
+              <dt class="col-sm-4">Gast</dt>
+              <dd class="col-sm-8" data-detail="guest"></dd>
+              <dt class="col-sm-4">Firma</dt>
+              <dd class="col-sm-8" data-detail="company"></dd>
+              <dt class="col-sm-4">Zeitraum</dt>
+              <dd class="col-sm-8" data-detail="stay"></dd>
+              <dt class="col-sm-4">Kategorie / Zimmer</dt>
+              <dd class="col-sm-8" data-detail="room"></dd>
+              <dt class="col-sm-4">Zimmeranzahl</dt>
+              <dd class="col-sm-8" data-detail="quantity"></dd>
+            </dl>
+            <div class="reservation-notes mt-3 d-none" data-detail="notes-wrapper">
+              <h2 class="h6 mb-1">Notizen</h2>
+              <p class="mb-0" data-detail="notes"></p>
+            </div>
+            <div class="reservation-audit mt-3">
+              <div class="small text-muted" data-detail="created"></div>
+              <div class="small text-muted" data-detail="updated"></div>
+            </div>
+          </div>
+          <div class="modal-footer flex-wrap gap-2">
+            <form method="post" id="reservation-status-form" class="d-flex flex-wrap gap-2 align-items-center">
+              <input type="hidden" name="form" value="reservation_status_update">
+              <input type="hidden" name="status_token" value="<?= htmlspecialchars($reservationStatusToken, ENT_QUOTES, 'UTF-8') ?>">
+              <input type="hidden" name="id" id="reservation-status-id">
+              <input type="hidden" name="status" id="reservation-status-value">
+              <input type="hidden" name="redirect_section" value="<?= htmlspecialchars($activeSection) ?>">
+              <input type="hidden" name="redirect_date" id="reservation-status-date" value="<?= htmlspecialchars($calendarCurrentDateValue) ?>">
+              <input type="hidden" name="redirect_display" id="reservation-status-display" value="<?= htmlspecialchars($calendarOccupancyDisplay) ?>">
+              <span class="fw-semibold me-2">Status setzen:</span>
+              <div class="btn-group flex-wrap" role="group" data-detail="status-buttons">
+                <?php foreach ($reservationStatuses as $statusOption): ?>
+                  <?php $statusLabel = $reservationStatusMeta[$statusOption]['label'] ?? ucfirst($statusOption); ?>
+                  <button type="button" class="btn btn-outline-secondary" data-status-action="<?= htmlspecialchars($statusOption) ?>"><?= htmlspecialchars($statusLabel) ?></button>
+                <?php endforeach; ?>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
     <script>
       (function () {
@@ -4008,6 +4368,339 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             bindRoomQuantityBehaviour(item);
           });
           updateRemoveButtons();
+        }
+
+        function setupReservationDetailModal() {
+          var modalElement = document.getElementById('reservationDetailModal');
+          var modalLibrary = window.bootstrap || (typeof bootstrap !== 'undefined' ? bootstrap : null);
+
+          if (!modalElement || !modalLibrary || !modalLibrary.Modal) {
+            return;
+          }
+
+          var defaultRedirectDate = <?= json_encode($calendarCurrentDateValue) ?>;
+          var defaultRedirectDisplay = <?= json_encode($calendarOccupancyDisplay) ?>;
+          var modal = modalLibrary.Modal.getOrCreateInstance(modalElement);
+          var statusForm = modalElement.querySelector('#reservation-status-form');
+          var statusInput = modalElement.querySelector('#reservation-status-value');
+          var reservationIdInput = modalElement.querySelector('#reservation-status-id');
+          var redirectDateInput = modalElement.querySelector('#reservation-status-date');
+          var redirectDisplayInput = modalElement.querySelector('#reservation-status-display');
+          var detailElements = {
+            title: modalElement.querySelector('[data-detail="title"]'),
+            subtitle: modalElement.querySelector('[data-detail="subtitle"]'),
+            statusBadge: modalElement.querySelector('[data-detail="status"]'),
+            guest: modalElement.querySelector('[data-detail="guest"]'),
+            company: modalElement.querySelector('[data-detail="company"]'),
+            stay: modalElement.querySelector('[data-detail="stay"]'),
+            room: modalElement.querySelector('[data-detail="room"]'),
+            quantity: modalElement.querySelector('[data-detail="quantity"]'),
+            notesWrapper: modalElement.querySelector('[data-detail="notes-wrapper"]'),
+            notes: modalElement.querySelector('[data-detail="notes"]'),
+            created: modalElement.querySelector('[data-detail="created"]'),
+            updated: modalElement.querySelector('[data-detail="updated"]'),
+            editLink: modalElement.querySelector('[data-detail="edit-link"]'),
+            overbooking: modalElement.querySelector('[data-detail="overbooking"]'),
+            statusButtonsContainer: modalElement.querySelector('[data-detail="status-buttons"]')
+          };
+
+          if (!statusForm || !statusInput || !reservationIdInput) {
+            return;
+          }
+
+          var statusButtons = detailElements.statusButtonsContainer
+            ? detailElements.statusButtonsContainer.querySelectorAll('[data-status-action]')
+            : [];
+
+          function forEachStatusButton(callback) {
+            Array.prototype.forEach.call(statusButtons, callback);
+          }
+
+          function resetModal() {
+            reservationIdInput.value = '';
+            statusInput.value = '';
+            if (redirectDateInput) {
+              redirectDateInput.value = defaultRedirectDate;
+            }
+            if (redirectDisplayInput) {
+              redirectDisplayInput.value = defaultRedirectDisplay;
+            }
+
+            if (detailElements.statusBadge) {
+              detailElements.statusBadge.className = 'badge d-none';
+              detailElements.statusBadge.textContent = '';
+            }
+            if (detailElements.subtitle) {
+              detailElements.subtitle.textContent = '';
+            }
+            if (detailElements.title) {
+              detailElements.title.textContent = 'Reservierung';
+            }
+            if (detailElements.guest) {
+              detailElements.guest.textContent = '';
+            }
+            if (detailElements.company) {
+              detailElements.company.textContent = '';
+            }
+            if (detailElements.stay) {
+              detailElements.stay.textContent = '';
+            }
+            if (detailElements.room) {
+              detailElements.room.textContent = '';
+            }
+            if (detailElements.quantity) {
+              detailElements.quantity.textContent = '';
+            }
+            if (detailElements.notesWrapper) {
+              detailElements.notesWrapper.classList.add('d-none');
+              if (detailElements.notes) {
+                detailElements.notes.textContent = '';
+              }
+            }
+            if (detailElements.created) {
+              detailElements.created.textContent = '';
+            }
+            if (detailElements.updated) {
+              detailElements.updated.textContent = '';
+            }
+            if (detailElements.editLink) {
+              detailElements.editLink.classList.add('d-none');
+              detailElements.editLink.removeAttribute('href');
+            }
+            if (detailElements.overbooking) {
+              detailElements.overbooking.classList.add('d-none');
+            }
+
+            forEachStatusButton(function (button) {
+              button.classList.remove('active', 'btn-primary');
+              button.classList.add('btn-outline-secondary');
+              button.disabled = true;
+            });
+          }
+
+          function applyStatusButtonState(activeStatus) {
+            forEachStatusButton(function (button) {
+              var buttonStatus = button.getAttribute('data-status-action');
+              if (!buttonStatus) {
+                return;
+              }
+
+              button.disabled = !reservationIdInput.value;
+
+              if (reservationIdInput.value && buttonStatus === activeStatus) {
+                button.classList.add('active', 'btn-primary');
+                button.classList.remove('btn-outline-secondary');
+              } else {
+                button.classList.remove('active', 'btn-primary');
+                button.classList.add('btn-outline-secondary');
+              }
+            });
+          }
+
+          function formatStay(data) {
+            var arrival = data && data.arrivalDateFormatted ? data.arrivalDateFormatted : '';
+            var departure = data && data.departureDateFormatted ? data.departureDateFormatted : '';
+
+            if (arrival && departure) {
+              return arrival + ' – ' + departure;
+            }
+
+            if (arrival) {
+              return 'ab ' + arrival;
+            }
+
+            if (departure) {
+              return 'bis ' + departure;
+            }
+
+            return 'Nicht definiert';
+          }
+
+          function openModal(data) {
+            resetModal();
+
+            if (!data || typeof data !== 'object') {
+              return;
+            }
+
+            if (data.reservationId) {
+              reservationIdInput.value = String(data.reservationId);
+            }
+
+            if (redirectDateInput && data.calendarDate) {
+              redirectDateInput.value = data.calendarDate;
+            }
+
+            if (redirectDisplayInput && data.displayPreference) {
+              redirectDisplayInput.value = data.displayPreference;
+            }
+
+            statusInput.value = data.status || '';
+
+            if (detailElements.title) {
+              detailElements.title.textContent = data.guestLabel || data.guestName || 'Reservierung';
+            }
+
+            if (detailElements.subtitle) {
+              var subtitleParts = [];
+              if (data.roomName) {
+                subtitleParts.push(data.roomName);
+              }
+              if (data.statusLabel) {
+                subtitleParts.push(data.statusLabel);
+              }
+              detailElements.subtitle.textContent = subtitleParts.join(' • ');
+            }
+
+            if (detailElements.statusBadge && data.statusLabel) {
+              var badgeClass = 'badge ' + (data.statusBadgeClass || 'text-bg-secondary');
+              detailElements.statusBadge.className = badgeClass;
+              detailElements.statusBadge.textContent = data.statusLabel;
+            }
+
+            if (detailElements.guest) {
+              detailElements.guest.textContent = data.guestName || data.guestLabel || '–';
+            }
+
+            if (detailElements.company) {
+              detailElements.company.textContent = data.companyName || '–';
+            }
+
+            if (detailElements.stay) {
+              detailElements.stay.textContent = formatStay(data);
+            }
+
+            if (detailElements.room) {
+              var roomInfo = [];
+              if (data.categoryName) {
+                roomInfo.push(data.categoryName);
+              }
+              if (data.roomName && (!data.categoryName || data.roomName.indexOf(data.categoryName) === -1)) {
+                roomInfo.push(data.roomName);
+              }
+              detailElements.room.textContent = roomInfo.join(' • ') || data.roomName || '–';
+            }
+
+            if (detailElements.quantity) {
+              detailElements.quantity.textContent = data.roomQuantity ? String(data.roomQuantity) : '–';
+            }
+
+            if (detailElements.notesWrapper) {
+              var notes = data.notes || '';
+              if (notes !== '') {
+                detailElements.notesWrapper.classList.remove('d-none');
+                if (detailElements.notes) {
+                  detailElements.notes.textContent = notes;
+                }
+              }
+            }
+
+            if (detailElements.created) {
+              var createdParts = [];
+              if (data.createdAtFormatted) {
+                createdParts.push('Erstellt: ' + data.createdAtFormatted);
+              }
+              if (data.createdByName) {
+                createdParts.push('von ' + data.createdByName);
+              }
+              detailElements.created.textContent = createdParts.join(' ');
+            }
+
+            if (detailElements.updated) {
+              var updatedParts = [];
+              if (data.updatedAtFormatted) {
+                updatedParts.push('Aktualisiert: ' + data.updatedAtFormatted);
+              }
+              if (data.updatedByName) {
+                updatedParts.push('von ' + data.updatedByName);
+              }
+              detailElements.updated.textContent = updatedParts.join(' ');
+            }
+
+            if (detailElements.editLink) {
+              if (data.editUrl) {
+                detailElements.editLink.href = data.editUrl;
+                detailElements.editLink.classList.remove('d-none');
+              } else {
+                detailElements.editLink.classList.add('d-none');
+                detailElements.editLink.removeAttribute('href');
+              }
+            }
+
+            if (detailElements.overbooking) {
+              if (data.type === 'overbooking') {
+                detailElements.overbooking.classList.remove('d-none');
+              } else {
+                detailElements.overbooking.classList.add('d-none');
+              }
+            }
+
+            applyStatusButtonState(data.status || '');
+
+            modal.show();
+          }
+
+          document.querySelectorAll('.occupancy-entry-action').forEach(function (element) {
+            element.addEventListener('click', function (event) {
+              event.preventDefault();
+              var payload = element.getAttribute('data-reservation');
+              if (!payload) {
+                return;
+              }
+
+              try {
+                openModal(JSON.parse(payload));
+              } catch (error) {
+                console.warn('Konnte Reservierungsdetails nicht laden', error);
+              }
+            });
+
+            element.addEventListener('keydown', function (event) {
+              if (event.key !== 'Enter' && event.key !== ' ') {
+                return;
+              }
+
+              event.preventDefault();
+              var payload = element.getAttribute('data-reservation');
+              if (!payload) {
+                return;
+              }
+
+              try {
+                openModal(JSON.parse(payload));
+              } catch (error) {
+                console.warn('Konnte Reservierungsdetails nicht laden', error);
+              }
+            });
+          });
+
+          forEachStatusButton(function (button) {
+            button.addEventListener('click', function (event) {
+              event.preventDefault();
+
+              if (!reservationIdInput.value) {
+                return;
+              }
+
+              var status = button.getAttribute('data-status-action');
+              if (!status) {
+                return;
+              }
+
+              statusInput.value = status;
+              statusForm.submit();
+            });
+          });
+
+          modalElement.addEventListener('show.bs.modal', function () {
+            applyStatusButtonState(reservationIdInput.value ? statusInput.value : '');
+          });
+
+          modalElement.addEventListener('hidden.bs.modal', function () {
+            resetModal();
+          });
+
+          resetModal();
         }
 
         function collapseNavbarOnClick(selector) {
@@ -4321,6 +5014,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
         });
 
         setupReservationCategoryRepeater();
+        setupReservationDetailModal();
       })();
     </script>
   </body>

@@ -417,6 +417,37 @@ body {
     font-size: 0.85rem;
 }
 
+.room-calendar-cell .occupancy-entry-action {
+    display: block;
+    border-radius: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    background-color: rgba(255, 255, 255, 0.12);
+    color: inherit;
+    cursor: pointer;
+    transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+    outline: none;
+}
+
+.room-calendar-cell.free .occupancy-entry-action {
+    background-color: rgba(37, 99, 235, 0.1);
+}
+
+.room-calendar-cell .occupancy-entry-action:hover,
+.room-calendar-cell .occupancy-entry-action:focus {
+    background-color: rgba(255, 255, 255, 0.28);
+    color: inherit;
+    box-shadow: 0 0 0 0.15rem rgba(37, 99, 235, 0.25);
+}
+
+.room-calendar-cell.overbooking .occupancy-entry-action:hover,
+.room-calendar-cell.overbooking .occupancy-entry-action:focus {
+    box-shadow: 0 0 0 0.15rem rgba(234, 179, 8, 0.4);
+}
+
+.room-calendar-cell .occupancy-entry-action:focus {
+    outline: none;
+}
+
 .room-calendar-cell .occupancy-entry + .occupancy-entry {
     margin-top: 0.25rem;
 }
