@@ -178,6 +178,10 @@ $calendarPrevDate = $calendar->currentDate()->modify(sprintf('-%d days', $calend
 $calendarNextDate = $calendar->currentDate()->modify(sprintf('+%d days', $calendarViewLength));
 $calendarCurrentDateValue = $calendar->currentDate()->format('Y-m-d');
 $todayDateValue = (new DateTimeImmutable('today'))->format('Y-m-d');
+$calendarDisplayToggleUrls = [];
+$calendarPrevUrl = 'index.php?section=dashboard';
+$calendarNextUrl = 'index.php?section=dashboard';
+$calendarTodayUrl = 'index.php?section=dashboard';
 
 $config = require __DIR__ . '/../config/app.php';
 $dbError = null;
@@ -211,6 +215,55 @@ $reservationStatuses = ['geplant', 'eingecheckt', 'abgereist', 'storniert'];
 $reservationUserLookup = [];
 $reservationGuestTooltip = '';
 $reservationCompanyTooltip = '';
+
+$calendarOccupancyDisplayOptions = [
+    'company' => 'Firma',
+    'guest' => 'Gastname',
+];
+
+$calendarOccupancyDisplay = $_SESSION['calendar_occupancy_display'] ?? 'company';
+if (isset($_GET['occupancyDisplay'])) {
+    $requestedDisplay = (string) $_GET['occupancyDisplay'];
+    if (array_key_exists($requestedDisplay, $calendarOccupancyDisplayOptions)) {
+        $calendarOccupancyDisplay = $requestedDisplay;
+        $_SESSION['calendar_occupancy_display'] = $calendarOccupancyDisplay;
+    }
+}
+
+if (!array_key_exists($calendarOccupancyDisplay, $calendarOccupancyDisplayOptions)) {
+    $calendarOccupancyDisplay = 'company';
+}
+
+foreach ($calendarOccupancyDisplayOptions as $displayKey => $displayLabel) {
+    $toggleParams = [
+        'section' => 'dashboard',
+        'occupancyDisplay' => $displayKey,
+    ];
+
+    if ($calendarCurrentDateValue !== '') {
+        $toggleParams['date'] = $calendarCurrentDateValue;
+    }
+
+    $calendarDisplayToggleUrls[$displayKey] = 'index.php?' . http_build_query($toggleParams);
+}
+
+$calendarNavigationBaseParams = [
+    'section' => 'dashboard',
+];
+
+if ($calendarOccupancyDisplay !== '') {
+    $calendarNavigationBaseParams['occupancyDisplay'] = $calendarOccupancyDisplay;
+}
+
+$calendarPrevUrl = 'index.php?' . http_build_query(array_merge($calendarNavigationBaseParams, [
+    'date' => $calendarPrevDate->format('Y-m-d'),
+]));
+
+$calendarNextUrl = 'index.php?' . http_build_query(array_merge($calendarNavigationBaseParams, [
+    'date' => $calendarNextDate->format('Y-m-d'),
+]));
+
+$calendarTodayUrl = 'index.php?' . http_build_query($calendarNavigationBaseParams);
 
 try {
     $pdo = Database::getConnection();
@@ -255,26 +308,30 @@ $createDateImmutable = static function (?string $value): ?DateTimeImmutable {
     }
 };
 
-$buildGuestCalendarLabel = static function (array $guest): string {
+$buildGuestCalendarLabel = static function (array $guest) use ($calendarOccupancyDisplay): string {
     $companyName = isset($guest['company_name']) ? trim((string) $guest['company_name']) : '';
-    if ($companyName !== '') {
-        return $companyName;
-    }
-
     $lastName = isset($guest['last_name']) ? trim((string) $guest['last_name']) : '';
     $firstName = isset($guest['first_name']) ? trim((string) $guest['first_name']) : '';
 
+    $nameLabel = '';
     if ($lastName !== '' && $firstName !== '') {
         $initial = function_exists('mb_substr') ? mb_substr($firstName, 0, 1) : substr($firstName, 0, 1);
-
-        return sprintf('%s %s.', $lastName, strtoupper((string) $initial));
+        $nameLabel = sprintf('%s %s.', $lastName, strtoupper((string) $initial));
+    } elseif ($lastName !== '') {
+        $nameLabel = $lastName;
+    } elseif ($firstName !== '') {
+        $nameLabel = $firstName;
     }
 
-    if ($lastName !== '') {
-        return $lastName;
+    if ($calendarOccupancyDisplay === 'company' && $companyName !== '') {
+        return $companyName;
     }
 
-    return $firstName !== '' ? $firstName : 'Gast';
+    if ($nameLabel !== '') {
+        return $nameLabel;
+    }
+
+    return $companyName !== '' ? $companyName : 'Gast';
 };
 
 $buildGuestReservationLabel = static function (array $guest): string {
@@ -1410,13 +1467,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
-            if (($_SESSION['user_role'] ?? null) !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
-                ];
-                break;
-            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -1545,13 +1595,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
-            if (($_SESSION['user_role'] ?? null) !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Sie haben keine Berechtigung, Benutzer zu löschen.',
-                ];
-                break;
-            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
@@ -2286,15 +2329,33 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                   <div class="text-muted small">Heute: <?= (new DateTimeImmutable($todayDateValue))->format('d.m.Y') ?></div>
                 </div>
                 <div class="calendar-controls d-flex flex-wrap align-items-center gap-2">
-                  <a class="btn btn-outline-secondary btn-sm" href="index.php?section=dashboard&amp;date=<?= $calendarPrevDate->format('Y-m-d') ?>" title="Vorherige <?= $calendarViewLength ?> Tage" aria-label="Vorherige <?= $calendarViewLength ?> Tage">&laquo;</a>
-                  <a class="btn btn-outline-secondary btn-sm" href="index.php?section=dashboard" title="Zurück zu heute">Heute</a>
-                  <a class="btn btn-outline-secondary btn-sm" href="index.php?section=dashboard&amp;date=<?= $calendarNextDate->format('Y-m-d') ?>" title="Nächste <?= $calendarViewLength ?> Tage" aria-label="Nächste <?= $calendarViewLength ?> Tage">&raquo;</a>
+                  <a class="btn btn-outline-secondary btn-sm" href="<?= htmlspecialchars($calendarPrevUrl) ?>" title="Vorherige <?= $calendarViewLength ?> Tage" aria-label="Vorherige <?= $calendarViewLength ?> Tage">&laquo;</a>
+                  <a class="btn btn-outline-secondary btn-sm" href="<?= htmlspecialchars($calendarTodayUrl) ?>" title="Zurück zu heute">Heute</a>
+                  <a class="btn btn-outline-secondary btn-sm" href="<?= htmlspecialchars($calendarNextUrl) ?>" title="Nächste <?= $calendarViewLength ?> Tage" aria-label="Nächste <?= $calendarViewLength ?> Tage">&raquo;</a>
                   <form method="get" class="d-flex align-items-center gap-2">
                     <input type="hidden" name="section" value="dashboard">
+                    <input type="hidden" name="occupancyDisplay" value="<?= htmlspecialchars($calendarOccupancyDisplay) ?>">
                     <label for="calendar-date" class="visually-hidden">Datum auswählen</label>
                     <input type="date" id="calendar-date" name="date" class="form-control form-control-sm" value="<?= htmlspecialchars($calendarCurrentDateValue) ?>">
                     <button type="submit" class="btn btn-primary btn-sm">Springen</button>
                   </form>
+                  <div class="calendar-display-toggle d-flex align-items-center gap-2">
+                    <span class="text-muted small">Anzeige:</span>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Anzeige der Kalenderbelegung">
+                      <?php foreach ($calendarOccupancyDisplayOptions as $displayKey => $displayLabel): ?>
+                        <?php
+                          $isActiveDisplay = $calendarOccupancyDisplay === $displayKey;
+                          $displayUrl = $calendarDisplayToggleUrls[$displayKey] ?? '#';
+                        ?>
+                        <a
+                          class="btn btn-outline-secondary<?= $isActiveDisplay ? ' active' : '' ?>"
+                          href="<?= htmlspecialchars($displayUrl) ?>"
+                          role="button"
+                          aria-pressed="<?= $isActiveDisplay ? 'true' : 'false' ?>"
+                        ><?= htmlspecialchars($displayLabel) ?></a>
+                      <?php endforeach; ?>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div class="calendar-grid-wrapper">
