@@ -20,7 +20,9 @@ class BackupManager
         'companies' => ['id', 'name', 'address_street', 'address_postal_code', 'address_city', 'address_country', 'email', 'phone', 'tax_id', 'notes', 'created_at', 'updated_at'],
         'guests' => ['id', 'salutation', 'first_name', 'last_name', 'date_of_birth', 'nationality', 'document_type', 'document_number', 'address_street', 'address_postal_code', 'address_city', 'address_country', 'email', 'phone', 'arrival_date', 'departure_date', 'purpose_of_stay', 'notes', 'company_id', 'room_id', 'created_at', 'updated_at'],
         'rates' => ['id', 'name', 'category_id', 'base_price', 'description', 'created_by', 'updated_by', 'created_at', 'updated_at'],
+        'rate_category_prices' => ['id', 'rate_id', 'category_id', 'base_price', 'created_at', 'updated_at'],
         'rate_periods' => ['id', 'rate_id', 'start_date', 'end_date', 'price', 'days_of_week', 'created_by', 'updated_by', 'created_at', 'updated_at'],
+        'rate_period_prices' => ['id', 'period_id', 'category_id', 'price', 'created_at', 'updated_at'],
     ];
 
     public function __construct(PDO $pdo)

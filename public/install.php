@@ -219,17 +219,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->exec('CREATE TABLE IF NOT EXISTS rates (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     name VARCHAR(190) NOT NULL,
-                    category_id INT UNSIGNED NOT NULL,
+                    category_id INT UNSIGNED NULL,
                     base_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
                     description TEXT NULL,
                     created_by INT UNSIGNED NULL,
                     updated_by INT UNSIGNED NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    CONSTRAINT fk_install_rates_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rates_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE SET NULL,
                     CONSTRAINT fk_install_rates_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
                     CONSTRAINT fk_install_rates_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
                     INDEX idx_install_rates_category (category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_category_prices (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    rate_id INT UNSIGNED NOT NULL,
+                    category_id INT UNSIGNED NOT NULL,
+                    base_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rate_category_prices_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rate_category_prices_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
+                    UNIQUE KEY uniq_install_rate_category (rate_id, category_id),
+                    INDEX idx_install_rate_category_prices_category (category_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
                 $pdo->exec('CREATE TABLE IF NOT EXISTS rate_periods (
@@ -247,6 +260,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     CONSTRAINT fk_install_rate_periods_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
                     CONSTRAINT fk_install_rate_periods_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
                     INDEX idx_install_rate_periods_rate (rate_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_period_prices (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    period_id INT UNSIGNED NOT NULL,
+                    category_id INT UNSIGNED NOT NULL,
+                    price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rate_period_prices_period FOREIGN KEY (period_id) REFERENCES rate_periods(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rate_period_prices_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
+                    UNIQUE KEY uniq_install_rate_period_category (period_id, category_id),
+                    INDEX idx_install_rate_period_prices_category (category_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
                 $pdo->exec('CREATE TABLE IF NOT EXISTS settings (
@@ -451,44 +477,123 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $rateExists = $pdo->query('SELECT COUNT(*) FROM rates')->fetchColumn();
-        if ((int) $rateExists === 0 && $sampleCategoryId !== null) {
-            $rateStmt = $pdo->prepare('INSERT INTO rates (name, category_id, base_price, description, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())');
-            $rateStmt->execute([
-                'Standardtarif',
-                $sampleCategoryId,
-                129.00,
-                'Grundpreis für die Beispielkategorie.',
-                $sampleAdminId,
-                $sampleAdminId,
-            ]);
+        if ((int) $rateExists === 0) {
+            $categoryRows = $pdo->query('SELECT id, name, capacity FROM room_categories ORDER BY sort_order ASC, id ASC')->fetchAll(PDO::FETCH_ASSOC);
 
-            $sampleRateId = (int) $pdo->lastInsertId();
-            if ($sampleRateId > 0) {
-                $currentYear = (int) date('Y');
-                $seasonStart = sprintf('%d-07-01', $currentYear);
-                $seasonEnd = sprintf('%d-08-31', $currentYear);
+            if (is_array($categoryRows) && $categoryRows !== []) {
+                $basePrices = [];
+                $seasonPrices = [];
+                $weekendPrices = [];
+                $primaryBasePrice = null;
+                $seasonPrimaryPrice = null;
+                $weekendPrimaryPrice = null;
 
-                $periodStmt = $pdo->prepare('INSERT INTO rate_periods (rate_id, start_date, end_date, price, days_of_week, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
-                $periodStmt->execute([
-                    $sampleRateId,
-                    $seasonStart,
-                    $seasonEnd,
-                    149.00,
-                    null,
-                    $sampleAdminId,
-                    $sampleAdminId,
-                ]);
+                foreach ($categoryRows as $categoryRow) {
+                    if (!isset($categoryRow['id'])) {
+                        continue;
+                    }
 
-                $weekendStmt = $pdo->prepare('INSERT INTO rate_periods (rate_id, start_date, end_date, price, days_of_week, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
-                $weekendStmt->execute([
-                    $sampleRateId,
-                    sprintf('%d-01-01', $currentYear),
-                    sprintf('%d-12-31', $currentYear),
-                    139.00,
-                    '6,7',
-                    $sampleAdminId,
-                    $sampleAdminId,
-                ]);
+                    $categoryId = (int) $categoryRow['id'];
+                    $name = isset($categoryRow['name']) ? (string) $categoryRow['name'] : '';
+                    $capacity = isset($categoryRow['capacity']) ? (int) $categoryRow['capacity'] : 0;
+                    $isPremium = $capacity > 2 || ($name !== '' && stripos($name, 'suite') !== false);
+
+                    $basePrice = $isPremium ? 189.00 : 129.00;
+                    $seasonPrice = $basePrice + ($isPremium ? 40.00 : 20.00);
+                    $weekendPrice = $basePrice + ($isPremium ? 30.00 : 10.00);
+
+                    $basePrices[$categoryId] = $basePrice;
+                    $seasonPrices[$categoryId] = $seasonPrice;
+                    $weekendPrices[$categoryId] = $weekendPrice;
+
+                    if ($primaryBasePrice === null) {
+                        $primaryBasePrice = $basePrice;
+                    }
+
+                    if ($seasonPrimaryPrice === null) {
+                        $seasonPrimaryPrice = $seasonPrice;
+                    }
+
+                    if ($weekendPrimaryPrice === null) {
+                        $weekendPrimaryPrice = $weekendPrice;
+                    }
+                }
+
+                if ($primaryBasePrice !== null) {
+                    $rateStmt = $pdo->prepare('INSERT INTO rates (name, category_id, base_price, description, created_by, updated_by, created_at, updated_at) VALUES (?, NULL, ?, ?, ?, ?, NOW(), NOW())');
+                    $rateStmt->execute([
+                        'Standardtarif',
+                        $primaryBasePrice,
+                        'Grundpreis für alle Kategorien.',
+                        $sampleAdminId,
+                        $sampleAdminId,
+                    ]);
+
+                    $sampleRateId = (int) $pdo->lastInsertId();
+                    if ($sampleRateId > 0) {
+                        $ratePriceStmt = $pdo->prepare('INSERT INTO rate_category_prices (rate_id, category_id, base_price, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())');
+                        foreach ($basePrices as $categoryId => $price) {
+                            $ratePriceStmt->execute([
+                                $sampleRateId,
+                                $categoryId,
+                                $price,
+                            ]);
+                        }
+
+                        $currentYear = (int) date('Y');
+                        $seasonStart = sprintf('%d-07-01', $currentYear);
+                        $seasonEnd = sprintf('%d-08-31', $currentYear);
+
+                        $periodStmt = $pdo->prepare('INSERT INTO rate_periods (rate_id, start_date, end_date, price, days_of_week, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+                        $periodPriceStmt = $pdo->prepare('INSERT INTO rate_period_prices (period_id, category_id, price, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())');
+
+                        if ($seasonPrimaryPrice !== null) {
+                            $periodStmt->execute([
+                                $sampleRateId,
+                                $seasonStart,
+                                $seasonEnd,
+                                $seasonPrimaryPrice,
+                                null,
+                                $sampleAdminId,
+                                $sampleAdminId,
+                            ]);
+
+                            $seasonPeriodId = (int) $pdo->lastInsertId();
+                            if ($seasonPeriodId > 0) {
+                                foreach ($seasonPrices as $categoryId => $price) {
+                                    $periodPriceStmt->execute([
+                                        $seasonPeriodId,
+                                        $categoryId,
+                                        $price,
+                                    ]);
+                                }
+                            }
+                        }
+
+                        if ($weekendPrimaryPrice !== null) {
+                            $periodStmt->execute([
+                                $sampleRateId,
+                                sprintf('%d-01-01', $currentYear),
+                                sprintf('%d-12-31', $currentYear),
+                                $weekendPrimaryPrice,
+                                '6,7',
+                                $sampleAdminId,
+                                $sampleAdminId,
+                            ]);
+
+                            $weekendPeriodId = (int) $pdo->lastInsertId();
+                            if ($weekendPeriodId > 0) {
+                                foreach ($weekendPrices as $categoryId => $price) {
+                                    $periodPriceStmt->execute([
+                                        $weekendPeriodId,
+                                        $categoryId,
+                                        $price,
+                                    ]);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

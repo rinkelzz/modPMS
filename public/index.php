@@ -44,6 +44,17 @@ try {
 
 $_SESSION['update_token'] = $updateToken;
 
+if (!isset($_SESSION['csrf_token'])) {
+    try {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    } catch (Throwable $exception) {
+        $_SESSION['csrf_token'] = bin2hex(hash('sha256', uniqid('', true), true));
+    }
+}
+
+$csrfToken = (string) $_SESSION['csrf_token'];
+$csrfTokenInput = '<input type="hidden" name="csrf_token" value="' . htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8') . '">';
+
 $alert = null;
 if (isset($_SESSION['alert'])) {
     $alert = $_SESSION['alert'];
@@ -119,9 +130,8 @@ $isEditingReservation = false;
 $rateFormData = [
     'id' => null,
     'name' => '',
-    'category_id' => '',
-    'base_price' => '',
     'description' => '',
+    'category_prices' => [],
 ];
 $rateFormMode = 'create';
 
@@ -130,8 +140,8 @@ $ratePeriodFormData = [
     'rate_id' => '',
     'start_date' => '',
     'end_date' => '',
-    'price' => '',
     'days_of_week' => [],
+    'category_prices' => [],
 ];
 $ratePeriodFormMode = 'create';
 $ratePeriodWeekdayOptions = [
@@ -149,6 +159,11 @@ if ($requestedRateId !== null && $requestedRateId <= 0) {
     $requestedRateId = null;
 }
 
+$requestedRateCategoryId = isset($_GET['rateCategoryId']) ? (int) $_GET['rateCategoryId'] : null;
+if ($requestedRateCategoryId !== null && $requestedRateCategoryId <= 0) {
+    $requestedRateCategoryId = null;
+}
+
 $currentYear = (int) date('Y');
 $rateCalendarYear = $currentYear;
 if (isset($_GET['rateYear'])) {
@@ -160,6 +175,7 @@ if (isset($_GET['rateYear'])) {
 
 $rateCalendarData = [
     'rate' => null,
+    'category' => null,
     'year' => $rateCalendarYear,
     'months' => [],
 ];
@@ -257,6 +273,7 @@ $companyLookup = [];
 $rates = [];
 $ratePeriods = [];
 $activeRate = null;
+$activeRateCategoryId = null;
 $users = [];
 $reservations = [];
 $roomLookup = [];
@@ -659,6 +676,18 @@ if ($pdo !== null && isset($_GET['ajax'])) {
 }
 
 if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form'])) {
+    $providedToken = isset($_POST['csrf_token']) && is_string($_POST['csrf_token']) ? $_POST['csrf_token'] : '';
+    if ($csrfToken === '' || $providedToken === '' || !hash_equals($csrfToken, $providedToken)) {
+        $_SESSION['alert'] = [
+            'type' => 'danger',
+            'message' => 'Ungültiger Sicherheits-Token. Bitte versuchen Sie es erneut.',
+        ];
+
+        $redirectSection = urlencode($activeSection);
+        header('Location: index.php?section=' . $redirectSection);
+        exit;
+    }
+
     $form = $_POST['form'];
 
     switch ($form) {
@@ -903,19 +932,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $activeSection = 'rates';
             $rateFormMode = $form === 'rate_update' ? 'update' : 'create';
 
-            $name = trim((string) ($_POST['name'] ?? ''));
-            $categoryIdInput = trim((string) ($_POST['category_id'] ?? ''));
-            $basePriceInput = trim((string) ($_POST['base_price'] ?? ''));
-            $description = trim((string) ($_POST['description'] ?? ''));
-
-            $rateFormData = [
-                'id' => $form === 'rate_update' ? (int) ($_POST['id'] ?? 0) : null,
-                'name' => $name,
-                'category_id' => $categoryIdInput,
-                'base_price' => $basePriceInput,
-                'description' => $description,
-            ];
-
             if ($rateManager === null) {
                 $alert = [
                     'type' => 'danger',
@@ -924,19 +940,33 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 break;
             }
 
-            if ($categoryIdInput === '') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Bitte wählen Sie eine Zimmerkategorie aus.',
-                ];
-                break;
+            $name = trim((string) ($_POST['name'] ?? ''));
+            $description = trim((string) ($_POST['description'] ?? ''));
+            $categoryPricesInput = isset($_POST['category_prices']) && is_array($_POST['category_prices']) ? $_POST['category_prices'] : [];
+            $activeRateCategoryIdInput = null;
+            if (isset($_POST['active_rate_category_id'])) {
+                $candidate = (int) $_POST['active_rate_category_id'];
+                if ($candidate > 0) {
+                    $activeRateCategoryIdInput = $candidate;
+                }
             }
 
-            $categoryId = (int) $categoryIdInput;
-            if ($categoryId <= 0 || !$categoryManager instanceof RoomCategoryManager || $categoryManager->find($categoryId) === null) {
+            $rateFormData = [
+                'id' => $form === 'rate_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'name' => $name,
+                'description' => $description,
+                'category_prices' => [],
+            ];
+
+            $availableCategories = [];
+            if ($categoryManager instanceof RoomCategoryManager) {
+                $availableCategories = $categoryManager->all();
+            }
+
+            if ($availableCategories === []) {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Die gewählte Kategorie ist ungültig.',
+                    'message' => 'Bitte legen Sie zunächst Zimmerkategorien an, bevor Sie Raten verwalten.',
                 ];
                 break;
             }
@@ -949,37 +979,116 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 break;
             }
 
-            $normalizedPrice = str_replace(',', '.', preg_replace('/[^0-9,\.]/', '', $basePriceInput));
-            if ($normalizedPrice === '' || !is_numeric($normalizedPrice)) {
+            $normalizedCategoryPrices = [];
+            $expectedCategoryIds = [];
+            $priceValidationError = null;
+
+            foreach ($availableCategories as $category) {
+                if (!isset($category['id'])) {
+                    continue;
+                }
+
+                $categoryId = (int) $category['id'];
+                if ($categoryId <= 0) {
+                    continue;
+                }
+
+                $expectedCategoryIds[] = $categoryId;
+
+                $rawValue = isset($categoryPricesInput[$categoryId]) ? trim((string) $categoryPricesInput[$categoryId]) : '';
+                $rateFormData['category_prices'][$categoryId] = $rawValue;
+
+                if ($rawValue === '') {
+                    $priceValidationError = sprintf(
+                        'Bitte geben Sie einen Preis für die Kategorie &quot;%s&quot; an.',
+                        htmlspecialchars((string) ($category['name'] ?? 'Kategorie'), ENT_QUOTES, 'UTF-8')
+                    );
+                    break;
+                }
+
+                $normalizedInput = str_replace(',', '.', preg_replace('/[^0-9,\.]/', '', $rawValue));
+                if ($normalizedInput === '' || !is_numeric($normalizedInput)) {
+                    $priceValidationError = sprintf(
+                        'Der Preis für die Kategorie &quot;%s&quot; ist ungültig.',
+                        htmlspecialchars((string) ($category['name'] ?? 'Kategorie'), ENT_QUOTES, 'UTF-8')
+                    );
+                    break;
+                }
+
+                $priceValue = round((float) $normalizedInput, 2);
+                if ($priceValue < 0) {
+                    $priceValidationError = sprintf(
+                        'Der Preis für die Kategorie &quot;%s&quot; darf nicht negativ sein.',
+                        htmlspecialchars((string) ($category['name'] ?? 'Kategorie'), ENT_QUOTES, 'UTF-8')
+                    );
+                    break;
+                }
+
+                $normalizedCategoryPrices[$categoryId] = number_format($priceValue, 2, '.', '');
+            }
+
+            if ($priceValidationError !== null) {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Bitte geben Sie einen gültigen Basispreis an.',
+                    'message' => $priceValidationError,
                 ];
                 break;
             }
 
-            $basePriceValue = round((float) $normalizedPrice, 2);
-            if ($basePriceValue < 0) {
+            if ($normalizedCategoryPrices === []) {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Der Basispreis darf nicht negativ sein.',
+                    'message' => 'Mindestens eine Kategorie muss einen gültigen Preis erhalten.',
                 ];
                 break;
             }
 
-            $basePriceForDatabase = number_format($basePriceValue, 2, '.', '');
+            $primaryCategoryId = null;
+            if ($availableCategories !== []) {
+                $primaryCategoryId = isset($availableCategories[0]['id']) ? (int) $availableCategories[0]['id'] : null;
+            }
+
+            $redirectCategoryId = null;
+            if (
+                $activeRateCategoryIdInput !== null
+                && in_array($activeRateCategoryIdInput, $expectedCategoryIds, true)
+            ) {
+                $redirectCategoryId = $activeRateCategoryIdInput;
+            } elseif ($primaryCategoryId !== null && in_array($primaryCategoryId, $expectedCategoryIds, true)) {
+                $redirectCategoryId = $primaryCategoryId;
+            } elseif ($expectedCategoryIds !== []) {
+                $redirectCategoryId = $expectedCategoryIds[0];
+            }
+
+            $defaultBasePrice = null;
+            if ($primaryCategoryId !== null && isset($normalizedCategoryPrices[$primaryCategoryId])) {
+                $defaultBasePrice = $normalizedCategoryPrices[$primaryCategoryId];
+            } else {
+                $firstPrice = reset($normalizedCategoryPrices);
+                if ($firstPrice !== false) {
+                    $defaultBasePrice = $firstPrice;
+                }
+            }
+
+            if ($defaultBasePrice === null) {
+                $defaultBasePrice = '0.00';
+            }
 
             if ($form === 'rate_create') {
                 $payload = [
                     'name' => $name,
-                    'category_id' => $categoryId,
-                    'base_price' => $basePriceForDatabase,
+                    'category_id' => null,
+                    'base_price' => $defaultBasePrice,
                     'description' => $description !== '' ? $description : null,
                     'created_by' => $currentUserId > 0 ? $currentUserId : null,
                     'updated_by' => $currentUserId > 0 ? $currentUserId : null,
                 ];
 
                 $newRateId = $rateManager->create($payload);
+
+                if ($newRateId > 0) {
+                    $rateManager->syncCategoryPrices($newRateId, $normalizedCategoryPrices, $expectedCategoryIds);
+                }
 
                 $_SESSION['alert'] = [
                     'type' => 'success',
@@ -989,6 +1098,9 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $redirectParams = ['section' => 'rates'];
                 if ($newRateId > 0) {
                     $redirectParams['rateId'] = $newRateId;
+                    if ($redirectCategoryId !== null) {
+                        $redirectParams['rateCategoryId'] = $redirectCategoryId;
+                    }
                 }
 
                 header('Location: index.php?' . http_build_query($redirectParams));
@@ -1015,20 +1127,26 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             $payload = [
                 'name' => $name,
-                'category_id' => $categoryId,
-                'base_price' => $basePriceForDatabase,
+                'category_id' => null,
+                'base_price' => $defaultBasePrice,
                 'description' => $description !== '' ? $description : null,
                 'updated_by' => $currentUserId > 0 ? $currentUserId : null,
             ];
 
             $rateManager->update($rateId, $payload);
+            $rateManager->syncCategoryPrices($rateId, $normalizedCategoryPrices, $expectedCategoryIds);
 
             $_SESSION['alert'] = [
                 'type' => 'success',
                 'message' => sprintf('Rate "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
             ];
 
-            header('Location: index.php?section=rates&rateId=' . $rateId);
+            $redirectParams = ['section' => 'rates', 'rateId' => $rateId];
+            if ($redirectCategoryId !== null) {
+                $redirectParams['rateCategoryId'] = $redirectCategoryId;
+            }
+
+            header('Location: index.php?' . http_build_query($redirectParams));
             exit;
 
         case 'rate_delete':
@@ -1086,16 +1204,25 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $rateIdInput = trim((string) ($_POST['rate_id'] ?? ''));
             $startInput = trim((string) ($_POST['start_date'] ?? ''));
             $endInput = trim((string) ($_POST['end_date'] ?? ''));
-            $priceInput = trim((string) ($_POST['price'] ?? ''));
             $daysInput = isset($_POST['days_of_week']) && is_array($_POST['days_of_week']) ? $_POST['days_of_week'] : [];
+            $periodCategoryInputs = isset($_POST['period_category_prices']) && is_array($_POST['period_category_prices'])
+                ? $_POST['period_category_prices']
+                : [];
+            $activeRateCategoryIdInput = null;
+            if (isset($_POST['active_rate_category_id'])) {
+                $candidate = (int) $_POST['active_rate_category_id'];
+                if ($candidate > 0) {
+                    $activeRateCategoryIdInput = $candidate;
+                }
+            }
 
             $ratePeriodFormData = [
                 'id' => $form === 'rate_period_update' ? (int) ($_POST['id'] ?? 0) : null,
                 'rate_id' => $rateIdInput,
                 'start_date' => $startInput,
                 'end_date' => $endInput,
-                'price' => $priceInput,
                 'days_of_week' => array_map('intval', $daysInput),
+                'category_prices' => [],
             ];
 
             $rateId = (int) $rateIdInput;
@@ -1135,35 +1262,96 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 break;
             }
 
-            $normalizedPrice = str_replace(',', '.', preg_replace('/[^0-9,\.]/', '', $priceInput));
-            if ($normalizedPrice === '' || !is_numeric($normalizedPrice)) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Bitte geben Sie einen gültigen Preis für den Zeitraum ein.',
-                ];
-                break;
-            }
-
-            $priceValue = round((float) $normalizedPrice, 2);
-            if ($priceValue < 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Der Preis darf nicht negativ sein.',
-                ];
-                break;
-            }
-
             $daysOfWeek = $rateManager->normaliseDaysOfWeek($daysInput);
+
+            $periodCategoryPrices = [];
+            $categoryPriceRemovals = [];
+            $periodPriceValidationError = null;
+
+            $availableCategories = [];
+            $availableCategoryIds = [];
+            if ($categoryManager instanceof RoomCategoryManager) {
+                $availableCategories = $categoryManager->all();
+            }
+
+            foreach ($availableCategories as $category) {
+                if (!isset($category['id'])) {
+                    continue;
+                }
+
+                $categoryId = (int) $category['id'];
+                if ($categoryId <= 0) {
+                    continue;
+                }
+
+                $availableCategoryIds[] = $categoryId;
+                $rawValue = isset($periodCategoryInputs[$categoryId]) ? trim((string) $periodCategoryInputs[$categoryId]) : '';
+                $ratePeriodFormData['category_prices'][$categoryId] = $rawValue;
+
+                if ($rawValue === '') {
+                    $categoryPriceRemovals[] = $categoryId;
+                    continue;
+                }
+
+                $normalizedInput = str_replace(',', '.', preg_replace('/[^0-9,\.]/', '', $rawValue));
+                if ($normalizedInput === '' || !is_numeric($normalizedInput)) {
+                    $periodPriceValidationError = sprintf(
+                        'Der Zeitraumpreis für die Kategorie &quot;%s&quot; ist ungültig.',
+                        htmlspecialchars((string) ($category['name'] ?? 'Kategorie'), ENT_QUOTES, 'UTF-8')
+                    );
+                    break;
+                }
+
+                $priceValue = round((float) $normalizedInput, 2);
+                if ($priceValue < 0) {
+                    $periodPriceValidationError = sprintf(
+                        'Der Zeitraumpreis für die Kategorie &quot;%s&quot; darf nicht negativ sein.',
+                        htmlspecialchars((string) ($category['name'] ?? 'Kategorie'), ENT_QUOTES, 'UTF-8')
+                    );
+                    break;
+                }
+
+                $periodCategoryPrices[$categoryId] = number_format($priceValue, 2, '.', '');
+            }
+
+            if ($periodPriceValidationError !== null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => $periodPriceValidationError,
+                ];
+                break;
+            }
+
+            if ($periodCategoryPrices === []) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie mindestens für eine Kategorie einen Zeitraumpreis an.',
+                ];
+                break;
+            }
+
+            $periodCategoryKeys = array_keys($periodCategoryPrices);
+            $redirectCategoryId = null;
+            if (
+                $activeRateCategoryIdInput !== null
+                && in_array($activeRateCategoryIdInput, $availableCategoryIds, true)
+            ) {
+                $redirectCategoryId = $activeRateCategoryIdInput;
+            } elseif ($periodCategoryKeys !== []) {
+                $redirectCategoryId = (int) $periodCategoryKeys[0];
+            } elseif ($availableCategoryIds !== []) {
+                $redirectCategoryId = $availableCategoryIds[0];
+            }
 
             if ($form === 'rate_period_create') {
                 $payload = [
                     'rate_id' => $rateId,
                     'start_date' => $startDate->format('Y-m-d'),
                     'end_date' => $endDate->format('Y-m-d'),
-                    'price' => number_format($priceValue, 2, '.', ''),
                     'days_of_week' => $daysOfWeek,
                     'created_by' => $currentUserId > 0 ? $currentUserId : null,
                     'updated_by' => $currentUserId > 0 ? $currentUserId : null,
+                    'category_prices' => $periodCategoryPrices,
                 ];
 
                 $periodId = $rateManager->createPeriod($payload);
@@ -1177,6 +1365,9 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     'section' => 'rates',
                     'rateId' => $rateId,
                 ];
+                if ($redirectCategoryId !== null) {
+                    $redirectParams['rateCategoryId'] = $redirectCategoryId;
+                }
 
                 header('Location: index.php?' . http_build_query($redirectParams) . '#rate-periods');
                 exit;
@@ -1203,9 +1394,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $payload = [
                 'start_date' => $startDate->format('Y-m-d'),
                 'end_date' => $endDate->format('Y-m-d'),
-                'price' => number_format($priceValue, 2, '.', ''),
                 'days_of_week' => $daysOfWeek,
                 'updated_by' => $currentUserId > 0 ? $currentUserId : null,
+                'category_prices' => $periodCategoryPrices,
+                'category_price_removals' => $categoryPriceRemovals,
             ];
 
             $rateManager->updatePeriod($periodId, $payload);
@@ -1215,7 +1407,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 'message' => 'Preiszeitraum wurde aktualisiert.',
             ];
 
-            header('Location: index.php?section=rates&rateId=' . $rateId . '#rate-periods');
+            $redirectParams = [
+                'section' => 'rates',
+                'rateId' => $rateId,
+            ];
+            if ($redirectCategoryId !== null) {
+                $redirectParams['rateCategoryId'] = $redirectCategoryId;
+            }
+
+            header('Location: index.php?' . http_build_query($redirectParams) . '#rate-periods');
             exit;
 
         case 'rate_period_delete':
@@ -1231,6 +1431,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             $periodId = (int) ($_POST['id'] ?? 0);
             $rateId = (int) ($_POST['rate_id'] ?? 0);
+            $activeRateCategoryIdInput = null;
+            if (isset($_POST['active_rate_category_id'])) {
+                $candidate = (int) $_POST['active_rate_category_id'];
+                if ($candidate > 0) {
+                    $activeRateCategoryIdInput = $candidate;
+                }
+            }
 
             if ($periodId <= 0 || $rateId <= 0) {
                 $alert = [
@@ -1256,7 +1463,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 'message' => 'Preiszeitraum wurde gelöscht.',
             ];
 
-            header('Location: index.php?section=rates&rateId=' . $rateId . '#rate-periods');
+            $redirectParams = [
+                'section' => 'rates',
+                'rateId' => $rateId,
+            ];
+            if ($activeRateCategoryIdInput !== null) {
+                $redirectParams['rateCategoryId'] = $activeRateCategoryIdInput;
+            }
+
+            header('Location: index.php?' . http_build_query($redirectParams) . '#rate-periods');
             exit;
 
         case 'category_move':
@@ -2518,6 +2733,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 }
 
 if ($pdo !== null) {
+    if ($categoryManager instanceof RoomCategoryManager) {
+        $categories = $categoryManager->all();
+    }
+
     if ($rateManager instanceof RateManager) {
         $rates = $rateManager->all();
 
@@ -2548,13 +2767,71 @@ if ($pdo !== null) {
 
             if ($activeRate !== null) {
                 $ratePeriods = $rateManager->periodsForRate($activeRateId);
-                $rateCalendarData = $rateManager->buildYearlyCalendar($activeRateId, $rateCalendarYear);
+            }
+
+            $availableCategoryIds = [];
+            foreach ($categories as $category) {
+                if (!isset($category['id'])) {
+                    continue;
+                }
+
+                $availableCategoryIds[] = (int) $category['id'];
+            }
+
+            $rateCategoryPrices = [];
+            if (is_array($activeRate) && isset($activeRate['category_prices']) && is_array($activeRate['category_prices'])) {
+                foreach ($activeRate['category_prices'] as $categoryId => $priceValue) {
+                    $rateCategoryPrices[(int) $categoryId] = (float) $priceValue;
+                }
+            }
+
+            $candidateCategoryId = null;
+            if (
+                $requestedRateCategoryId !== null
+                && in_array($requestedRateCategoryId, $availableCategoryIds, true)
+                && ($rateCategoryPrices === [] || isset($rateCategoryPrices[$requestedRateCategoryId]))
+            ) {
+                $candidateCategoryId = $requestedRateCategoryId;
+            }
+
+            if ($candidateCategoryId === null) {
+                foreach ($categories as $category) {
+                    if (!isset($category['id'])) {
+                        continue;
+                    }
+
+                    $categoryId = (int) $category['id'];
+                    if ($rateCategoryPrices === [] || isset($rateCategoryPrices[$categoryId])) {
+                        $candidateCategoryId = $categoryId;
+                        break;
+                    }
+                }
+
+                if ($candidateCategoryId === null && $rateCategoryPrices !== []) {
+                    $categoryPriceKeys = array_keys($rateCategoryPrices);
+                    if ($categoryPriceKeys !== []) {
+                        $candidateCategoryId = (int) $categoryPriceKeys[0];
+                    }
+                }
+            }
+
+            if ($candidateCategoryId === null && $categories !== []) {
+                $candidateCategoryId = isset($categories[0]['id']) ? (int) $categories[0]['id'] : null;
+            }
+
+            $activeRateCategoryId = $candidateCategoryId;
+
+            if ($activeRate !== null && $activeRateCategoryId !== null) {
+                $rateCalendarData = $rateManager->buildYearlyCalendar($activeRateId, $activeRateCategoryId, $rateCalendarYear);
             }
         }
 
         $rateCalendarBaseParams = ['section' => 'rates'];
         if ($activeRateId !== null) {
             $rateCalendarBaseParams['rateId'] = $activeRateId;
+        }
+        if ($activeRateCategoryId !== null) {
+            $rateCalendarBaseParams['rateCategoryId'] = $activeRateCategoryId;
         }
 
         $rateCalendarPrevUrl = 'index.php?' . http_build_query(array_merge($rateCalendarBaseParams, [
@@ -2566,7 +2843,19 @@ if ($pdo !== null) {
         $rateCalendarResetUrl = 'index.php?' . http_build_query($rateCalendarBaseParams);
     }
 
-    $categories = $categoryManager->all();
+    foreach ($categories as $category) {
+        if (!isset($category['id'])) {
+            continue;
+        }
+
+        $categoryId = (int) $category['id'];
+        if (!isset($rateFormData['category_prices'][$categoryId])) {
+            $rateFormData['category_prices'][$categoryId] = '';
+        }
+        if (!isset($ratePeriodFormData['category_prices'][$categoryId])) {
+            $ratePeriodFormData['category_prices'][$categoryId] = '';
+        }
+    }
     $options = ['<option value="">Bitte auswählen</option>'];
     foreach ($categories as $category) {
         if (!isset($category['id'])) {
@@ -3179,15 +3468,41 @@ if ($pdo !== null && isset($_GET['editRate']) && $rateFormData['id'] === null) {
             $rateFormMode = 'update';
             $activeRateId = (int) $rateToEdit['id'];
             $requestedRateId = $activeRateId;
+
+            $formCategoryPrices = [];
+            if (isset($rateToEdit['category_prices']) && is_array($rateToEdit['category_prices'])) {
+                foreach ($rateToEdit['category_prices'] as $categoryId => $priceValue) {
+                    $formCategoryPrices[(int) $categoryId] = number_format((float) $priceValue, 2, ',', '');
+                }
+            }
+
+            if ($activeRateCategoryId === null && $formCategoryPrices !== []) {
+                $priceKeys = array_keys($formCategoryPrices);
+                if ($priceKeys !== []) {
+                    $activeRateCategoryId = (int) $priceKeys[0];
+                }
+            }
+
             $rateFormData = [
                 'id' => (int) $rateToEdit['id'],
                 'name' => $rateToEdit['name'],
-                'category_id' => isset($rateToEdit['category_id']) ? (string) $rateToEdit['category_id'] : '',
-                'base_price' => isset($rateToEdit['base_price']) ? number_format((float) $rateToEdit['base_price'], 2, ',', '') : '',
                 'description' => $rateToEdit['description'] ?? '',
+                'category_prices' => $formCategoryPrices,
             ];
+            foreach ($categories as $category) {
+                if (!isset($category['id'])) {
+                    continue;
+                }
+
+                $categoryId = (int) $category['id'];
+                if (!isset($rateFormData['category_prices'][$categoryId])) {
+                    $rateFormData['category_prices'][$categoryId] = '';
+                }
+            }
             $ratePeriods = $rateManager->periodsForRate($activeRateId);
-            $rateCalendarData = $rateManager->buildYearlyCalendar($activeRateId, $rateCalendarYear);
+            if ($activeRateCategoryId !== null) {
+                $rateCalendarData = $rateManager->buildYearlyCalendar($activeRateId, $activeRateCategoryId, $rateCalendarYear);
+            }
         } elseif ($alert === null) {
             $alert = [
                 'type' => 'warning',
@@ -3216,17 +3531,43 @@ if ($pdo !== null && isset($_GET['editRatePeriod']) && $ratePeriodFormData['id']
                 $requestedRateId = $associatedRateId;
             }
 
+            $formPeriodCategoryPrices = [];
+            if (isset($periodToEdit['category_prices']) && is_array($periodToEdit['category_prices'])) {
+                foreach ($periodToEdit['category_prices'] as $categoryId => $priceValue) {
+                    $formPeriodCategoryPrices[(int) $categoryId] = number_format((float) $priceValue, 2, ',', '');
+                }
+            }
+
             $ratePeriodFormData = [
                 'id' => (int) $periodToEdit['id'],
                 'rate_id' => $associatedRateId > 0 ? (string) $associatedRateId : '',
                 'start_date' => $periodToEdit['start_date'] ?? '',
                 'end_date' => $periodToEdit['end_date'] ?? '',
-                'price' => isset($periodToEdit['price']) ? number_format((float) $periodToEdit['price'], 2, ',', '') : '',
                 'days_of_week' => $periodToEdit['days_of_week_list'] ?? [],
+                'category_prices' => $formPeriodCategoryPrices,
             ];
+            foreach ($categories as $category) {
+                if (!isset($category['id'])) {
+                    continue;
+                }
+
+                $categoryId = (int) $category['id'];
+                if (!isset($ratePeriodFormData['category_prices'][$categoryId])) {
+                    $ratePeriodFormData['category_prices'][$categoryId] = '';
+                }
+            }
             if ($associatedRateId > 0) {
                 $ratePeriods = $rateManager->periodsForRate($associatedRateId);
-                $rateCalendarData = $rateManager->buildYearlyCalendar($associatedRateId, $rateCalendarYear);
+                if ($activeRateCategoryId === null && $formPeriodCategoryPrices !== []) {
+                    $categoryPriceKeys = array_keys($formPeriodCategoryPrices);
+                    if ($categoryPriceKeys !== []) {
+                        $activeRateCategoryId = (int) $categoryPriceKeys[0];
+                    }
+                }
+
+                if ($activeRateCategoryId !== null) {
+                    $rateCalendarData = $rateManager->buildYearlyCalendar($associatedRateId, $activeRateCategoryId, $rateCalendarYear);
+                }
             }
         } elseif ($alert === null) {
             $alert = [
@@ -3235,21 +3576,6 @@ if ($pdo !== null && isset($_GET['editRatePeriod']) && $ratePeriodFormData['id']
             ];
         }
     }
-}
-
-if ($rateManager instanceof RateManager) {
-    $rateCalendarBaseParams = ['section' => 'rates'];
-    if ($activeRateId !== null) {
-        $rateCalendarBaseParams['rateId'] = $activeRateId;
-    }
-
-    $rateCalendarPrevUrl = 'index.php?' . http_build_query(array_merge($rateCalendarBaseParams, [
-        'rateYear' => $rateCalendarYear - 1,
-    ]));
-    $rateCalendarNextUrl = 'index.php?' . http_build_query(array_merge($rateCalendarBaseParams, [
-        'rateYear' => $rateCalendarYear + 1,
-    ]));
-    $rateCalendarResetUrl = 'index.php?' . http_build_query($rateCalendarBaseParams);
 }
 
 if ($pdo !== null && isset($_GET['editRoom']) && $roomFormData['id'] === null) {
@@ -3900,6 +4226,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3">
+                  <?= $csrfTokenInput ?>
                   <input type="hidden" name="form" value="<?= $isReservationEditing ? 'reservation_update' : 'reservation_create' ?>">
                   <?php if ($isReservationEditing): ?>
                     <input type="hidden" name="id" value="<?= (int) $reservationFormData['id'] ?>">
@@ -4265,6 +4592,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=reservations&amp;editReservation=<?= (int) $reservation['id'] ?>">Bearbeiten</a>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Reservierung wirklich löschen?');">
+                                  <?= $csrfTokenInput ?>
                                   <input type="hidden" name="form" value="reservation_delete">
                                   <input type="hidden" name="id" value="<?= (int) $reservation['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
@@ -4301,7 +4629,13 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             '12' => 'Dezember',
         ];
         $selectedRateId = $activeRateId !== null ? $activeRateId : ($rates !== [] ? (int) ($rates[0]['id'] ?? 0) : null);
-        $calendarHasData = $rateCalendarData['rate'] !== null && $rateCalendarData['months'] !== [];
+        $selectedRateCategoryId = $activeRateCategoryId !== null
+            ? $activeRateCategoryId
+            : ($categories !== [] ? (int) ($categories[0]['id'] ?? 0) : null);
+        $calendarHasData = $rateCalendarData['rate'] !== null
+            && $selectedRateId !== null
+            && $selectedRateCategoryId !== null
+            && $rateCalendarData['months'] !== [];
       ?>
       <section id="rates" class="app-section active">
         <div class="row g-4">
@@ -4318,7 +4652,9 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3">
+                  <?= $csrfTokenInput ?>
                   <input type="hidden" name="form" value="<?= $isEditingRate ? 'rate_update' : 'rate_create' ?>">
+                  <input type="hidden" name="active_rate_category_id" value="<?= $selectedRateCategoryId !== null ? (int) $selectedRateCategoryId : '' ?>">
                   <?php if ($isEditingRate): ?>
                     <input type="hidden" name="id" value="<?= (int) $rateFormData['id'] ?>">
                   <?php endif; ?>
@@ -4326,22 +4662,28 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                     <label for="rate-name" class="form-label">Bezeichnung *</label>
                     <input type="text" class="form-control" id="rate-name" name="name" value="<?= htmlspecialchars((string) $rateFormData['name']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
                   </div>
-                  <div class="col-12">
-                    <label for="rate-category" class="form-label">Zimmerkategorie *</label>
-                    <select class="form-select" id="rate-category" name="category_id" required <?= $pdo === null ? 'disabled' : '' ?>>
-                      <option value="">Bitte auswählen</option>
-                      <?php foreach ($categories as $category): ?>
-                        <?php if (!isset($category['id'])) { continue; } ?>
-                        <?php $categoryId = (int) $category['id']; ?>
-                        <option value="<?= $categoryId ?>" <?= $rateFormData['category_id'] !== '' && (int) $rateFormData['category_id'] === $categoryId ? 'selected' : '' ?>><?= htmlspecialchars($category['name']) ?></option>
-                      <?php endforeach; ?>
-                    </select>
-                  </div>
-                  <div class="col-sm-6">
-                    <label for="rate-base-price" class="form-label">Basispreis (EUR) *</label>
-                    <input type="text" class="form-control" id="rate-base-price" name="base_price" value="<?= htmlspecialchars((string) $rateFormData['base_price']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
-                    <div class="form-text">Dezimaltrenner Komma oder Punkt.</div>
-                  </div>
+                  <?php if ($categories === []): ?>
+                    <div class="col-12">
+                      <div class="alert alert-warning mb-0">Bitte legen Sie zuerst Kategorien an, um Preise zu hinterlegen.</div>
+                    </div>
+                  <?php else: ?>
+                    <?php foreach ($categories as $category): ?>
+                      <?php if (!isset($category['id'])) { continue; } ?>
+                      <?php $categoryId = (int) $category['id']; ?>
+                      <div class="col-12 col-md-6">
+                        <label class="form-label" for="rate-category-price-<?= $categoryId ?>">Preis für <?= htmlspecialchars((string) ($category['name'] ?? 'Kategorie')) ?> (EUR) *</label>
+                        <input
+                          type="text"
+                          class="form-control"
+                          id="rate-category-price-<?= $categoryId ?>"
+                          name="category_prices[<?= $categoryId ?>]"
+                          value="<?= htmlspecialchars((string) ($rateFormData['category_prices'][$categoryId] ?? '')) ?>"
+                          <?= $pdo === null ? 'disabled' : 'required' ?>
+                        >
+                        <div class="form-text">Dezimaltrenner Komma oder Punkt.</div>
+                      </div>
+                    <?php endforeach; ?>
+                  <?php endif; ?>
                   <div class="col-12">
                     <label for="rate-description" class="form-label">Beschreibung</label>
                     <textarea class="form-control" id="rate-description" name="description" rows="2" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $rateFormData['description']) ?></textarea>
@@ -4377,14 +4719,56 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <thead class="table-light">
                         <tr>
                           <th scope="col">Bezeichnung</th>
-                          <th scope="col">Kategorie</th>
-                          <th scope="col" class="text-end">Basispreis</th>
+                          <th scope="col">Kategorien &amp; Preise</th>
                           <th scope="col" class="text-end">Aktionen</th>
                         </tr>
                       </thead>
                       <tbody>
                         <?php foreach ($rates as $rate): ?>
                           <?php $rateId = isset($rate['id']) ? (int) $rate['id'] : 0; ?>
+                          <?php
+                            $rateCategoryLinkId = null;
+                            if (
+                                $selectedRateCategoryId !== null
+                                && isset($rate['category_prices'][$selectedRateCategoryId])
+                            ) {
+                                $rateCategoryLinkId = $selectedRateCategoryId;
+                            } elseif (isset($rate['category_prices']) && is_array($rate['category_prices'])) {
+                                foreach ($rate['category_prices'] as $categoryKey => $priceValue) {
+                                    $categoryKey = (int) $categoryKey;
+                                    if ($categoryKey > 0) {
+                                        $rateCategoryLinkId = $categoryKey;
+                                        break;
+                                    }
+                                }
+                            }
+                            if ($rateCategoryLinkId === null && $categories !== []) {
+                                foreach ($categories as $categoryOption) {
+                                    if (!isset($categoryOption['id'])) {
+                                        continue;
+                                    }
+
+                                    $rateCategoryLinkId = (int) $categoryOption['id'];
+                                    if ($rateCategoryLinkId > 0) {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if ($rateCategoryLinkId !== null && $rateCategoryLinkId <= 0) {
+                                $rateCategoryLinkId = null;
+                            }
+
+                            $rateViewParams = ['section' => 'rates', 'rateId' => $rateId];
+                            $rateEditParams = ['section' => 'rates', 'editRate' => $rateId, 'rateId' => $rateId];
+                            if ($rateCategoryLinkId !== null) {
+                                $rateViewParams['rateCategoryId'] = $rateCategoryLinkId;
+                                $rateEditParams['rateCategoryId'] = $rateCategoryLinkId;
+                            }
+
+                            $rateViewUrl = 'index.php?' . http_build_query($rateViewParams);
+                            $rateEditUrl = 'index.php?' . http_build_query($rateEditParams);
+                          ?>
                           <tr<?= $selectedRateId !== null && $rateId === $selectedRateId ? ' class="table-primary"' : '' ?>>
                             <td>
                               <div class="fw-semibold mb-1"><?= htmlspecialchars((string) ($rate['name'] ?? '')) ?></div>
@@ -4392,13 +4776,36 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                 <div class="small text-muted"><?= htmlspecialchars((string) $rate['description']) ?></div>
                               <?php endif; ?>
                             </td>
-                            <td><?= htmlspecialchars((string) ($rate['category_name'] ?? 'Ohne Kategorie')) ?></td>
-                            <td class="text-end">€ <?= number_format((float) ($rate['base_price'] ?? 0), 2, ',', '') ?></td>
+                            <td>
+                              <?php if ($categories === []): ?>
+                                <span class="text-muted">Keine Kategorien vorhanden.</span>
+                              <?php else: ?>
+                                <ul class="list-unstyled mb-0 small">
+                                  <?php foreach ($categories as $category): ?>
+                                    <?php if (!isset($category['id'])) { continue; } ?>
+                                    <?php
+                                      $categoryId = (int) $category['id'];
+                                      $categoryName = isset($category['name']) ? (string) $category['name'] : ('Kategorie #' . $categoryId);
+                                      $categoryPrice = $rate['category_prices'][$categoryId] ?? null;
+                                    ?>
+                                    <li>
+                                      <span class="fw-semibold"><?= htmlspecialchars($categoryName) ?>:</span>
+                                      <?php if ($categoryPrice !== null): ?>
+                                        € <?= number_format((float) $categoryPrice, 2, ',', '') ?>
+                                      <?php else: ?>
+                                        <span class="text-muted">—</span>
+                                      <?php endif; ?>
+                                    </li>
+                                  <?php endforeach; ?>
+                                </ul>
+                              <?php endif; ?>
+                            </td>
                             <td class="text-end">
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
-                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rates&amp;rateId=<?= $rateId ?>">Anzeigen</a>
-                                <a class="btn btn-outline-primary btn-sm" href="index.php?section=rates&amp;editRate=<?= $rateId ?>">Bearbeiten</a>
+                                <a class="btn btn-outline-secondary btn-sm" href="<?= htmlspecialchars($rateViewUrl) ?>">Anzeigen</a>
+                                <a class="btn btn-outline-primary btn-sm" href="<?= htmlspecialchars($rateEditUrl) ?>">Bearbeiten</a>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Rate wirklich löschen?');">
+                                  <?= $csrfTokenInput ?>
                                   <input type="hidden" name="form" value="rate_delete">
                                   <input type="hidden" name="id" value="<?= $rateId ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
@@ -4430,7 +4837,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               <div class="card-body">
                 <form method="get" class="row g-3 align-items-end mb-4">
                   <input type="hidden" name="section" value="rates">
-                  <div class="col-12 col-lg-6">
+                  <div class="col-12 col-lg-4">
                     <label for="rate-calendar-select" class="form-label">Rate wählen</label>
                     <select class="form-select" id="rate-calendar-select" name="rateId" <?= $pdo === null || $rates === [] ? 'disabled' : '' ?>>
                       <?php if ($rates === []): ?>
@@ -4444,19 +4851,33 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <?php endif; ?>
                     </select>
                   </div>
-                  <div class="col-6 col-lg-3">
+                  <div class="col-12 col-lg-4">
+                    <label for="rate-calendar-category" class="form-label">Kategorie wählen</label>
+                    <select class="form-select" id="rate-calendar-category" name="rateCategoryId" <?= $pdo === null || $categories === [] ? 'disabled' : '' ?>>
+                      <?php if ($categories === []): ?>
+                        <option value="">Keine Kategorie vorhanden</option>
+                      <?php else: ?>
+                        <?php foreach ($categories as $category): ?>
+                          <?php if (!isset($category['id'])) { continue; } ?>
+                          <?php $categoryId = (int) $category['id']; ?>
+                          <option value="<?= $categoryId ?>" <?= $selectedRateCategoryId !== null && $categoryId === $selectedRateCategoryId ? 'selected' : '' ?>><?= htmlspecialchars((string) ($category['name'] ?? 'Kategorie #' . $categoryId)) ?></option>
+                        <?php endforeach; ?>
+                      <?php endif; ?>
+                    </select>
+                  </div>
+                  <div class="col-6 col-lg-2">
                     <label for="rate-calendar-year" class="form-label">Jahr</label>
                     <input type="number" class="form-control" id="rate-calendar-year" name="rateYear" value="<?= (int) $rateCalendarYear ?>" min="2000" max="2100">
                   </div>
-                  <div class="col-6 col-lg-3 d-flex gap-2">
+                  <div class="col-6 col-lg-2 d-flex gap-2">
                     <button type="submit" class="btn btn-outline-primary flex-grow-1">Anzeigen</button>
                     <a href="<?= htmlspecialchars($rateCalendarResetUrl) ?>" class="btn btn-link">Zurücksetzen</a>
                   </div>
                 </form>
                 <?php if ($pdo === null): ?>
                   <p class="text-muted mb-0">Kalenderdarstellung steht nach Verbindungsaufbau zur Verfügung.</p>
-                <?php elseif ($selectedRateId === null): ?>
-                  <p class="text-muted mb-0">Bitte legen Sie zunächst eine Rate an.</p>
+                <?php elseif ($selectedRateId === null || $selectedRateCategoryId === null): ?>
+                  <p class="text-muted mb-0">Bitte legen Sie zunächst eine Rate und Kategorien an.</p>
                 <?php elseif (!$calendarHasData): ?>
                   <p class="text-muted mb-0">Für das gewählte Jahr liegen noch keine Preisangaben vor. Der Basispreis wird verwendet.</p>
                 <?php else: ?>
@@ -4509,7 +4930,9 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="rate-period-form">
+                  <?= $csrfTokenInput ?>
                   <input type="hidden" name="form" value="<?= $isEditingRatePeriod ? 'rate_period_update' : 'rate_period_create' ?>">
+                  <input type="hidden" name="active_rate_category_id" value="<?= $selectedRateCategoryId !== null ? (int) $selectedRateCategoryId : '' ?>">
                   <?php if ($isEditingRatePeriod): ?>
                     <input type="hidden" name="id" value="<?= (int) $ratePeriodFormData['id'] ?>">
                   <?php endif; ?>
@@ -4532,11 +4955,28 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                     <label for="rate-period-end" class="form-label">Ende *</label>
                     <input type="date" class="form-control" id="rate-period-end" name="end_date" value="<?= htmlspecialchars((string) $ratePeriodFormData['end_date']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
                   </div>
-                  <div class="col-12 col-lg-4">
-                    <label for="rate-period-price" class="form-label">Preis (EUR) *</label>
-                    <input type="text" class="form-control" id="rate-period-price" name="price" value="<?= htmlspecialchars((string) $ratePeriodFormData['price']) ?>" required <?= $pdo === null ? 'disabled' : '' ?>>
-                    <div class="form-text">Leer lassen, um Basispreis zu übernehmen.</div>
-                  </div>
+                  <?php if ($categories === []): ?>
+                    <div class="col-12">
+                      <div class="alert alert-warning mb-0">Bitte legen Sie Kategorien an, um Zeitraumpreise zu pflegen.</div>
+                    </div>
+                  <?php else: ?>
+                    <?php foreach ($categories as $category): ?>
+                      <?php if (!isset($category['id'])) { continue; } ?>
+                      <?php $categoryId = (int) $category['id']; ?>
+                      <div class="col-12 col-md-6">
+                        <label class="form-label" for="rate-period-category-price-<?= $categoryId ?>">Preis für <?= htmlspecialchars((string) ($category['name'] ?? 'Kategorie')) ?> (EUR)</label>
+                        <input
+                          type="text"
+                          class="form-control"
+                          id="rate-period-category-price-<?= $categoryId ?>"
+                          name="period_category_prices[<?= $categoryId ?>]"
+                          value="<?= htmlspecialchars((string) ($ratePeriodFormData['category_prices'][$categoryId] ?? '')) ?>"
+                          <?= $pdo === null ? 'disabled' : '' ?>
+                        >
+                        <div class="form-text">Leer lassen, um den Basispreis der Kategorie zu verwenden.</div>
+                      </div>
+                    <?php endforeach; ?>
+                  <?php endif; ?>
                   <div class="col-12 col-lg-8">
                     <label class="form-label">Wochentage</label>
                     <div class="d-flex flex-wrap gap-2">
@@ -4569,7 +5009,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                         <tr>
                           <th scope="col">Zeitraum</th>
                           <th scope="col">Wochentage</th>
-                          <th scope="col" class="text-end">Preis</th>
+                          <th scope="col">Kategoriepreise</th>
                           <th scope="col" class="text-end">Aktionen</th>
                         </tr>
                       </thead>
@@ -4585,6 +5025,36 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             $dayText = $dayLabels !== [] ? implode(', ', $dayLabels) : 'Alle Tage';
                             $periodStart = $period['start_date'] ?? '';
                             $periodEnd = $period['end_date'] ?? '';
+                            $periodCategoryLinkId = null;
+                            $periodCategoryPrices = $period['category_prices'] ?? [];
+                            if (
+                                $selectedRateCategoryId !== null
+                                && isset($periodCategoryPrices[$selectedRateCategoryId])
+                            ) {
+                                $periodCategoryLinkId = $selectedRateCategoryId;
+                            } elseif (is_array($periodCategoryPrices)) {
+                                foreach ($periodCategoryPrices as $categoryKey => $priceValue) {
+                                    $categoryKey = (int) $categoryKey;
+                                    if ($categoryKey > 0) {
+                                        $periodCategoryLinkId = $categoryKey;
+                                        break;
+                                    }
+                                }
+                            }
+                            if ($periodCategoryLinkId === null && $selectedRateCategoryId !== null) {
+                                $periodCategoryLinkId = $selectedRateCategoryId;
+                            }
+                            if ($periodCategoryLinkId !== null && $periodCategoryLinkId <= 0) {
+                                $periodCategoryLinkId = null;
+                            }
+                            $periodEditParams = ['section' => 'rates', 'editRatePeriod' => $periodId];
+                            if ($selectedRateId !== null) {
+                                $periodEditParams['rateId'] = $selectedRateId;
+                            }
+                            if ($periodCategoryLinkId !== null) {
+                                $periodEditParams['rateCategoryId'] = $periodCategoryLinkId;
+                            }
+                            $periodEditUrl = 'index.php?' . http_build_query($periodEditParams) . '#rate-period-form';
                             try {
                                 if ($periodStart !== '') {
                                     $periodStart = (new DateTimeImmutable($periodStart))->format('d.m.Y');
@@ -4603,14 +5073,34 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                           <tr>
                             <td><?= htmlspecialchars($periodStart) ?> – <?= htmlspecialchars($periodEnd) ?></td>
                             <td><?= htmlspecialchars($dayText) ?></td>
-                            <td class="text-end">€ <?= number_format((float) ($period['price'] ?? 0), 2, ',', '') ?></td>
+                            <td>
+                              <?php if ($periodCategoryPrices === []): ?>
+                                <span class="text-muted">Basispreise</span>
+                              <?php else: ?>
+                                <div class="d-flex flex-wrap gap-1">
+                                  <?php foreach ($periodCategoryPrices as $categoryId => $price): ?>
+                                    <?php
+                                      $categoryId = (int) $categoryId;
+                                      $categoryName = isset($categoryLookup[$categoryId]['name'])
+                                        ? (string) $categoryLookup[$categoryId]['name']
+                                        : 'Kategorie #' . $categoryId;
+                                    ?>
+                                    <span class="badge text-bg-secondary">
+                                      <?= htmlspecialchars($categoryName) ?>: € <?= number_format((float) $price, 2, ',', '') ?>
+                                    </span>
+                                  <?php endforeach; ?>
+                                </div>
+                              <?php endif; ?>
+                            </td>
                             <td class="text-end">
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
-                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rates&amp;editRatePeriod=<?= $periodId ?>#rate-period-form">Bearbeiten</a>
+                                <a class="btn btn-outline-secondary btn-sm" href="<?= htmlspecialchars($periodEditUrl) ?>">Bearbeiten</a>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Preiszeitraum wirklich löschen?');">
+                                  <?= $csrfTokenInput ?>
                                   <input type="hidden" name="form" value="rate_period_delete">
                                   <input type="hidden" name="id" value="<?= $periodId ?>">
                                   <input type="hidden" name="rate_id" value="<?= $selectedRateId ?>">
+                                  <input type="hidden" name="active_rate_category_id" value="<?= $selectedRateCategoryId !== null ? (int) $selectedRateCategoryId : '' ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
                                 </form>
                               </div>
@@ -4648,6 +5138,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="category-form">
+                  <?= $csrfTokenInput ?>
                   <input type="hidden" name="form" value="<?= $isEditingCategory ? 'category_update' : 'category_create' ?>">
                   <?php if ($isEditingCategory): ?>
                     <input type="hidden" name="id" value="<?= (int) $categoryFormData['id'] ?>">
@@ -4718,6 +5209,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-center align-items-center gap-2 flex-wrap">
                                 <span class="badge text-bg-light" title="Sortierposition">#<?= $positionBadge ?></span>
                                 <form method="post" class="d-inline-flex" action="index.php?section=categories#category-management">
+                                  <?= $csrfTokenInput ?>
                                   <input type="hidden" name="form" value="category_move">
                                   <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
                                   <div class="btn-group btn-group-sm" role="group" aria-label="Reihenfolge anpassen">
@@ -4740,6 +5232,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=categories&editCategory=<?= (int) $category['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Kategorie wirklich löschen?');">
+                                  <?= $csrfTokenInput ?>
                                   <input type="hidden" name="form" value="category_delete">
                                   <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -4781,6 +5274,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                   <p class="text-muted mb-0">Die Farbverwaltung steht erst nach einer erfolgreichen Datenbankverbindung zur Verfügung.</p>
                 <?php else: ?>
                   <form method="post" class="row g-4 align-items-stretch">
+                    <?= $csrfTokenInput ?>
                     <input type="hidden" name="form" value="settings_status_colors">
                     <?php foreach ($reservationStatuses as $statusKey): ?>
                       <?php
@@ -4841,6 +5335,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="d-flex flex-column flex-md-row gap-3 align-items-start align-items-md-center">
+                  <?= $csrfTokenInput ?>
                   <input type="hidden" name="form" value="settings_schema_refresh">
                   <div class="text-muted small flex-grow-1">
                     <p class="mb-1">Aktualisiert Reservierungs- und Einstellungstabellen sowie neue Felder aus aktuellen Releases.</p>
@@ -4868,6 +5363,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <h3 class="h6">Sicherung erstellen</h3>
                       <p class="small text-muted">Lädt eine JSON-Datei herunter, die Sie bei Bedarf wieder einspielen können.</p>
                       <form method="post">
+                        <?= $csrfTokenInput ?>
                         <input type="hidden" name="form" value="settings_backup_export">
                         <button type="submit" class="btn btn-outline-secondary">Backup herunterladen</button>
                       </form>
@@ -4876,6 +5372,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <h3 class="h6">Sicherung wiederherstellen</h3>
                       <p class="small text-muted">Bestehende Datensätze werden durch die Inhalte der Sicherung ersetzt.</p>
                       <form method="post" enctype="multipart/form-data" onsubmit="return confirm('Aktuelle Daten werden überschrieben. Fortfahren?');">
+                        <?= $csrfTokenInput ?>
                         <input type="hidden" name="form" value="settings_backup_import">
                         <div class="mb-3">
                           <label for="backup-file" class="form-label">JSON-Datei auswählen</label>
@@ -4961,6 +5458,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="guest-form">
+                <?= $csrfTokenInput ?>
                 <input type="hidden" name="form" value="<?= $isEditingGuest ? 'guest_update' : 'guest_create' ?>">
                 <?php if ($isEditingGuest): ?>
                   <input type="hidden" name="id" value="<?= (int) $guestFormData['id'] ?>">
@@ -5271,6 +5769,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2 flex-wrap">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editGuest=<?= (int) $guest['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Gast wirklich löschen?');">
+                                <?= $csrfTokenInput ?>
                                 <input type="hidden" name="form" value="guest_delete">
                                 <input type="hidden" name="id" value="<?= (int) $guest['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -5309,6 +5808,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="company-form">
+                <?= $csrfTokenInput ?>
                 <input type="hidden" name="form" value="<?= $isEditingCompany ? 'company_update' : 'company_create' ?>">
                 <?php if ($isEditingCompany): ?>
                   <input type="hidden" name="id" value="<?= (int) $companyFormData['id'] ?>">
@@ -5424,6 +5924,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editCompany=<?= (int) $company['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Firma wirklich löschen?');">
+                                <?= $csrfTokenInput ?>
                                 <input type="hidden" name="form" value="company_delete">
                                 <input type="hidden" name="id" value="<?= (int) $company['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm" <?= ($companyGuestCounts[$companyId] ?? 0) > 0 ? 'disabled title="Zuerst Gästezuordnungen entfernen"' : '' ?>>Löschen</button>
@@ -5465,6 +5966,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="room-form">
+                  <?= $csrfTokenInput ?>
                   <input type="hidden" name="form" value="<?= $isEditingRoom ? 'room_update' : 'room_create' ?>">
                   <?php if ($isEditingRoom): ?>
                     <input type="hidden" name="id" value="<?= (int) $roomFormData['id'] ?>">
@@ -5550,6 +6052,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rooms&editRoom=<?= (int) $room['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Zimmer wirklich löschen?');">
+                                  <?= $csrfTokenInput ?>
                                   <input type="hidden" name="form" value="room_delete">
                                   <input type="hidden" name="id" value="<?= (int) $room['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -5591,6 +6094,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="user-form">
+                <?= $csrfTokenInput ?>
                 <input type="hidden" name="form" value="<?= $isEditingUser ? 'user_update' : 'user_create' ?>">
                 <?php if ($isEditingUser): ?>
                   <input type="hidden" name="id" value="<?= (int) $userFormData['id'] ?>">
@@ -5666,6 +6170,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=users&editUser=<?= (int) $user['id'] ?>">Bearbeiten</a>
                               <?php if ((int) $_SESSION['user_id'] !== (int) $user['id']): ?>
                                 <form method="post" onsubmit="return confirm('Benutzer wirklich löschen?');">
+                                  <?= $csrfTokenInput ?>
                                   <input type="hidden" name="form" value="user_delete">
                                   <input type="hidden" name="id" value="<?= (int) $user['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -5733,6 +6238,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           </div>
           <div class="modal-footer flex-wrap gap-2">
             <form method="post" id="reservation-status-form" class="d-flex flex-wrap gap-2 align-items-center">
+              <?= $csrfTokenInput ?>
               <input type="hidden" name="form" value="reservation_status_update">
               <input type="hidden" name="id" id="reservation-status-id">
               <input type="hidden" name="status" id="reservation-status-value">
