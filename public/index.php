@@ -1916,6 +1916,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Nur Administratoren können Benutzerkonten verwalten.',
+                ];
+                break;
+            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -2044,6 +2051,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Nur Administratoren können Benutzerkonten löschen.',
+                ];
+                break;
+            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
