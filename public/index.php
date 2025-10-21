@@ -1759,15 +1759,41 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
+            $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
+            $currentUserRole = $_SESSION['user_role'] ?? null;
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
             $role = in_array($roleInput, $userRoles, true) ? $roleInput : 'mitarbeiter';
             $password = (string) ($_POST['password'] ?? '');
             $passwordConfirm = (string) ($_POST['password_confirm'] ?? '');
+            $targetUserId = $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null;
+
+            if ($currentUserRole !== 'admin') {
+                if ($form === 'user_create') {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Sie haben keine Berechtigung, neue Benutzer anzulegen.',
+                    ];
+                    break;
+                }
+
+                if ($form === 'user_update') {
+                    if ($targetUserId === null || $targetUserId !== $currentUserId) {
+                        $alert = [
+                            'type' => 'danger',
+                            'message' => 'Sie können nur Ihr eigenes Konto bearbeiten.',
+                        ];
+                        break;
+                    }
+
+                    // Non-admin users cannot elevate or change their role.
+                    $role = $currentUserRole ?? 'mitarbeiter';
+                }
+            }
 
             $userFormData = [
-                'id' => $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'id' => $targetUserId,
                 'name' => $name,
                 'email' => $email,
                 'role' => $role,
@@ -1814,7 +1840,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             $existingUser = $userManager->findByEmail($email);
-            $targetUserId = $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null;
 
             if ($existingUser !== null && ($targetUserId === null || (int) $existingUser['id'] !== $targetUserId)) {
                 $alert = [
@@ -1888,6 +1913,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_delete':
             $activeSection = 'users';
             $userId = (int) ($_POST['id'] ?? 0);
+            $currentUserRole = $_SESSION['user_role'] ?? null;
+
+            if ($currentUserRole !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie haben keine Berechtigung, Benutzer zu löschen.',
+                ];
+                break;
+            }
 
             if ($userId <= 0) {
                 $alert = [
