@@ -146,6 +146,11 @@ class ReservationManager
         }
     }
 
+    public function refreshSchema(): void
+    {
+        $this->ensureSchema();
+    }
+
     /**
      * @return array<int, array<string, mixed>>
      */

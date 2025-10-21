@@ -31,6 +31,7 @@ if (!isset($_SESSION['user_id'])) {
 
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
+$currentUserRole = $_SESSION['user_role'] ?? 'mitarbeiter';
 
 try {
     $updateToken = bin2hex(random_bytes(32));
@@ -215,8 +216,33 @@ $reservationRoomOptionsHtml = '<option value="">Kein konkretes Zimmer – Überb
 $buildRoomSelectOptions = null;
 $reservationSearchTerm = isset($_GET['reservation_search']) ? trim((string) $_GET['reservation_search']) : '';
 $settingsManager = null;
-$settingsAvailable = false;
 $reservationStatuses = ['geplant', 'eingecheckt', 'abgereist', 'bezahlt', 'noshow', 'storniert'];
+$reservationStatusBaseMeta = [
+    'geplant' => [
+        'label' => 'Geplant',
+        'badge' => 'text-bg-primary',
+    ],
+    'eingecheckt' => [
+        'label' => 'Angereist',
+        'badge' => 'text-bg-success',
+    ],
+    'abgereist' => [
+        'label' => 'Abgereist',
+        'badge' => 'text-bg-secondary',
+    ],
+    'bezahlt' => [
+        'label' => 'Bezahlt',
+        'badge' => 'text-bg-info',
+    ],
+    'noshow' => [
+        'label' => 'No-Show',
+        'badge' => 'text-bg-warning text-dark',
+    ],
+    'storniert' => [
+        'label' => 'Storniert',
+        'badge' => 'text-bg-danger',
+    ],
+];
 
 $normalizeHexColor = static function (?string $value): ?string {
     if ($value === null) {
@@ -270,6 +296,7 @@ $defaultReservationStatusColors = [
 
 $reservationStatusColors = $defaultReservationStatusColors;
 $reservationStatusFormColors = $reservationStatusColors;
+$reservationStatusMeta = [];
 $reservationUserLookup = [];
 $reservationGuestTooltip = '';
 $reservationCompanyTooltip = '';
@@ -338,7 +365,7 @@ try {
 
 $settingsAvailable = $settingsManager instanceof SettingManager && $pdo !== null;
 
-if ($settingsAvailable) {
+if ($settingsManager instanceof SettingManager) {
     $keys = array_map(static fn (string $status): string => 'reservation_status_color_' . $status, $reservationStatuses);
     $storedColors = $settingsManager->getMany($keys);
 
@@ -353,48 +380,22 @@ if ($settingsAvailable) {
             $reservationStatusColors[$statusKey] = $normalized;
         }
     }
-
-    $reservationStatusFormColors = $reservationStatusColors;
 }
 
-$reservationStatusMeta = [
-    'geplant' => [
-        'label' => 'Geplant',
-        'badge' => 'text-bg-primary',
-        'color' => $reservationStatusColors['geplant'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['geplant']),
-    ],
-    'eingecheckt' => [
-        'label' => 'Angereist',
-        'badge' => 'text-bg-success',
-        'color' => $reservationStatusColors['eingecheckt'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['eingecheckt']),
-    ],
-    'abgereist' => [
-        'label' => 'Abgereist',
+$reservationStatusFormColors = $reservationStatusColors;
+$reservationStatusMeta = [];
+foreach ($reservationStatuses as $statusKey) {
+    $baseMeta = $reservationStatusBaseMeta[$statusKey] ?? [
+        'label' => ucfirst($statusKey),
         'badge' => 'text-bg-secondary',
-        'color' => $reservationStatusColors['abgereist'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['abgereist']),
-    ],
-    'bezahlt' => [
-        'label' => 'Bezahlt',
-        'badge' => 'text-bg-info',
-        'color' => $reservationStatusColors['bezahlt'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['bezahlt']),
-    ],
-    'noshow' => [
-        'label' => 'No-Show',
-        'badge' => 'text-bg-warning text-dark',
-        'color' => $reservationStatusColors['noshow'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['noshow']),
-    ],
-    'storniert' => [
-        'label' => 'Storniert',
-        'badge' => 'text-bg-danger',
-        'color' => $reservationStatusColors['storniert'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['storniert']),
-    ],
-];
+    ];
+
+    $color = $reservationStatusColors[$statusKey] ?? ($defaultReservationStatusColors[$statusKey] ?? '#2563EB');
+
+    $reservationStatusMeta[$statusKey] = $baseMeta;
+    $reservationStatusMeta[$statusKey]['color'] = $color;
+    $reservationStatusMeta[$statusKey]['textColor'] = $calculateContrastColor($color);
+}
 
 $categoryStatuses = ['aktiv', 'inaktiv'];
 $roomStatuses = ['frei', 'belegt', 'wartung'];
@@ -596,6 +597,55 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
     $form = $_POST['form'];
 
     switch ($form) {
+        case 'settings_schema_refresh':
+            $activeSection = 'settings';
+
+            if ($pdo === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Keine Datenbankverbindung vorhanden.',
+                ];
+                break;
+            }
+
+            try {
+                $updatedComponents = [];
+
+                if ($settingsManager instanceof SettingManager) {
+                    $settingsManager->ensureSchema();
+                    $updatedComponents[] = 'Einstellungen';
+                }
+
+                if ($reservationManager instanceof ReservationManager) {
+                    if (method_exists($reservationManager, 'refreshSchema')) {
+                        $reservationManager->refreshSchema();
+                    }
+                    $updatedComponents[] = 'Reservierungen';
+                }
+
+                if ($guestManager instanceof GuestManager) {
+                    if (method_exists($guestManager, 'refreshSchema')) {
+                        $guestManager->refreshSchema();
+                    }
+                    $updatedComponents[] = 'Gäste';
+                }
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Datenbanktabellen wurden aktualisiert' . ($updatedComponents !== [] ? ': ' . implode(', ', $updatedComponents) . '.' : '.'),
+                ];
+
+                header('Location: index.php?section=settings#database-maintenance');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Aktualisierung fehlgeschlagen: ' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
         case 'settings_status_colors':
             $activeSection = 'settings';
 
@@ -1710,6 +1760,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
+            if ($currentUserRole !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen, um Benutzer zu verwalten.',
+                ];
+                break;
+            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -1838,6 +1895,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
+            if ($currentUserRole !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen, um Benutzer zu verwalten.',
+                ];
+                break;
+            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
@@ -3577,6 +3641,27 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                 <?php endif; ?>
               </div>
             </div>
+            <?php if ($settingsAvailable): ?>
+            <div class="card module-card mt-4" id="database-maintenance">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <div>
+                  <h2 class="h5 mb-1">Datenbank aktualisieren</h2>
+                  <p class="text-muted mb-0">Führt neue Tabellen und Spalten für Module automatisch nach.</p>
+                </div>
+                <span class="badge text-bg-info">Wartung</span>
+              </div>
+              <div class="card-body">
+                <form method="post" class="d-flex flex-column flex-md-row gap-3 align-items-start align-items-md-center">
+                  <input type="hidden" name="form" value="settings_schema_refresh">
+                  <div class="text-muted small flex-grow-1">
+                    <p class="mb-1">Aktualisiert Reservierungs- und Einstellungstabellen sowie neue Felder aus aktuellen Releases.</p>
+                    <p class="mb-0">Verwenden Sie diese Funktion nach einem Update, falls neue Spalten fehlen.</p>
+                  </div>
+                  <button type="submit" class="btn btn-outline-primary">Tabellen aktualisieren</button>
+                </form>
+              </div>
+            </div>
+            <?php endif; ?>
           </div>
         </div>
       </section>

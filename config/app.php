@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.6.1',
+    'version' => '1.6.2',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',
@@ -34,7 +34,7 @@ return [
         ],
         'settings' => [
             'title' => 'Einstellungen',
-            'description' => 'Statusfarben und Kalenderdarstellung anpassen.'
+            'description' => 'Statusfarben anpassen und Datenbankschema aktualisieren.'
         ],
     ],
 ];

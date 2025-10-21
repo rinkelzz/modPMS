@@ -15,6 +15,11 @@ class GuestManager
         $this->ensureRoomAssignmentColumn();
     }
 
+    public function refreshSchema(): void
+    {
+        $this->ensureRoomAssignmentColumn();
+    }
+
     /**
      * @return array<int, array<string, mixed>>
      */
