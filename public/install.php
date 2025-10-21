@@ -215,6 +215,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_install_reservation_items_category (category_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS settings (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    setting_key VARCHAR(191) NOT NULL UNIQUE,
+                    setting_value TEXT NULL,
+                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $statusColorDefaults = [
+                    'geplant' => '#2563EB',
+                    'eingecheckt' => '#16A34A',
+                    'abgereist' => '#6B7280',
+                    'bezahlt' => '#0EA5E9',
+                    'noshow' => '#F59E0B',
+                    'storniert' => '#DC2626',
+                ];
+
+                $settingsStmt = $pdo->prepare('INSERT INTO settings (setting_key, setting_value, updated_at) VALUES (:key, :value, NOW()) ON DUPLICATE KEY UPDATE setting_value = setting_value');
+                foreach ($statusColorDefaults as $statusKey => $colorValue) {
+                    $settingsStmt->execute([
+                        'key' => 'reservation_status_color_' . $statusKey,
+                        'value' => $colorValue,
+                    ]);
+                }
+
                 $seedCategory = $pdo->query('SELECT COUNT(*) AS total FROM room_categories')->fetchColumn();
                 if ((int) $seedCategory === 0) {
                     $stmt = $pdo->prepare('INSERT INTO room_categories (name, description, capacity, status) VALUES (?, ?, ?, ?)');

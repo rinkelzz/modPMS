@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.6.0',
+    'version' => '1.6.1',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',
@@ -31,6 +31,10 @@ return [
         'users' => [
             'title' => 'Benutzerverwaltung',
             'description' => 'Zugangsdaten verwalten und Rollen steuern.'
+        ],
+        'settings' => [
+            'title' => 'Einstellungen',
+            'description' => 'Statusfarben und Kalenderdarstellung anpassen.'
         ],
     ],
 ];

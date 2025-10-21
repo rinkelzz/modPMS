@@ -385,8 +385,8 @@ body {
 }
 
 .room-calendar-cell.occupied {
-    background-color: #1d4ed8;
-    color: #fff;
+    background-color: #f1f5f9;
+    color: #111827;
 }
 
 .room-calendar-cell.overbooking {
@@ -409,7 +409,7 @@ body {
 }
 
 .room-calendar-cell.occupied.today {
-    background-color: #1e3a8a;
+    background-color: #e0f2fe;
 }
 
 .room-calendar-cell .occupancy-entry {
@@ -421,21 +421,21 @@ body {
     display: block;
     border-radius: 0.5rem;
     padding: 0.25rem 0.5rem;
-    background-color: rgba(255, 255, 255, 0.12);
-    color: inherit;
+    background-color: rgba(37, 99, 235, 0.12);
+    color: #0f172a;
     cursor: pointer;
-    transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+    transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out, box-shadow 0.2s ease-in-out, filter 0.2s ease-in-out;
     outline: none;
 }
 
 .room-calendar-cell.free .occupancy-entry-action {
-    background-color: rgba(37, 99, 235, 0.1);
+    background-color: rgba(37, 99, 235, 0.08);
 }
 
 .room-calendar-cell .occupancy-entry-action:hover,
 .room-calendar-cell .occupancy-entry-action:focus {
-    background-color: rgba(255, 255, 255, 0.28);
-    color: inherit;
+    background-color: rgba(37, 99, 235, 0.2);
+    color: #0f172a;
     box-shadow: 0 0 0 0.15rem rgba(37, 99, 235, 0.25);
 }
 
@@ -450,6 +450,19 @@ body {
 
 .room-calendar-cell .occupancy-entry + .occupancy-entry {
     margin-top: 0.25rem;
+}
+
+.room-calendar-cell .occupancy-entry.status-colored,
+.room-calendar-cell .occupancy-entry-action.status-colored {
+    background-color: var(--occupancy-bg, #1d4ed8);
+    color: var(--occupancy-color, #ffffff);
+}
+
+.room-calendar-cell .occupancy-entry-action.status-colored:hover,
+.room-calendar-cell .occupancy-entry-action.status-colored:focus {
+    filter: brightness(0.92);
+    color: var(--occupancy-color, #ffffff);
+    box-shadow: 0 0 0 0.15rem rgba(15, 23, 42, 0.2);
 }
 
 .calendar-toolbar .calendar-controls .form-control[type="date"] {
@@ -522,4 +535,21 @@ body {
 
 .typeahead .typeahead-empty {
     cursor: default;
+}
+
+.status-color-preview {
+    border-radius: 0.75rem;
+    border: 1px solid #e2e8f0;
+    min-height: 3rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    transition: box-shadow 0.2s ease-in-out;
+}
+
+.status-color-preview .status-color-preview-label {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }

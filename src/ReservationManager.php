@@ -31,32 +31,6 @@ class ReservationManager
         }
 
         try {
-            $statusColumn = $this->pdo->query("SHOW COLUMNS FROM reservations LIKE 'status'");
-            $expectedEnum = "ENUM('geplant','eingecheckt','abgereist','bezahlt','noshow','storniert')";
-            $needsUpdate = true;
-
-            if ($statusColumn !== false) {
-                $definition = $statusColumn->fetch(PDO::FETCH_ASSOC);
-                if (is_array($definition) && isset($definition['Type'])) {
-                    $type = strtolower((string) $definition['Type']);
-                    $needsUpdate = false;
-                    foreach (['geplant', 'eingecheckt', 'abgereist', 'bezahlt', 'noshow', 'storniert'] as $value) {
-                        if (strpos($type, "'" . $value . "'") === false) {
-                            $needsUpdate = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if ($needsUpdate) {
-                $this->pdo->exec("ALTER TABLE reservations MODIFY status $expectedEnum NOT NULL DEFAULT 'geplant'");
-            }
-        } catch (PDOException $exception) {
-            // ignore enum adjustment issues
-        }
-
-        try {
             $column = $this->pdo->query("SHOW COLUMNS FROM reservations LIKE 'category_id'");
             if ($column === false || $column->fetch() === false) {
                 $this->pdo->exec('ALTER TABLE reservations ADD COLUMN category_id INT UNSIGNED NULL AFTER room_id');

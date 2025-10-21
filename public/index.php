@@ -5,6 +5,7 @@ use ModPMS\CompanyManager;
 use ModPMS\Database;
 use ModPMS\GuestManager;
 use ModPMS\ReservationManager;
+use ModPMS\SettingManager;
 use ModPMS\RoomCategoryManager;
 use ModPMS\RoomManager;
 use ModPMS\SystemUpdater;
@@ -19,6 +20,7 @@ require_once __DIR__ . '/../src/SystemUpdater.php';
 require_once __DIR__ . '/../src/UserManager.php';
 require_once __DIR__ . '/../src/GuestManager.php';
 require_once __DIR__ . '/../src/ReservationManager.php';
+require_once __DIR__ . '/../src/SettingManager.php';
 
 session_start();
 
@@ -30,22 +32,13 @@ if (!isset($_SESSION['user_id'])) {
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
 
-/**
- * @return string
- */
-$generateToken = static function (): string {
-    try {
-        return bin2hex(random_bytes(32));
-    } catch (Throwable $exception) {
-        return bin2hex(hash('sha256', uniqid('', true), true));
-    }
-};
+try {
+    $updateToken = bin2hex(random_bytes(32));
+} catch (Throwable $exception) {
+    $updateToken = bin2hex(hash('sha256', uniqid('', true), true));
+}
 
-$updateToken = $generateToken();
 $_SESSION['update_token'] = $updateToken;
-
-$reservationStatusToken = $generateToken();
-$_SESSION['reservation_status_token'] = $reservationStatusToken;
 
 $alert = null;
 if (isset($_SESSION['alert'])) {
@@ -145,6 +138,7 @@ $navItems = [
     'rooms' => 'Zimmer',
     'guests' => 'Gäste',
     'users' => 'Benutzer',
+    'settings' => 'Einstellungen',
     'updates' => 'Updates',
 ];
 
@@ -220,15 +214,62 @@ $reservationCategoryOptionsHtml = '<option value="">Bitte auswählen</option>';
 $reservationRoomOptionsHtml = '<option value="">Kein konkretes Zimmer – Überbuchung</option>';
 $buildRoomSelectOptions = null;
 $reservationSearchTerm = isset($_GET['reservation_search']) ? trim((string) $_GET['reservation_search']) : '';
+$settingsManager = null;
+$settingsAvailable = false;
 $reservationStatuses = ['geplant', 'eingecheckt', 'abgereist', 'bezahlt', 'noshow', 'storniert'];
-$reservationStatusMeta = [
-    'geplant' => ['label' => 'Geplant', 'badge' => 'text-bg-primary'],
-    'eingecheckt' => ['label' => 'Angereist', 'badge' => 'text-bg-success'],
-    'abgereist' => ['label' => 'Abgereist', 'badge' => 'text-bg-secondary'],
-    'bezahlt' => ['label' => 'Bezahlt', 'badge' => 'text-bg-info'],
-    'noshow' => ['label' => 'No-Show', 'badge' => 'text-bg-warning text-dark'],
-    'storniert' => ['label' => 'Storniert', 'badge' => 'text-bg-danger'],
+
+$normalizeHexColor = static function (?string $value): ?string {
+    if ($value === null) {
+        return null;
+    }
+
+    $value = trim((string) $value);
+    if ($value === '') {
+        return null;
+    }
+
+    if ($value[0] !== '#') {
+        $value = '#' . $value;
+    }
+
+    if (preg_match('/^#([0-9a-fA-F]{3})$/', $value, $match) === 1) {
+        $hex = strtoupper($match[1]);
+        return sprintf('#%s%s%s', $hex[0] . $hex[0], $hex[1] . $hex[1], $hex[2] . $hex[2]);
+    }
+
+    if (preg_match('/^#([0-9a-fA-F]{6})$/', $value, $match) === 1) {
+        return '#' . strtoupper($match[1]);
+    }
+
+    return null;
+};
+
+$calculateContrastColor = static function (string $hex): string {
+    $hex = ltrim($hex, '#');
+    if (strlen($hex) === 3) {
+        $hex = sprintf('%s%s%s', $hex[0] . $hex[0], $hex[1] . $hex[1], $hex[2] . $hex[2]);
+    }
+
+    $r = hexdec(substr($hex, 0, 2));
+    $g = hexdec(substr($hex, 2, 2));
+    $b = hexdec(substr($hex, 4, 2));
+
+    $luminance = (0.299 * $r + 0.587 * $g + 0.114 * $b) / 255;
+
+    return $luminance > 0.6 ? '#111827' : '#ffffff';
+};
+
+$defaultReservationStatusColors = [
+    'geplant' => '#2563EB',
+    'eingecheckt' => '#16A34A',
+    'abgereist' => '#6B7280',
+    'bezahlt' => '#0EA5E9',
+    'noshow' => '#F59E0B',
+    'storniert' => '#DC2626',
 ];
+
+$reservationStatusColors = $defaultReservationStatusColors;
+$reservationStatusFormColors = $reservationStatusColors;
 $reservationUserLookup = [];
 $reservationGuestTooltip = '';
 $reservationCompanyTooltip = '';
@@ -290,9 +331,70 @@ try {
     $companyManager = new CompanyManager($pdo);
     $userManager = new UserManager($pdo);
     $reservationManager = new ReservationManager($pdo);
+    $settingsManager = new SettingManager($pdo);
 } catch (Throwable $exception) {
     $dbError = $exception->getMessage();
 }
+
+$settingsAvailable = $settingsManager instanceof SettingManager && $pdo !== null;
+
+if ($settingsAvailable) {
+    $keys = array_map(static fn (string $status): string => 'reservation_status_color_' . $status, $reservationStatuses);
+    $storedColors = $settingsManager->getMany($keys);
+
+    foreach ($reservationStatuses as $statusKey) {
+        $colorKey = 'reservation_status_color_' . $statusKey;
+        if (!isset($storedColors[$colorKey])) {
+            continue;
+        }
+
+        $normalized = $normalizeHexColor($storedColors[$colorKey]);
+        if ($normalized !== null) {
+            $reservationStatusColors[$statusKey] = $normalized;
+        }
+    }
+
+    $reservationStatusFormColors = $reservationStatusColors;
+}
+
+$reservationStatusMeta = [
+    'geplant' => [
+        'label' => 'Geplant',
+        'badge' => 'text-bg-primary',
+        'color' => $reservationStatusColors['geplant'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['geplant']),
+    ],
+    'eingecheckt' => [
+        'label' => 'Angereist',
+        'badge' => 'text-bg-success',
+        'color' => $reservationStatusColors['eingecheckt'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['eingecheckt']),
+    ],
+    'abgereist' => [
+        'label' => 'Abgereist',
+        'badge' => 'text-bg-secondary',
+        'color' => $reservationStatusColors['abgereist'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['abgereist']),
+    ],
+    'bezahlt' => [
+        'label' => 'Bezahlt',
+        'badge' => 'text-bg-info',
+        'color' => $reservationStatusColors['bezahlt'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['bezahlt']),
+    ],
+    'noshow' => [
+        'label' => 'No-Show',
+        'badge' => 'text-bg-warning text-dark',
+        'color' => $reservationStatusColors['noshow'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['noshow']),
+    ],
+    'storniert' => [
+        'label' => 'Storniert',
+        'badge' => 'text-bg-danger',
+        'color' => $reservationStatusColors['storniert'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['storniert']),
+    ],
+];
 
 $categoryStatuses = ['aktiv', 'inaktiv'];
 $roomStatuses = ['frei', 'belegt', 'wartung'];
@@ -494,6 +596,65 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
     $form = $_POST['form'];
 
     switch ($form) {
+        case 'settings_status_colors':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Einstellungen konnte nicht hergestellt werden.',
+                ];
+                break;
+            }
+
+            $colorInputs = isset($_POST['status_colors']) && is_array($_POST['status_colors']) ? $_POST['status_colors'] : [];
+            foreach ($reservationStatuses as $statusKey) {
+                if (isset($colorInputs[$statusKey])) {
+                    $reservationStatusFormColors[$statusKey] = (string) $colorInputs[$statusKey];
+                }
+            }
+            $invalidStatuses = [];
+            $normalizedColors = [];
+
+            foreach ($reservationStatuses as $statusKey) {
+                $label = $reservationStatusMeta[$statusKey]['label'] ?? ucfirst($statusKey);
+                $inputValue = $colorInputs[$statusKey] ?? ($reservationStatusColors[$statusKey] ?? '');
+                $normalized = $normalizeHexColor($inputValue);
+
+                if ($normalized === null) {
+                    $invalidStatuses[] = $label;
+                    continue;
+                }
+
+                $normalizedColors[$statusKey] = $normalized;
+            }
+
+            if ($invalidStatuses !== []) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie gültige Hex-Farbwerte (z. B. #2563EB) für folgende Status ein: ' . implode(', ', $invalidStatuses),
+                ];
+                break;
+            }
+
+            foreach ($normalizedColors as $statusKey => $colorValue) {
+                $settingsManager->set('reservation_status_color_' . $statusKey, $colorValue);
+                $reservationStatusColors[$statusKey] = $colorValue;
+                $reservationStatusFormColors[$statusKey] = $colorValue;
+                if (isset($reservationStatusMeta[$statusKey])) {
+                    $reservationStatusMeta[$statusKey]['color'] = $colorValue;
+                    $reservationStatusMeta[$statusKey]['textColor'] = $calculateContrastColor($colorValue);
+                }
+            }
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Statusfarben wurden gespeichert.',
+            ];
+
+            header('Location: index.php?section=settings');
+            exit;
+
         case 'category_create':
         case 'category_update':
             $activeSection = 'categories';
@@ -1512,20 +1673,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 exit;
             }
 
-            $statusToken = isset($_POST['status_token']) ? (string) $_POST['status_token'] : '';
-            $sessionStatusToken = isset($_SESSION['reservation_status_token']) ? (string) $_SESSION['reservation_status_token'] : '';
-
-            if ($statusToken === '' || $sessionStatusToken === '' || !hash_equals($sessionStatusToken, $statusToken)) {
-                $_SESSION['alert'] = [
-                    'type' => 'danger',
-                    'message' => 'Die Statusänderung konnte nicht verifiziert werden.',
-                ];
-                header('Location: index.php?' . http_build_query($redirectParams));
-                exit;
-            }
-
-            unset($_SESSION['reservation_status_token']);
-
             $reservationId = (int) ($_POST['id'] ?? 0);
             $statusInput = isset($_POST['status']) ? (string) $_POST['status'] : '';
 
@@ -1958,6 +2105,8 @@ if ($pdo !== null) {
             'status' => $reservationStatus,
             'statusLabel' => $statusMeta['label'],
             'statusBadgeClass' => $statusMeta['badge'],
+            'statusColor' => $statusMeta['color'] ?? null,
+            'statusTextColor' => $statusMeta['textColor'] ?? null,
             'notes' => isset($reservation['notes']) && $reservation['notes'] !== null ? (string) $reservation['notes'] : '',
             'arrivalDate' => $arrivalDate instanceof DateTimeImmutable ? $arrivalDate->format('Y-m-d') : null,
             'arrivalDateFormatted' => $arrivalDate instanceof DateTimeImmutable ? $arrivalDate->format('d.m.Y') : null,
@@ -2786,13 +2935,30 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                         if ($occupantData !== null) {
                                             $occupantDataAttr = htmlspecialchars(json_encode($occupantData, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE));
                                         }
+
+                                        $occupantClasses = ['occupancy-entry'];
+                                        if ($occupantData !== null) {
+                                            $occupantClasses[] = 'occupancy-entry-action';
+                                        }
+
+                                        $styleAttr = '';
+                                        if ($occupantData !== null && !empty($occupantData['statusColor'])) {
+                                            $statusColor = (string) $occupantData['statusColor'];
+                                            $statusTextColor = !empty($occupantData['statusTextColor'])
+                                                ? (string) $occupantData['statusTextColor']
+                                                : $calculateContrastColor($statusColor);
+                                            $styleAttr = sprintf(' style="--occupancy-bg:%s;--occupancy-color:%s;"', htmlspecialchars($statusColor, ENT_QUOTES, 'UTF-8'), htmlspecialchars($statusTextColor, ENT_QUOTES, 'UTF-8'));
+                                            $occupantClasses[] = 'status-colored';
+                                        }
+
+                                        $classAttr = htmlspecialchars(implode(' ', $occupantClasses));
+                                        $actionAttributes = $occupantAttributes;
+                                        if ($occupantData !== null) {
+                                            $actionAttributes = sprintf(' role="button" tabindex="0" data-reservation=\'%s\'%s', $occupantDataAttr, $occupantAttributes);
+                                        }
                                       ?>
-                                      <?php if ($occupantData !== null): ?>
-                                        <div class="occupancy-entry occupancy-entry-action" role="button" tabindex="0" data-reservation='<?= $occupantDataAttr ?>'<?= $occupantAttributes ?>><?= htmlspecialchars($occupantLabel) ?></div>
-                                      <?php else: ?>
-                                        <div class="occupancy-entry"<?= $occupantAttributes ?>><?= htmlspecialchars($occupantLabel) ?></div>
-                                      <?php endif; ?>
-                                    <?php endforeach; ?>
+                                      <div class="<?= $classAttr ?>"<?= $actionAttributes ?><?= $styleAttr ?>><?= htmlspecialchars($occupantLabel) ?></div>
+                                  <?php endforeach; ?>
                                   <?php else: ?>
                                     <?php if ($roomStatus === 'wartung'): ?>
                                       <span class="badge text-bg-warning">Wartung</span>
@@ -2871,8 +3037,18 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                     }
 
                                     $entryDataAttr = htmlspecialchars(json_encode($entry, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE));
+                                    $entryClasses = ['occupancy-entry', 'occupancy-entry-action'];
+                                    $entryStyleAttr = '';
+                                    if (!empty($entry['statusColor'])) {
+                                        $entryStatusColor = (string) $entry['statusColor'];
+                                        $entryStatusTextColor = !empty($entry['statusTextColor']) ? (string) $entry['statusTextColor'] : $calculateContrastColor($entryStatusColor);
+                                        $entryStyleAttr = sprintf(' style="--occupancy-bg:%s;--occupancy-color:%s;"', htmlspecialchars($entryStatusColor, ENT_QUOTES, 'UTF-8'), htmlspecialchars($entryStatusTextColor, ENT_QUOTES, 'UTF-8'));
+                                        $entryClasses[] = 'status-colored';
+                                    }
+                                    $entryClassAttr = htmlspecialchars(implode(' ', $entryClasses));
+                                    $entryActionAttributes = sprintf(' role="button" tabindex="0" data-reservation=\'%s\'%s', $entryDataAttr, $entryAttributes);
                                   ?>
-                                  <div class="occupancy-entry occupancy-entry-action" role="button" tabindex="0" data-reservation='<?= $entryDataAttr ?>'<?= $entryAttributes ?>><?= htmlspecialchars($entryLabel) ?></div>
+                                  <div class="<?= $entryClassAttr ?>"<?= $entryActionAttributes ?><?= $entryStyleAttr ?>><?= htmlspecialchars($entryLabel) ?></div>
                                 <?php endforeach; ?>
                                 <?php if ($overbookingEntries === []): ?>
                                   <?php foreach ($overbookingLabels as $entryLabel): ?>
@@ -3398,6 +3574,77 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       </tbody>
                     </table>
                   </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php endif; ?>
+
+      <?php if ($activeSection === 'settings'): ?>
+      <section id="settings" class="app-section active">
+        <div class="row g-4">
+          <div class="col-12 col-xxl-8">
+            <div class="card module-card" id="status-color-settings">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <div>
+                  <h2 class="h5 mb-1">Einstellungen</h2>
+                  <p class="text-muted mb-0">Farbcodes für Reservierungsstatus im Kalender festlegen.</p>
+                </div>
+                <span class="badge text-bg-secondary">Darstellung</span>
+              </div>
+              <div class="card-body">
+                <?php if (!$settingsAvailable): ?>
+                  <p class="text-muted mb-0">Die Farbverwaltung steht erst nach einer erfolgreichen Datenbankverbindung zur Verfügung.</p>
+                <?php else: ?>
+                  <form method="post" class="row g-4 align-items-stretch">
+                    <input type="hidden" name="form" value="settings_status_colors">
+                    <?php foreach ($reservationStatuses as $statusKey): ?>
+                      <?php
+                        $statusLabel = $reservationStatusMeta[$statusKey]['label'] ?? ucfirst($statusKey);
+                        $formColorValue = $reservationStatusFormColors[$statusKey] ?? ($reservationStatusColors[$statusKey] ?? '');
+                        $normalizedColor = $normalizeHexColor($formColorValue);
+                        if ($normalizedColor === null) {
+                            $normalizedColor = $reservationStatusColors[$statusKey] ?? '#2563EB';
+                        }
+                        $previewColor = $normalizedColor;
+                        $previewTextColor = $calculateContrastColor($previewColor);
+                      ?>
+                      <div class="col-12 col-md-6" data-status-color>
+                        <label class="form-label" for="status-color-value-<?= htmlspecialchars($statusKey) ?>"><?= htmlspecialchars($statusLabel) ?></label>
+                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                          <input
+                            type="color"
+                            class="form-control form-control-color"
+                            id="status-color-picker-<?= htmlspecialchars($statusKey) ?>"
+                            value="<?= htmlspecialchars($normalizedColor) ?>"
+                            data-status-color-picker
+                            oninput="var target=document.getElementById('status-color-value-<?= htmlspecialchars($statusKey) ?>'); if (target) { target.value = this.value; target.dispatchEvent(new Event('input')); }"
+                            aria-label="Farbe für <?= htmlspecialchars($statusLabel) ?>"
+                          >
+                          <input
+                            type="text"
+                            class="form-control flex-grow-1"
+                            id="status-color-value-<?= htmlspecialchars($statusKey) ?>"
+                            name="status_colors[<?= htmlspecialchars($statusKey) ?>]"
+                            value="<?= htmlspecialchars((string) $formColorValue) ?>"
+                            placeholder="#<?= htmlspecialchars(substr($normalizedColor, 1)) ?>"
+                            pattern="#?[0-9A-Fa-f]{3,6}"
+                            required
+                            data-status-color-input
+                          >
+                        </div>
+                        <div class="status-color-preview mt-3" data-status-color-preview style="background-color: <?= htmlspecialchars($previewColor) ?>; color: <?= htmlspecialchars($previewTextColor) ?>;">
+                          <span class="status-color-preview-label"><?= htmlspecialchars($statusLabel) ?></span>
+                        </div>
+                        <p class="form-text mb-0">Akzeptiert werden Hex-Werte mit oder ohne führendes #.</p>
+                      </div>
+                    <?php endforeach; ?>
+                    <div class="col-12 d-flex justify-content-end gap-2">
+                      <button type="submit" class="btn btn-primary">Farben speichern</button>
+                    </div>
+                  </form>
                 <?php endif; ?>
               </div>
             </div>
@@ -4247,7 +4494,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           <div class="modal-footer flex-wrap gap-2">
             <form method="post" id="reservation-status-form" class="d-flex flex-wrap gap-2 align-items-center">
               <input type="hidden" name="form" value="reservation_status_update">
-              <input type="hidden" name="status_token" value="<?= htmlspecialchars($reservationStatusToken, ENT_QUOTES, 'UTF-8') ?>">
               <input type="hidden" name="id" id="reservation-status-id">
               <input type="hidden" name="status" id="reservation-status-value">
               <input type="hidden" name="redirect_section" value="<?= htmlspecialchars($activeSection) ?>">
@@ -4370,6 +4616,109 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           updateRemoveButtons();
         }
 
+        function setupStatusColorPickers() {
+          var containers = document.querySelectorAll('[data-status-color]');
+
+          if (!containers.length) {
+            return;
+          }
+
+          function normalise(value) {
+            if (typeof value !== 'string') {
+              return '';
+            }
+
+            var trimmed = value.trim();
+            if (!trimmed) {
+              return '';
+            }
+
+            if (trimmed.charAt(0) !== '#') {
+              trimmed = '#' + trimmed;
+            }
+
+            var match = trimmed.match(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+            if (!match) {
+              return '';
+            }
+
+            if (match[1].length === 3) {
+              return '#' + match[1].split('').map(function (char) { return char + char; }).join('').toUpperCase();
+            }
+
+            return '#' + match[1].toUpperCase();
+          }
+
+          function computeContrast(hex) {
+            var value = hex || '';
+            if (value.charAt(0) === '#') {
+              value = value.slice(1);
+            }
+
+            if (value.length === 3) {
+              value = value.split('').map(function (char) { return char + char; }).join('');
+            }
+
+            if (value.length !== 6) {
+              return '#ffffff';
+            }
+
+            var r = parseInt(value.slice(0, 2), 16);
+            var g = parseInt(value.slice(2, 4), 16);
+            var b = parseInt(value.slice(4, 6), 16);
+
+            if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+              return '#ffffff';
+            }
+
+            var luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+            return luminance > 0.6 ? '#111827' : '#ffffff';
+          }
+
+          containers.forEach(function (container) {
+            var input = container.querySelector('[data-status-color-input]');
+            var picker = container.querySelector('[data-status-color-picker]');
+            var preview = container.querySelector('[data-status-color-preview]');
+
+            function updatePreview(value) {
+              if (!preview) {
+                return;
+              }
+
+              var normalised = normalise(value);
+              if (!normalised) {
+                preview.style.removeProperty('background-color');
+                preview.style.removeProperty('color');
+                return;
+              }
+
+              preview.style.backgroundColor = normalised;
+              preview.style.color = computeContrast(normalised);
+            }
+
+            if (input) {
+              input.addEventListener('input', function () {
+                updatePreview(input.value);
+                if (picker) {
+                  var normalised = normalise(input.value);
+                  if (normalised) {
+                    picker.value = normalised;
+                  }
+                }
+              });
+
+              updatePreview(input.value);
+            }
+
+            if (picker && input) {
+              picker.addEventListener('change', function () {
+                input.value = picker.value;
+                input.dispatchEvent(new Event('input'));
+              });
+            }
+          });
+        }
+
         function setupReservationDetailModal() {
           var modalElement = document.getElementById('reservationDetailModal');
           var modalLibrary = window.bootstrap || (typeof bootstrap !== 'undefined' ? bootstrap : null);
@@ -4429,6 +4778,8 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             if (detailElements.statusBadge) {
               detailElements.statusBadge.className = 'badge d-none';
               detailElements.statusBadge.textContent = '';
+              detailElements.statusBadge.style.removeProperty('background-color');
+              detailElements.statusBadge.style.removeProperty('color');
             }
             if (detailElements.subtitle) {
               detailElements.subtitle.textContent = '';
@@ -4556,6 +4907,13 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               var badgeClass = 'badge ' + (data.statusBadgeClass || 'text-bg-secondary');
               detailElements.statusBadge.className = badgeClass;
               detailElements.statusBadge.textContent = data.statusLabel;
+              if (data.statusColor) {
+                detailElements.statusBadge.style.backgroundColor = data.statusColor;
+                detailElements.statusBadge.style.color = data.statusTextColor || '#ffffff';
+              } else {
+                detailElements.statusBadge.style.removeProperty('background-color');
+                detailElements.statusBadge.style.removeProperty('color');
+              }
             }
 
             if (detailElements.guest) {
@@ -5014,6 +5372,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
         });
 
         setupReservationCategoryRepeater();
+        setupStatusColorPickers();
         setupReservationDetailModal();
       })();
     </script>
