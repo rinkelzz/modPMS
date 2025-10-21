@@ -1,5 +1,6 @@
 <?php
 
+use ModPMS\BackupManager;
 use ModPMS\Calendar;
 use ModPMS\CompanyManager;
 use ModPMS\Database;
@@ -14,6 +15,7 @@ use ModPMS\UserManager;
 require_once __DIR__ . '/../src/Database.php';
 require_once __DIR__ . '/../src/CompanyManager.php';
 require_once __DIR__ . '/../src/RoomCategoryManager.php';
+require_once __DIR__ . '/../src/BackupManager.php';
 require_once __DIR__ . '/../src/Calendar.php';
 require_once __DIR__ . '/../src/RoomManager.php';
 require_once __DIR__ . '/../src/SystemUpdater.php';
@@ -31,8 +33,6 @@ if (!isset($_SESSION['user_id'])) {
 
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
-$currentUserRole = $_SESSION['user_role'] ?? 'mitarbeiter';
-$currentUserIsAdmin = $currentUserRole === 'admin';
 
 try {
     $updateToken = bin2hex(random_bytes(32));
@@ -213,6 +213,7 @@ $guestManager = null;
 $companyManager = null;
 $userManager = null;
 $reservationManager = null;
+$backupManager = null;
 $reservationCategoryOptionsHtml = '<option value="">Bitte auswählen</option>';
 $reservationRoomOptionsHtml = '<option value="">Kein konkretes Zimmer – Überbuchung</option>';
 $buildRoomSelectOptions = null;
@@ -361,6 +362,7 @@ try {
     $userManager = new UserManager($pdo);
     $reservationManager = new ReservationManager($pdo);
     $settingsManager = new SettingManager($pdo);
+    $backupManager = new BackupManager($pdo);
 } catch (Throwable $exception) {
     $dbError = $exception->getMessage();
 }
@@ -713,6 +715,120 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             header('Location: index.php?section=settings');
             exit;
+
+        case 'settings_backup_export':
+            $activeSection = 'settings';
+
+            if ($pdo === null || !$backupManager instanceof BackupManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Keine Datenbankverbindung vorhanden. Export nicht möglich.',
+                ];
+                break;
+            }
+
+            try {
+                $exportPayload = $backupManager->export();
+                $json = json_encode($exportPayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+                $filename = sprintf('modpms-backup-%s.json', date('Ymd-His'));
+
+                header('Content-Type: application/json; charset=utf-8');
+                header('Content-Disposition: attachment; filename="' . $filename . '"');
+                header('Content-Length: ' . strlen($json));
+                echo $json;
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Export fehlgeschlagen: ' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'settings_backup_import':
+            $activeSection = 'settings';
+
+            if ($pdo === null || !$backupManager instanceof BackupManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Keine Datenbankverbindung vorhanden. Import nicht möglich.',
+                ];
+                break;
+            }
+
+            if (!isset($_FILES['backup_file']) || !is_array($_FILES['backup_file'])) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Keine Sicherungsdatei hochgeladen.',
+                ];
+                break;
+            }
+
+            $fileInfo = $_FILES['backup_file'];
+
+            if (($fileInfo['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Sicherungsdatei konnte nicht hochgeladen werden (Fehlercode ' . (int) ($fileInfo['error'] ?? 0) . ').',
+                ];
+                break;
+            }
+
+            $tmpPath = $fileInfo['tmp_name'] ?? '';
+
+            if (!is_string($tmpPath) || $tmpPath === '' || !is_readable($tmpPath)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die hochgeladene Datei ist nicht lesbar.',
+                ];
+                break;
+            }
+
+            $fileSize = filesize($tmpPath);
+            if ($fileSize !== false && $fileSize > 5 * 1024 * 1024) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Sicherungsdatei überschreitet die maximale Größe von 5 MB.',
+                ];
+                break;
+            }
+
+            try {
+                $contents = file_get_contents($tmpPath);
+                if ($contents === false) {
+                    throw new RuntimeException('Die Sicherungsdatei konnte nicht gelesen werden.');
+                }
+
+                $payload = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
+                $importCounts = $backupManager->restore($payload);
+
+                if ($categoryManager instanceof RoomCategoryManager && method_exists($categoryManager, 'refreshSchema')) {
+                    $categoryManager->refreshSchema();
+                }
+
+                if ($guestManager instanceof GuestManager && method_exists($guestManager, 'refreshSchema')) {
+                    $guestManager->refreshSchema();
+                }
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Sicherung wurde eingespielt. Importierte Datensätze – Kategorien: ' . (int) ($importCounts['room_categories'] ?? 0)
+                        . ', Zimmer: ' . (int) ($importCounts['rooms'] ?? 0)
+                        . ', Firmen: ' . (int) ($importCounts['companies'] ?? 0)
+                        . ', Gäste: ' . (int) ($importCounts['guests'] ?? 0) . '.',
+                ];
+
+                header('Location: index.php?section=settings#database-backups');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Import fehlgeschlagen: ' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
 
         case 'category_move':
             $activeSection = 'categories';
@@ -1800,10 +1916,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
-            if (!$currentUserIsAdmin) {
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
+                    'message' => 'Nur Administratoren können Benutzerkonten verwalten.',
                 ];
                 break;
             }
@@ -1935,10 +2051,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
-            if (!$currentUserIsAdmin) {
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
+                    'message' => 'Nur Administratoren können Benutzerkonten löschen.',
                 ];
                 break;
             }
@@ -3840,6 +3956,43 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
             </div>
             <?php endif; ?>
+            <div class="card module-card mt-4" id="database-backups">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <div>
+                  <h2 class="h5 mb-1">Datenbank sichern &amp; wiederherstellen</h2>
+                  <p class="text-muted mb-0">Exportiert bzw. importiert Kategorien, Zimmer, Firmen und Gäste als JSON-Datei.</p>
+                </div>
+                <span class="badge text-bg-secondary">Backup</span>
+              </div>
+              <div class="card-body">
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mb-0">Für Sicherungen wird eine aktive Datenbankverbindung benötigt.</p>
+                <?php else: ?>
+                  <div class="row g-4">
+                    <div class="col-12 col-xl-6">
+                      <h3 class="h6">Sicherung erstellen</h3>
+                      <p class="small text-muted">Lädt eine JSON-Datei herunter, die Sie bei Bedarf wieder einspielen können.</p>
+                      <form method="post">
+                        <input type="hidden" name="form" value="settings_backup_export">
+                        <button type="submit" class="btn btn-outline-secondary">Backup herunterladen</button>
+                      </form>
+                    </div>
+                    <div class="col-12 col-xl-6">
+                      <h3 class="h6">Sicherung wiederherstellen</h3>
+                      <p class="small text-muted">Bestehende Datensätze werden durch die Inhalte der Sicherung ersetzt.</p>
+                      <form method="post" enctype="multipart/form-data" onsubmit="return confirm('Aktuelle Daten werden überschrieben. Fortfahren?');">
+                        <input type="hidden" name="form" value="settings_backup_import">
+                        <div class="mb-3">
+                          <label for="backup-file" class="form-label">JSON-Datei auswählen</label>
+                          <input type="file" class="form-control" id="backup-file" name="backup_file" accept="application/json,.json" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Backup importieren</button>
+                      </form>
+                    </div>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
           </div>
         </div>
       </section>
