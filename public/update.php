@@ -14,8 +14,8 @@ if (!isset($_SESSION['user_id'])) {
     exit;
 }
 
-$userRole = $_SESSION['user_role'] ?? 'mitarbeiter';
-if ($userRole !== 'admin') {
+$currentUserRole = $_SESSION['user_role'] ?? null;
+if ($currentUserRole !== 'admin') {
     http_response_code(403);
     echo 'Nicht autorisiert';
     exit;

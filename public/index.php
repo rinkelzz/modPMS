@@ -31,7 +31,6 @@ if (!isset($_SESSION['user_id'])) {
 
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
-$currentUserRole = $_SESSION['user_role'] ?? 'mitarbeiter';
 
 try {
     $updateToken = bin2hex(random_bytes(32));
@@ -1760,22 +1759,41 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
-            if ($currentUserRole !== 'admin') {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen, um Benutzer zu verwalten.',
-                ];
-                break;
-            }
+            $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
+            $currentUserRole = $_SESSION['user_role'] ?? null;
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
             $role = in_array($roleInput, $userRoles, true) ? $roleInput : 'mitarbeiter';
             $password = (string) ($_POST['password'] ?? '');
             $passwordConfirm = (string) ($_POST['password_confirm'] ?? '');
+            $targetUserId = $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null;
+
+            if ($currentUserRole !== 'admin') {
+                if ($form === 'user_create') {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Sie haben keine Berechtigung, neue Benutzer anzulegen.',
+                    ];
+                    break;
+                }
+
+                if ($form === 'user_update') {
+                    if ($targetUserId === null || $targetUserId !== $currentUserId) {
+                        $alert = [
+                            'type' => 'danger',
+                            'message' => 'Sie können nur Ihr eigenes Konto bearbeiten.',
+                        ];
+                        break;
+                    }
+
+                    // Non-admin users cannot elevate or change their role.
+                    $role = $currentUserRole ?? 'mitarbeiter';
+                }
+            }
 
             $userFormData = [
-                'id' => $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'id' => $targetUserId,
                 'name' => $name,
                 'email' => $email,
                 'role' => $role,
@@ -1822,7 +1840,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             $existingUser = $userManager->findByEmail($email);
-            $targetUserId = $form === 'user_update' ? (int) ($_POST['id'] ?? 0) : null;
 
             if ($existingUser !== null && ($targetUserId === null || (int) $existingUser['id'] !== $targetUserId)) {
                 $alert = [
@@ -1895,14 +1912,16 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
+            $userId = (int) ($_POST['id'] ?? 0);
+            $currentUserRole = $_SESSION['user_role'] ?? null;
+
             if ($currentUserRole !== 'admin') {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen, um Benutzer zu verwalten.',
+                    'message' => 'Sie haben keine Berechtigung, Benutzer zu löschen.',
                 ];
                 break;
             }
-            $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
                 $alert = [
@@ -3641,27 +3660,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                 <?php endif; ?>
               </div>
             </div>
-            <?php if ($settingsAvailable): ?>
-            <div class="card module-card mt-4" id="database-maintenance">
-              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
-                <div>
-                  <h2 class="h5 mb-1">Datenbank aktualisieren</h2>
-                  <p class="text-muted mb-0">Führt neue Tabellen und Spalten für Module automatisch nach.</p>
-                </div>
-                <span class="badge text-bg-info">Wartung</span>
-              </div>
-              <div class="card-body">
-                <form method="post" class="d-flex flex-column flex-md-row gap-3 align-items-start align-items-md-center">
-                  <input type="hidden" name="form" value="settings_schema_refresh">
-                  <div class="text-muted small flex-grow-1">
-                    <p class="mb-1">Aktualisiert Reservierungs- und Einstellungstabellen sowie neue Felder aus aktuellen Releases.</p>
-                    <p class="mb-0">Verwenden Sie diese Funktion nach einem Update, falls neue Spalten fehlen.</p>
-                  </div>
-                  <button type="submit" class="btn btn-outline-primary">Tabellen aktualisieren</button>
-                </form>
-              </div>
-            </div>
-            <?php endif; ?>
           </div>
         </div>
       </section>
@@ -3733,6 +3731,27 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                 <?php endif; ?>
               </div>
             </div>
+            <?php if ($settingsAvailable): ?>
+            <div class="card module-card mt-4" id="database-maintenance">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <div>
+                  <h2 class="h5 mb-1">Datenbank aktualisieren</h2>
+                  <p class="text-muted mb-0">Führt neue Tabellen und Spalten für Module automatisch nach.</p>
+                </div>
+                <span class="badge text-bg-info">Wartung</span>
+              </div>
+              <div class="card-body">
+                <form method="post" class="d-flex flex-column flex-md-row gap-3 align-items-start align-items-md-center">
+                  <input type="hidden" name="form" value="settings_schema_refresh">
+                  <div class="text-muted small flex-grow-1">
+                    <p class="mb-1">Aktualisiert Reservierungs- und Einstellungstabellen sowie neue Felder aus aktuellen Releases.</p>
+                    <p class="mb-0">Verwenden Sie diese Funktion nach einem Update, falls neue Spalten fehlen.</p>
+                  </div>
+                  <button type="submit" class="btn btn-outline-primary">Tabellen aktualisieren</button>
+                </form>
+              </div>
+            </div>
+            <?php endif; ?>
           </div>
         </div>
       </section>
