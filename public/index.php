@@ -215,6 +215,7 @@ $reservationRoomOptionsHtml = '<option value="">Kein konkretes Zimmer – Überb
 $buildRoomSelectOptions = null;
 $reservationSearchTerm = isset($_GET['reservation_search']) ? trim((string) $_GET['reservation_search']) : '';
 $settingsManager = null;
+$settingsAvailable = false;
 $reservationStatuses = ['geplant', 'eingecheckt', 'abgereist', 'bezahlt', 'noshow', 'storniert'];
 
 $normalizeHexColor = static function (?string $value): ?string {
@@ -268,65 +269,7 @@ $defaultReservationStatusColors = [
 ];
 
 $reservationStatusColors = $defaultReservationStatusColors;
-
-if ($settingsManager !== null) {
-    $keys = array_map(static fn (string $status): string => 'reservation_status_color_' . $status, $reservationStatuses);
-    $storedColors = $settingsManager->getMany($keys);
-
-    foreach ($reservationStatuses as $statusKey) {
-        $colorKey = 'reservation_status_color_' . $statusKey;
-        if (!isset($storedColors[$colorKey])) {
-            continue;
-        }
-
-        $normalized = $normalizeHexColor($storedColors[$colorKey]);
-        if ($normalized !== null) {
-            $reservationStatusColors[$statusKey] = $normalized;
-        }
-    }
-}
-
 $reservationStatusFormColors = $reservationStatusColors;
-$settingsAvailable = $settingsManager instanceof SettingManager && $pdo !== null;
-
-$reservationStatusMeta = [
-    'geplant' => [
-        'label' => 'Geplant',
-        'badge' => 'text-bg-primary',
-        'color' => $reservationStatusColors['geplant'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['geplant']),
-    ],
-    'eingecheckt' => [
-        'label' => 'Angereist',
-        'badge' => 'text-bg-success',
-        'color' => $reservationStatusColors['eingecheckt'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['eingecheckt']),
-    ],
-    'abgereist' => [
-        'label' => 'Abgereist',
-        'badge' => 'text-bg-secondary',
-        'color' => $reservationStatusColors['abgereist'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['abgereist']),
-    ],
-    'bezahlt' => [
-        'label' => 'Bezahlt',
-        'badge' => 'text-bg-info',
-        'color' => $reservationStatusColors['bezahlt'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['bezahlt']),
-    ],
-    'noshow' => [
-        'label' => 'No-Show',
-        'badge' => 'text-bg-warning text-dark',
-        'color' => $reservationStatusColors['noshow'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['noshow']),
-    ],
-    'storniert' => [
-        'label' => 'Storniert',
-        'badge' => 'text-bg-danger',
-        'color' => $reservationStatusColors['storniert'],
-        'textColor' => $calculateContrastColor($reservationStatusColors['storniert']),
-    ],
-];
 $reservationUserLookup = [];
 $reservationGuestTooltip = '';
 $reservationCompanyTooltip = '';
@@ -392,6 +335,66 @@ try {
 } catch (Throwable $exception) {
     $dbError = $exception->getMessage();
 }
+
+$settingsAvailable = $settingsManager instanceof SettingManager && $pdo !== null;
+
+if ($settingsAvailable) {
+    $keys = array_map(static fn (string $status): string => 'reservation_status_color_' . $status, $reservationStatuses);
+    $storedColors = $settingsManager->getMany($keys);
+
+    foreach ($reservationStatuses as $statusKey) {
+        $colorKey = 'reservation_status_color_' . $statusKey;
+        if (!isset($storedColors[$colorKey])) {
+            continue;
+        }
+
+        $normalized = $normalizeHexColor($storedColors[$colorKey]);
+        if ($normalized !== null) {
+            $reservationStatusColors[$statusKey] = $normalized;
+        }
+    }
+
+    $reservationStatusFormColors = $reservationStatusColors;
+}
+
+$reservationStatusMeta = [
+    'geplant' => [
+        'label' => 'Geplant',
+        'badge' => 'text-bg-primary',
+        'color' => $reservationStatusColors['geplant'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['geplant']),
+    ],
+    'eingecheckt' => [
+        'label' => 'Angereist',
+        'badge' => 'text-bg-success',
+        'color' => $reservationStatusColors['eingecheckt'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['eingecheckt']),
+    ],
+    'abgereist' => [
+        'label' => 'Abgereist',
+        'badge' => 'text-bg-secondary',
+        'color' => $reservationStatusColors['abgereist'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['abgereist']),
+    ],
+    'bezahlt' => [
+        'label' => 'Bezahlt',
+        'badge' => 'text-bg-info',
+        'color' => $reservationStatusColors['bezahlt'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['bezahlt']),
+    ],
+    'noshow' => [
+        'label' => 'No-Show',
+        'badge' => 'text-bg-warning text-dark',
+        'color' => $reservationStatusColors['noshow'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['noshow']),
+    ],
+    'storniert' => [
+        'label' => 'Storniert',
+        'badge' => 'text-bg-danger',
+        'color' => $reservationStatusColors['storniert'],
+        'textColor' => $calculateContrastColor($reservationStatusColors['storniert']),
+    ],
+];
 
 $categoryStatuses = ['aktiv', 'inaktiv'];
 $roomStatuses = ['frei', 'belegt', 'wartung'];
