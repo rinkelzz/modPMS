@@ -368,6 +368,25 @@ $calculateContrastColor = static function (string $hex): string {
     return $luminance > 0.6 ? '#111827' : '#ffffff';
 };
 
+$hexToRgba = static function (?string $hex, float $alpha) use ($normalizeHexColor): ?string {
+    $normalized = $normalizeHexColor($hex);
+    if ($normalized === null) {
+        return null;
+    }
+
+    $alpha = max(0.0, min(1.0, $alpha));
+    $hexValue = ltrim($normalized, '#');
+    if (strlen($hexValue) !== 6) {
+        return null;
+    }
+
+    $r = hexdec(substr($hexValue, 0, 2));
+    $g = hexdec(substr($hexValue, 2, 2));
+    $b = hexdec(substr($hexValue, 4, 2));
+
+    return sprintf('rgba(%d, %d, %d, %.2f)', $r, $g, $b, $alpha);
+};
+
 $defaultReservationStatusColors = [
     'geplant' => '#2563EB',
     'eingecheckt' => '#16A34A',
@@ -2894,6 +2913,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
+
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen für diese Aktion.',
+                ];
+                break;
+            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -3022,6 +3049,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
+
+            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Sie verfügen nicht über die erforderlichen Berechtigungen für diese Aktion.',
+                ];
+                break;
+            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
@@ -5487,13 +5522,17 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               $dayNumber = $dateObj instanceof DateTimeImmutable ? (int) $dateObj->format('j') : ($dayIndex + 1);
                               $priceLabel = number_format((float) ($day['price'] ?? 0), 2, ',', '');
                               $cellClasses = ['rate-calendar-cell'];
-                              $cellStyle = '';
+                              $cellStyleParts = [];
                               $tooltipParts = [];
                               if (($day['source'] ?? '') === 'event') {
                                   $cellClasses[] = 'rate-calendar-cell-event';
-                                  $eventColor = $day['event_color'] ?? null;
-                                  if (is_string($eventColor) && $eventColor !== '') {
-                                      $cellStyle = ' style="--event-color: ' . htmlspecialchars($eventColor) . '"';
+                                  $eventColorHex = $normalizeHexColor($day['event_color'] ?? null);
+                                  if ($eventColorHex !== null) {
+                                      $cellStyleParts[] = '--event-color-hex: ' . htmlspecialchars($eventColorHex);
+                                      $eventOverlay = $hexToRgba($eventColorHex, 0.3);
+                                      if ($eventOverlay !== null) {
+                                          $cellStyleParts[] = '--event-color-overlay: ' . htmlspecialchars($eventOverlay);
+                                      }
                                   }
                                   $eventLabel = (string) ($day['event_label'] ?? 'Messe');
                                   if ($eventLabel !== '') {
@@ -5514,13 +5553,11 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                   $tooltipParts[] = 'Preisübersicht';
                               }
                               $tooltip = implode(' • ', $tooltipParts);
+                              $cellStyle = $cellStyleParts === [] ? '' : ' style="' . implode('; ', $cellStyleParts) . '"';
                             ?>
                             <div class="<?= htmlspecialchars(implode(' ', $cellClasses)) ?>"<?= $cellStyle ?> title="<?= htmlspecialchars($tooltip) ?>">
                               <div class="rate-calendar-day"><?= $dayNumber ?></div>
                               <div class="rate-calendar-price">€ <?= htmlspecialchars($priceLabel) ?></div>
-                              <?php if (($day['source'] ?? '') === 'event' && !empty($day['event_label'])): ?>
-                                <div class="rate-calendar-event-name"><?= htmlspecialchars((string) $day['event_label']) ?></div>
-                              <?php endif; ?>
                             </div>
                           <?php endforeach; ?>
                         </div>

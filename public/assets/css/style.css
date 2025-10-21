@@ -616,19 +616,9 @@ body {
 }
 
 .rate-calendar-cell-event {
-    position: relative;
-    border-color: rgba(190, 24, 93, 0.45);
+    border-color: var(--event-color-hex, rgba(190, 24, 93, 0.45));
+    background: var(--event-color-overlay, rgba(190, 24, 93, 0.2));
     color: #0f172a;
-}
-
-.rate-calendar-cell-event::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: 0.65rem;
-    background: var(--event-color, rgba(190, 24, 93, 0.45));
-    opacity: 0.18;
-    pointer-events: none;
 }
 
 .rate-calendar-cell-empty {
@@ -647,14 +637,6 @@ body {
 .rate-calendar-price {
     font-size: 0.85rem;
     color: #334155;
-}
-
-.rate-calendar-event-name {
-    margin-top: 0.25rem;
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: #0f172a;
-    text-align: center;
 }
 
 .rate-event-color {
