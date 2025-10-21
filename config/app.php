@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.7.1',
+    'version' => '1.7.2',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',
@@ -38,7 +38,7 @@ return [
         ],
         'settings' => [
             'title' => 'Einstellungen',
-            'description' => 'Statusfarben anpassen, Sicherungen erstellen und Datenbanken aktualisieren.'
+            'description' => 'Statusfarben anpassen, Cache leeren, Sicherungen erstellen und Datenbanken aktualisieren.'
         ],
     ],
 ];

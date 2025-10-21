@@ -2,7 +2,7 @@
 
 Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP und MySQL. Dieses Repository enthält das Basis-Modul mit Dashboard, Kalender, Zimmerkategorien und integriertem Update-Workflow.
 
-## Features Basis-Modul (Version 1.7.1)
+## Features Basis-Modul (Version 1.7.2)
 
 - **Dashboard** mit gleitendem 8-Tage-Zimmerkalender (Zimmer auf Y-Achse, Tage auf X-Achse) inklusive aufgeräumter Kategorien-/Zimmerleiste in voller Inhaltsbreite, kategorieweiser Übersichtszeile (Belegung/Frei/Überbuchungen je Tag), eigener Zimmer- und Überbuchungsdarstellung pro Kategorie, flexibler Datums-Navigation (−2 Tage bis +5 Tage) sowie Umschaltmöglichkeit zwischen Firmen- oder Gästenamen in der Belegungsanzeige – Belegungen erscheinen mit frei konfigurierbaren Statusfarben hervorgehoben und zeigen die gebuchte Personenanzahl direkt in Klammern.
 - **Reservierungsdetails im Kalender** per Klick auf belegte Zellen inkl. Popup mit vollständigen Angaben (Gast, Firma, Zeitraum, Notizen) und Schnellaktionen zum Markieren als *Angereist*, *Abgereist*, *Bezahlt* oder *No-Show* – wahlweise auch für Überbuchungen ohne Zimmer.
@@ -12,7 +12,7 @@ Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP un
 - **Ratenmodul** zum Anlegen, Bearbeiten und Löschen von Tarifen pro Kategorie inklusive Zeitraumanpassungen mit optionalen Wochentagsfiltern sowie einer Jahreskalender-Ansicht der Preise – inklusive stabiler Basis-Kategoriezuweisung für neu angelegte Tarife.
 - **Gästeverwaltung** inklusive aller für den Meldeschein benötigten Stammdaten, Firmen- und Zimmerzuordnung sowie Vollständigkeitsprüfung.
 - **Firmenverwaltung** mit eigenem Formular, Kontakt- & Adressdaten sowie Löschschutz bei zugeordneten Gästen.
-- **Einstellungen** für die Kalenderdarstellung und Wartung: Hex-Farbwerte pro Reservierungsstatus verwalten (inkl. direkter Anwendung im Dashboard), Datenbanktabellen per Knopfdruck aktualisieren sowie vollständige JSON-Sicherungen für Kategorien, Zimmer, Firmen und Gäste exportieren bzw. wiederherstellen.
+- **Einstellungen** für die Kalenderdarstellung und Wartung: Hex-Farbwerte pro Reservierungsstatus verwalten (inkl. direkter Anwendung im Dashboard), Browser-Cache auf Knopfdruck leeren, Datenbanktabellen aktualisieren sowie vollständige JSON-Sicherungen für Kategorien, Zimmer, Firmen und Gäste exportieren bzw. wiederherstellen.
 - **Systemupdates** direkt aus der Weboberfläche anstoßen – inklusive Git-Prüfungen, ZIP-Fallback und aussagekräftigen Fehlermeldungen.
 - **Benutzerverwaltung** mit Rollen (Administrator/Mitarbeiter), Passwort-Reset und Login-Tracking.
 - **Anmeldung & Logout** über `login.php` inkl. Session-Schutz des Dashboards.

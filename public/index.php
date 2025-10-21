@@ -36,13 +36,25 @@ if (!isset($_SESSION['user_id'])) {
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
 
-try {
-    $updateToken = bin2hex(random_bytes(32));
-} catch (Throwable $exception) {
-    $updateToken = bin2hex(hash('sha256', uniqid('', true), true));
+/**
+ * @return string
+ */
+$generateToken = static function (): string {
+    try {
+        return bin2hex(random_bytes(32));
+    } catch (Throwable $exception) {
+        return bin2hex(hash('sha256', uniqid('', true), true));
+    }
+};
+
+$updateToken = $generateToken();
+$_SESSION['update_token'] = $updateToken;
+
+if (!isset($_SESSION['cache_clear_token']) || !is_string($_SESSION['cache_clear_token']) || $_SESSION['cache_clear_token'] === '') {
+    $_SESSION['cache_clear_token'] = $generateToken();
 }
 
-$_SESSION['update_token'] = $updateToken;
+$cacheClearToken = (string) $_SESSION['cache_clear_token'];
 
 $alert = null;
 if (isset($_SESSION['alert'])) {
@@ -662,6 +674,36 @@ if ($pdo !== null && isset($_GET['ajax'])) {
     }
 
     echo json_encode(['items' => []]);
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form']) && $_POST['form'] === 'settings_clear_cache') {
+    $activeSection = 'settings';
+
+    $postedToken = isset($_POST['token']) ? (string) $_POST['token'] : '';
+    $sessionToken = isset($_SESSION['cache_clear_token']) && is_string($_SESSION['cache_clear_token']) ? $_SESSION['cache_clear_token'] : '';
+
+    if ($postedToken === '' || $sessionToken === '' || !hash_equals($sessionToken, $postedToken)) {
+        $_SESSION['cache_clear_token'] = $generateToken();
+        $_SESSION['alert'] = [
+            'type' => 'danger',
+            'message' => 'Die Anfrage konnte nicht verifiziert werden. Bitte versuchen Sie es erneut.',
+        ];
+
+        header('Location: index.php?section=settings#cache-tools');
+        exit;
+    }
+
+    $_SESSION['cache_clear_token'] = $generateToken();
+
+    header('Clear-Site-Data: "cache"');
+
+    $_SESSION['alert'] = [
+        'type' => 'success',
+        'message' => 'Browser-Cache wurde geleert. Bitte laden Sie die Seite neu, falls Inhalte noch zwischengespeichert erscheinen.',
+    ];
+
+    header('Location: index.php?section=settings#cache-tools');
     exit;
 }
 
@@ -5299,6 +5341,26 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                     </div>
                   </form>
                 <?php endif; ?>
+              </div>
+            </div>
+            <div class="card module-card mt-4" id="cache-tools">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <div>
+                  <h2 class="h5 mb-1">Browser-Cache leeren</h2>
+                  <p class="text-muted mb-0">Löscht zwischengespeicherte Dateien für diese Anwendung im aktuellen Browser.</p>
+                </div>
+                <span class="badge text-bg-warning">Browser</span>
+              </div>
+              <div class="card-body">
+                <form method="post" class="d-flex flex-column flex-md-row gap-3 align-items-start align-items-md-center">
+                  <input type="hidden" name="form" value="settings_clear_cache">
+                  <input type="hidden" name="token" value="<?= htmlspecialchars($cacheClearToken, ENT_QUOTES, 'UTF-8') ?>">
+                  <div class="text-muted small flex-grow-1">
+                    <p class="mb-1">Unterstützte Browser entfernen ihren Cache für diese Seite unmittelbar nach dem Ausführen.</p>
+                    <p class="mb-0">Bei älteren Browsern kann ggf. ein manuelles Leeren des Cache erforderlich bleiben.</p>
+                  </div>
+                  <button type="submit" class="btn btn-outline-warning">Browser-Cache leeren</button>
+                </form>
               </div>
             </div>
             <?php if ($settingsAvailable): ?>
