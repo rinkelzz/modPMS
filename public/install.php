@@ -99,6 +99,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     description TEXT NULL,
                     capacity INT UNSIGNED NOT NULL DEFAULT 1,
                     status ENUM("aktiv", "inaktiv") NOT NULL DEFAULT "aktiv",
+                    sort_order INT UNSIGNED NOT NULL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
@@ -241,9 +242,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $seedCategory = $pdo->query('SELECT COUNT(*) AS total FROM room_categories')->fetchColumn();
                 if ((int) $seedCategory === 0) {
-                    $stmt = $pdo->prepare('INSERT INTO room_categories (name, description, capacity, status) VALUES (?, ?, ?, ?)');
-                    $stmt->execute(['Standardzimmer', 'Komfortable Zimmer mit Queen-Size-Bett', 2, 'aktiv']);
-                    $stmt->execute(['Deluxe Suite', 'Großzügige Suite mit Wohnbereich', 4, 'aktiv']);
+                    $stmt = $pdo->prepare('INSERT INTO room_categories (name, description, capacity, status, sort_order) VALUES (?, ?, ?, ?, ?)');
+                    $stmt->execute(['Standardzimmer', 'Komfortable Zimmer mit Queen-Size-Bett', 2, 'aktiv', 1]);
+                    $stmt->execute(['Deluxe Suite', 'Großzügige Suite mit Wohnbereich', 4, 'aktiv', 2]);
                 }
 
                 $seedRooms = $pdo->query('SELECT COUNT(*) AS total FROM rooms')->fetchColumn();
@@ -265,7 +266,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 if ($sampleCategoryId === null) {
-                    $existingCategoryId = $pdo->query('SELECT id FROM room_categories ORDER BY id ASC LIMIT 1')->fetchColumn();
+                    $existingCategoryId = $pdo->query('SELECT id FROM room_categories ORDER BY sort_order ASC, id ASC LIMIT 1')->fetchColumn();
                     if ($existingCategoryId !== false) {
                         $sampleCategoryId = (int) $existingCategoryId;
                     }

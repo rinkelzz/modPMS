@@ -31,6 +31,8 @@ if (!isset($_SESSION['user_id'])) {
 
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
+$currentUserRole = $_SESSION['user_role'] ?? 'mitarbeiter';
+$currentUserIsAdmin = $currentUserRole === 'admin';
 
 try {
     $updateToken = bin2hex(random_bytes(32));
@@ -58,6 +60,7 @@ $categoryFormData = [
     'description' => '',
     'capacity' => 1,
     'status' => 'aktiv',
+    'sort_order' => '',
 ];
 
 $roomFormData = [
@@ -622,6 +625,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $updatedComponents[] = 'Reservierungen';
                 }
 
+                if ($categoryManager instanceof RoomCategoryManager) {
+                    if (method_exists($categoryManager, 'refreshSchema')) {
+                        $categoryManager->refreshSchema();
+                    }
+                    $updatedComponents[] = 'Kategorien';
+                }
+
                 if ($guestManager instanceof GuestManager) {
                     if (method_exists($guestManager, 'refreshSchema')) {
                         $guestManager->refreshSchema();
@@ -702,6 +712,37 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             ];
 
             header('Location: index.php?section=settings');
+            exit;
+
+        case 'category_move':
+            $activeSection = 'categories';
+
+            $categoryId = (int) ($_POST['id'] ?? 0);
+            $direction = isset($_POST['direction']) ? (string) $_POST['direction'] : '';
+
+            if ($categoryId <= 0 || !in_array($direction, ['up', 'down'], true)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Kategorie konnte nicht verschoben werden. Bitte versuchen Sie es erneut.',
+                ];
+                break;
+            }
+
+            if ($categoryManager->find($categoryId) === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Kategorie wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $moved = $categoryManager->move($categoryId, $direction);
+            $_SESSION['alert'] = [
+                'type' => $moved ? 'success' : 'info',
+                'message' => $moved ? 'Kategorieposition wurde aktualisiert.' : 'Die Kategorie befindet sich bereits an dieser Position.',
+            ];
+
+            header('Location: index.php?section=categories#category-management');
             exit;
 
         case 'category_create':
@@ -1759,15 +1800,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
-
-            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+            if (!$currentUserIsAdmin) {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Sie sind nicht berechtigt, Benutzer zu verwalten.',
+                    'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
                 ];
                 break;
             }
-
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -1896,10 +1935,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
-            if (($_SESSION['user_role'] ?? null) !== 'admin') {
+            if (!$currentUserIsAdmin) {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Sie sind nicht berechtigt, Benutzer zu verwalten.',
+                    'message' => 'Sie haben keine Berechtigung, Benutzer zu verwalten.',
                 ];
                 break;
             }
@@ -2536,6 +2575,7 @@ if ($pdo !== null && isset($_GET['editCategory']) && $categoryFormData['id'] ===
             'description' => $categoryToEdit['description'] ?? '',
             'capacity' => (int) $categoryToEdit['capacity'],
             'status' => $categoryToEdit['status'],
+            'sort_order' => isset($categoryToEdit['sort_order']) ? (int) $categoryToEdit['sort_order'] : '',
         ];
     } elseif ($alert === null) {
         $alert = [
@@ -3639,12 +3679,22 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                         <tr>
                           <th scope="col">Bezeichnung</th>
                           <th scope="col">Kapazität</th>
+                          <th scope="col" class="text-center">Reihenfolge</th>
                           <th scope="col">Status</th>
                           <th scope="col" class="text-end">Aktionen</th>
                         </tr>
                       </thead>
                       <tbody>
-                        <?php foreach ($categories as $category): ?>
+                        <?php $categoryCount = count($categories); ?>
+                        <?php foreach ($categories as $index => $category): ?>
+                          <?php
+                            $positionBadge = isset($category['sort_order']) ? (int) $category['sort_order'] : ($index + 1);
+                            if ($positionBadge <= 0) {
+                                $positionBadge = $index + 1;
+                            }
+                            $isFirstCategory = $index === 0;
+                            $isLastCategory = $index === $categoryCount - 1;
+                          ?>
                           <tr>
                             <td>
                               <div class="fw-semibold"><?= htmlspecialchars($category['name']) ?></div>
@@ -3653,6 +3703,25 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <?php endif; ?>
                             </td>
                             <td><?= (int) $category['capacity'] ?> Gäste</td>
+                            <td class="text-center">
+                              <div class="d-flex justify-content-center align-items-center gap-2 flex-wrap">
+                                <span class="badge text-bg-light" title="Sortierposition">#<?= $positionBadge ?></span>
+                                <form method="post" class="d-inline-flex" action="index.php?section=categories#category-management">
+                                  <input type="hidden" name="form" value="category_move">
+                                  <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
+                                  <div class="btn-group btn-group-sm" role="group" aria-label="Reihenfolge anpassen">
+                                    <button type="submit" class="btn btn-outline-secondary" name="direction" value="up" <?= $isFirstCategory || $pdo === null ? 'disabled' : '' ?>>
+                                      <span aria-hidden="true">↑</span>
+                                      <span class="visually-hidden">Nach oben verschieben</span>
+                                    </button>
+                                    <button type="submit" class="btn btn-outline-secondary" name="direction" value="down" <?= $isLastCategory || $pdo === null ? 'disabled' : '' ?>>
+                                      <span aria-hidden="true">↓</span>
+                                      <span class="visually-hidden">Nach unten verschieben</span>
+                                    </button>
+                                  </div>
+                                </form>
+                              </div>
+                            </td>
                             <td>
                               <span class="badge <?= $category['status'] === 'aktiv' ? 'text-bg-success' : 'text-bg-secondary' ?>"><?= htmlspecialchars(ucfirst($category['status'])) ?></span>
                             </td>
@@ -3670,7 +3739,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                         <?php endforeach; ?>
                         <?php if (empty($categories)): ?>
                           <tr>
-                            <td colspan="4" class="text-center text-muted py-3">Noch keine Kategorien erfasst.</td>
+                            <td colspan="5" class="text-center text-muted py-3">Noch keine Kategorien erfasst.</td>
                           </tr>
                         <?php endif; ?>
                       </tbody>
