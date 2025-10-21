@@ -1,0 +1,16 @@
+[
+    {
+        "id": 1,
+        "name": "Standard Doppelzimmer",
+        "description": "Gemütliches Doppelzimmer mit Queensize-Bett.",
+        "capacity": 2,
+        "status": "aktiv"
+    },
+    {
+        "id": 2,
+        "name": "Deluxe Suite",
+        "description": "Großzügige Suite mit Wohnzimmer und Balkon.",
+        "capacity": 4,
+        "status": "aktiv"
+    }
+]
