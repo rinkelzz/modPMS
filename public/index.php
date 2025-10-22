@@ -28,6 +28,27 @@ require_once __DIR__ . '/../src/RateManager.php';
 
 session_start();
 
+function generateSecureToken(int $bytes = 32): string
+{
+    try {
+        return bin2hex(random_bytes($bytes));
+    } catch (Throwable $exception) {
+        return bin2hex(hash('sha256', uniqid('', true), true));
+    }
+}
+
+function buildCsrfFieldHtml(string $token): string
+{
+    return '<input type="hidden" name="csrf_token" value="' . htmlspecialchars($token, ENT_QUOTES, 'UTF-8') . '">';
+}
+
+if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = generateSecureToken();
+}
+
+$csrfToken = $_SESSION['csrf_token'];
+$csrfFieldHtml = buildCsrfFieldHtml($csrfToken);
+
 if (!isset($_SESSION['user_id'])) {
     header('Location: login.php');
     exit;
@@ -36,48 +57,7 @@ if (!isset($_SESSION['user_id'])) {
 $currentUserId = (int) ($_SESSION['user_id'] ?? 0);
 $currentUserName = $_SESSION['user_name'] ?? ($_SESSION['user_email'] ?? '');
 
-try {
-    $adminCsrfToken = $_SESSION['admin_csrf_token'] ?? '';
-    if (!is_string($adminCsrfToken) || $adminCsrfToken === '') {
-        $adminCsrfToken = bin2hex(random_bytes(32));
-    }
-} catch (Throwable $exception) {
-    $adminCsrfToken = bin2hex(hash('sha256', uniqid('', true), true));
-}
-
-$_SESSION['admin_csrf_token'] = $adminCsrfToken;
-
-$renderAdminCsrfInput = static function () use ($adminCsrfToken): string {
-    return '<input type="hidden" name="csrf_token" value="' . htmlspecialchars($adminCsrfToken, ENT_QUOTES, 'UTF-8') . '">';
-};
-
-$enforceAdminCsrf = static function () use ($adminCsrfToken): void {
-    $submittedToken = $_POST['csrf_token'] ?? '';
-    if (!is_string($submittedToken) || $submittedToken === '' || !hash_equals($adminCsrfToken, $submittedToken)) {
-        http_response_code(303);
-        $_SESSION['alert'] = [
-            'type' => 'danger',
-            'message' => 'Ungültige Anfrage. Bitte versuchen Sie es erneut.',
-        ];
-        $redirectTarget = 'index.php';
-        if (!empty($_SERVER['QUERY_STRING'])) {
-            $queryString = str_replace(["\r", "\n"], '', (string) $_SERVER['QUERY_STRING']);
-            if ($queryString !== '') {
-                $redirectTarget .= '?' . $queryString;
-            }
-        }
-
-        header('Location: ' . $redirectTarget);
-        exit;
-    }
-};
-
-try {
-    $updateToken = bin2hex(random_bytes(32));
-} catch (Throwable $exception) {
-    $updateToken = bin2hex(hash('sha256', uniqid('', true), true));
-}
-
+$updateToken = generateSecureToken();
 $_SESSION['update_token'] = $updateToken;
 
 $alert = null;
@@ -158,6 +138,7 @@ $reservationFormData = [
         ],
     ],
 ];
+$reservationFormDefaults = $reservationFormData;
 $reservationFormMode = 'create';
 $isEditingReservation = false;
 
@@ -228,6 +209,37 @@ $rateCalendarData = [
 $rateCalendarPrevUrl = 'index.php?section=rates';
 $rateCalendarNextUrl = 'index.php?section=rates';
 $rateCalendarResetUrl = 'index.php?section=rates';
+
+$isPostWithForm = $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form']);
+
+if ($isPostWithForm) {
+    $submittedToken = $_POST['csrf_token'] ?? '';
+    $sessionToken = $_SESSION['csrf_token'] ?? '';
+
+    $tokenIsValid = is_string($submittedToken)
+        && is_string($sessionToken)
+        && $submittedToken !== ''
+        && $sessionToken !== ''
+        && hash_equals($sessionToken, $submittedToken);
+
+    if (!$tokenIsValid) {
+        $csrfToken = generateSecureToken();
+        $_SESSION['csrf_token'] = $csrfToken;
+        $csrfFieldHtml = buildCsrfFieldHtml($csrfToken);
+
+        $_SESSION['alert'] = [
+            'type' => 'danger',
+            'message' => 'Ungültiger Formularschutz. Bitte versuchen Sie es erneut.',
+        ];
+
+        header('Location: index.php');
+        exit;
+    }
+
+    $csrfToken = generateSecureToken();
+    $_SESSION['csrf_token'] = $csrfToken;
+    $csrfFieldHtml = buildCsrfFieldHtml($csrfToken);
+}
 
 $companyFormData = [
     'id' => null,
@@ -343,6 +355,7 @@ $reservationCategoryOptionsHtml = '<option value="">Bitte auswählen</option>';
 $buildRoomSelectOptions = null;
 $buildRateSelectOptions = null;
 $reservationSearchTerm = isset($_GET['reservation_search']) ? trim((string) $_GET['reservation_search']) : '';
+$openReservationModalRequested = isset($_GET['openReservationModal']) && $_GET['openReservationModal'] === '1';
 $settingsManager = null;
 $reservationStatuses = ['geplant', 'eingecheckt', 'abgereist', 'bezahlt', 'noshow', 'storniert'];
 $reservationStatusBaseMeta = [
@@ -1131,11 +1144,7 @@ if ($pdo !== null && isset($_GET['ajax'])) {
     exit;
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_GET['ajax'])) {
-    $enforceAdminCsrf();
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form']) && $_POST['form'] === 'settings_clear_cache') {
+if ($isPostWithForm && $_POST['form'] === 'settings_clear_cache') {
     $activeSection = 'settings';
 
     header('Clear-Site-Data: "cache"');
@@ -1149,7 +1158,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form']) && $_POST['fo
     exit;
 }
 
-if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form'])) {
+if ($pdo !== null && $isPostWithForm) {
     $form = $_POST['form'];
 
     switch ($form) {
@@ -4747,6 +4756,25 @@ if ($pdo !== null && isset($_GET['editUser']) && $userFormData['id'] === null) {
 
 $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], $config['repository']['url']);
 
+$shouldOpenReservationModal = false;
+if ($activeSection === 'reservations') {
+    if ($isEditingReservation) {
+        $shouldOpenReservationModal = true;
+    } elseif ($openReservationModalRequested && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+        $reservationFormData = $reservationFormDefaults;
+        $reservationFormMode = 'create';
+        $isEditingReservation = false;
+        $shouldOpenReservationModal = true;
+    } elseif (
+        $_SERVER['REQUEST_METHOD'] === 'POST'
+        && isset($_POST['form'])
+        && in_array($_POST['form'], ['reservation_create', 'reservation_update'], true)
+        && $alert !== null
+    ) {
+        $shouldOpenReservationModal = true;
+    }
+}
+
 ?>
 <!doctype html>
 <html lang="de">
@@ -4785,7 +4813,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                 <span class="visually-hidden">Schnellauswahl öffnen</span>
               </button>
               <ul class="dropdown-menu dropdown-menu-end quick-action-menu" aria-labelledby="quickActionMenu">
-                <li><a class="dropdown-item" href="index.php?section=reservations#reservation-form">Neue Reservierung</a></li>
+                <li><a class="dropdown-item" href="index.php?section=reservations&amp;openReservationModal=1">Neue Reservierung</a></li>
                 <li><a class="dropdown-item" href="index.php?section=guests#guest-meldeschein">Meldeschein vorbereiten</a></li>
                 <li><a class="dropdown-item" href="index.php?section=guests#guest-form">Neuen Gast anlegen</a></li>
               </ul>
@@ -5233,302 +5261,18 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
       </section>
       <?php elseif ($activeSection === 'reservations'): ?>
       <section id="reservations" class="app-section active">
-        <?php $isReservationEditing = $isEditingReservation; ?>
         <div class="row g-4">
-          <div class="col-12 col-xl-5">
-            <div class="card module-card" id="reservation-form">
-              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
-                <div>
-                  <h2 class="h5 mb-1">Reservierung <?= $isReservationEditing ? 'bearbeiten' : 'anlegen' ?></h2>
-                  <p class="text-muted mb-0">Aufenthalte mit Zimmer, Zeitraum und Status pflegen.</p>
-                </div>
-                <?php if ($isReservationEditing): ?>
-                  <span class="badge text-bg-primary">Bearbeitung</span>
-                <?php endif; ?>
-              </div>
-              <div class="card-body">
-                <form method="post" class="row g-3">
-                  <?= $renderAdminCsrfInput() ?>
-                  <input type="hidden" name="form" value="<?= $isReservationEditing ? 'reservation_update' : 'reservation_create' ?>">
-                  <?php if ($isReservationEditing): ?>
-                    <input type="hidden" name="id" value="<?= (int) $reservationFormData['id'] ?>">
-                  <?php endif; ?>
-                  <?php if (!empty($reservationFormData['reservation_number'])): ?>
-                    <div class="col-12">
-                      <label class="form-label">Reservierungsnummer</label>
-                      <input type="text" class="form-control" value="<?= htmlspecialchars((string) $reservationFormData['reservation_number']) ?>" readonly>
-                      <div class="form-text">Die Nummer wird automatisch vergeben und bleibt unverändert.</div>
-                    </div>
-                  <?php endif; ?>
-                  <div class="col-12">
-                    <label for="reservation-guest-query" class="form-label">Gast *</label>
-                    <div class="typeahead position-relative" data-typeahead="guest" data-endpoint="index.php?ajax=guest_search">
-                      <input type="hidden" name="guest_id" id="reservation-guest-id" value="<?= htmlspecialchars((string) $reservationFormData['guest_id']) ?>">
-                      <input
-                        type="search"
-                        class="form-control typeahead-input"
-                        id="reservation-guest-query"
-                        name="guest_query"
-                        placeholder="z. B. Mustermann oder Musterfirma"
-                        value="<?= htmlspecialchars((string) $reservationFormData['guest_query']) ?>"
-                        autocomplete="off"
-                        data-minlength="2"
-                        <?= $pdo === null ? 'disabled' : 'required' ?>
-                        <?= $reservationGuestTooltip !== '' ? 'title="' . htmlspecialchars($reservationGuestTooltip) . '"' : '' ?>
-                      >
-                      <div class="typeahead-dropdown list-group shadow-sm" role="listbox" aria-label="Gastvorschläge"></div>
-                    </div>
-                    <div class="form-text">Neuer Gast? Über das Plus-Menü in der Navigation anlegen.</div>
-                  </div>
-                  <div class="col-12">
-                    <label for="reservation-company-query" class="form-label">Firma</label>
-                    <div class="typeahead position-relative" data-typeahead="company" data-endpoint="index.php?ajax=company_search">
-                      <input type="hidden" name="company_id" id="reservation-company-id" value="<?= htmlspecialchars((string) $reservationFormData['company_id']) ?>">
-                      <input
-                        type="search"
-                        class="form-control typeahead-input"
-                        id="reservation-company-query"
-                        name="company_query"
-                        placeholder="Optional: Firmenname suchen"
-                        value="<?= htmlspecialchars((string) $reservationFormData['company_query']) ?>"
-                        autocomplete="off"
-                        data-minlength="2"
-                        <?= $pdo === null ? 'disabled' : '' ?>
-                        <?= $reservationCompanyTooltip !== '' ? 'title="' . htmlspecialchars($reservationCompanyTooltip) . '"' : '' ?>
-                      >
-                      <div class="typeahead-dropdown list-group shadow-sm" role="listbox" aria-label="Firmenvorschläge"></div>
-                    </div>
-                    <div class="form-text">Optional: Firma zuordnen.</div>
-                  </div>
-                  <?php $categoryItemCount = count($reservationFormData['category_items']); ?>
-                  <div class="col-12">
-                    <label class="form-label">Kategorie &amp; Zimmer *</label>
-                    <div id="reservation-category-list" class="reservation-category-list" data-next-index="<?= $categoryItemCount ?>">
-                      <?php foreach ($reservationFormData['category_items'] as $categoryIndex => $categoryItem): ?>
-                        <?php
-                          $selectedCategoryId = isset($categoryItem['category_id']) && $categoryItem['category_id'] !== ''
-                              ? (int) $categoryItem['category_id']
-                              : 0;
-                          $quantityValue = isset($categoryItem['room_quantity']) && $categoryItem['room_quantity'] !== ''
-                              ? (string) $categoryItem['room_quantity']
-                              : '1';
-                          $selectedRoomId = isset($categoryItem['room_id']) && $categoryItem['room_id'] !== ''
-                              ? (int) $categoryItem['room_id']
-                              : null;
-                          $roomArrivalValue = isset($categoryItem['arrival_date']) && $categoryItem['arrival_date'] !== ''
-                              ? (string) $categoryItem['arrival_date']
-                              : (string) $reservationFormData['arrival_date'];
-                          $roomDepartureValue = isset($categoryItem['departure_date']) && $categoryItem['departure_date'] !== ''
-                              ? (string) $categoryItem['departure_date']
-                              : (string) $reservationFormData['departure_date'];
-                          $roomPricePerNightValue = isset($categoryItem['price_per_night']) ? (string) $categoryItem['price_per_night'] : '';
-                          $roomTotalPriceValue = isset($categoryItem['total_price']) ? (string) $categoryItem['total_price'] : '';
-                          $selectedRateIdForItem = isset($categoryItem['rate_id']) && $categoryItem['rate_id'] !== ''
-                              ? (int) $categoryItem['rate_id']
-                              : 0;
-                          $itemRateOptionsHtml = $buildRateSelectOptions !== null
-                              ? $buildRateSelectOptions($selectedRateIdForItem)
-                              : $reservationRateOptionsHtml;
-                          $selectedRoomLabel = '';
-                          if ($selectedRoomId !== null) {
-                              if (isset($roomLookup[$selectedRoomId]['room_number'])) {
-                                  $labelNumber = trim((string) $roomLookup[$selectedRoomId]['room_number']);
-                                  $selectedRoomLabel = $labelNumber !== '' ? 'Zimmer ' . $labelNumber : 'Zimmer #' . $selectedRoomId;
-                              } else {
-                                  $selectedRoomLabel = 'Zimmer #' . $selectedRoomId;
-                              }
-                          }
-                          $disableRemove = $categoryItemCount === 1 && $categoryIndex === 0;
-                        ?>
-                        <div class="reservation-category-item card card-body border p-3 mb-2" data-index="<?= $categoryIndex ?>">
-                          <div class="row g-2 align-items-end">
-                            <div class="col-12 col-lg-5">
-                              <label class="form-label">Kategorie</label>
-                              <select class="form-select" name="reservation_categories[<?= $categoryIndex ?>][category_id]" <?= $pdo === null ? 'disabled' : 'required' ?>>
-                                <option value="">Bitte auswählen</option>
-                                <?php foreach ($categories as $category): ?>
-                                  <?php if (!isset($category['id'])) { continue; } ?>
-                                  <?php $categoryId = (int) $category['id']; ?>
-                                  <option value="<?= $categoryId ?>" <?= $selectedCategoryId === $categoryId ? 'selected' : '' ?>><?= htmlspecialchars($category['name']) ?></option>
-                                <?php endforeach; ?>
-                              </select>
-                            </div>
-                            <div class="col-6 col-lg-3">
-                              <label class="form-label">Zimmeranzahl</label>
-                              <input type="number" class="form-control" name="reservation_categories[<?= $categoryIndex ?>][room_quantity]" min="1" max="50" step="1" value="<?= htmlspecialchars($quantityValue) ?>" <?= $pdo === null ? 'disabled' : 'required' ?>>
-                            </div>
-                            <div class="col-6 col-lg-4 d-flex align-items-end">
-                              <button type="button" class="btn btn-outline-danger w-100 remove-category-item" data-remove-category <?= $pdo === null ? 'disabled' : '' ?><?= $disableRemove ? ' disabled' : '' ?>>Entfernen</button>
-                            </div>
-                            <div class="col-12 col-lg-8 mt-2">
-                              <label class="form-label">Zimmerzuweisung</label>
-                              <select class="form-select reservation-room-select" data-room-select data-item-index="<?= $categoryIndex ?>" name="reservation_categories[<?= $categoryIndex ?>][room_id]" <?= $pdo === null ? 'disabled' : '' ?>>
-                                <option value="">Kein konkretes Zimmer – Überbuchung</option>
-                                <?php if ($selectedRoomId !== null && $selectedRoomLabel !== ''): ?>
-                                  <option value="<?= $selectedRoomId ?>" selected><?= htmlspecialchars($selectedRoomLabel) ?> (zugewiesen)</option>
-                                <?php endif; ?>
-                              </select>
-                              <div class="form-text">Leer lassen, um Überbuchungen zu planen.</div>
-                            </div>
-                            <div class="col-12 col-lg-4 mt-2">
-                              <label class="form-label">Zimmer-Anreise</label>
-                              <input type="date" class="form-control reservation-item-arrival" name="reservation_categories[<?= $categoryIndex ?>][arrival_date]" value="<?= htmlspecialchars($roomArrivalValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
-                              <div class="form-text">Standard ist die Reservierungs-Anreise.</div>
-                            </div>
-                            <div class="col-12 col-lg-4 mt-2">
-                              <label class="form-label">Zimmer-Abreise</label>
-                              <input type="date" class="form-control reservation-item-departure" name="reservation_categories[<?= $categoryIndex ?>][departure_date]" value="<?= htmlspecialchars($roomDepartureValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
-                              <div class="form-text">Standard ist die Reservierungs-Abreise.</div>
-                            </div>
-                            <div class="col-12 col-xl-4 mt-2">
-                              <label class="form-label">Rate *</label>
-                              <?php if ($rates === []): ?>
-                                <select class="form-select reservation-item-rate" name="reservation_categories[<?= $categoryIndex ?>][rate_id]" disabled>
-                                  <?= $itemRateOptionsHtml ?>
-                                </select>
-                                <div class="form-text text-danger">Bitte legen Sie zuvor Raten im Modul „Raten“ an.</div>
-                              <?php else: ?>
-                                <select class="form-select reservation-item-rate" name="reservation_categories[<?= $categoryIndex ?>][rate_id]" data-rate-select <?= $pdo === null ? 'disabled' : 'required' ?>>
-                                  <?= $itemRateOptionsHtml ?>
-                                </select>
-                                <div class="form-text">Legt die Basispreise für diese Kategorie fest.</div>
-                              <?php endif; ?>
-                            </div>
-                            <div class="col-6 col-xl-4 mt-2">
-                              <label class="form-label">Preis pro Nacht (EUR)</label>
-                              <input type="text" class="form-control reservation-item-price-night" name="reservation_categories[<?= $categoryIndex ?>][price_per_night]" value="<?= htmlspecialchars($roomPricePerNightValue) ?>" placeholder="z. B. 129,00" <?= $pdo === null ? 'disabled' : '' ?>>
-                              <div class="form-text">Bruttopreis pro Zimmer.</div>
-                            </div>
-                            <div class="col-6 col-xl-4 mt-2">
-                              <label class="form-label">Gesamtpreis (EUR)</label>
-                              <input type="text" class="form-control reservation-item-price-total" name="reservation_categories[<?= $categoryIndex ?>][total_price]" value="<?= htmlspecialchars($roomTotalPriceValue) ?>" placeholder="z. B. 258,00" <?= $pdo === null ? 'disabled' : 'required' ?>>
-                              <div class="form-text">Summe für diese Kategorie.</div>
-                            </div>
-                            <div class="col-12 mt-2 d-flex align-items-center gap-2 flex-wrap">
-                              <button type="button" class="btn btn-outline-secondary btn-sm reservation-item-calc" data-calc-index="<?= $categoryIndex ?>" <?= $pdo === null || $rates === [] ? 'disabled' : '' ?>>Preis anhand Rate berechnen</button>
-                              <span class="text-muted small" data-calc-feedback="<?= $categoryIndex ?>">Berechnet die Preise für diese Zeile basierend auf Rate und Zeitraum.</span>
-                            </div>
-                          </div>
-                        </div>
-                      <?php endforeach; ?>
-                    </div>
-                    <div class="d-flex justify-content-between align-items-center gap-2 mt-2">
-                      <button type="button" class="btn btn-outline-primary btn-sm" data-add-category <?= $pdo === null ? 'disabled' : '' ?>>Weitere Kategorie hinzufügen</button>
-                      <span class="text-muted small">Mindestens eine Kategorie ist erforderlich.</span>
-                    </div>
-                    <template id="reservation-category-template">
-                      <div class="reservation-category-item card card-body border p-3 mb-2" data-index="__INDEX__">
-                        <div class="row g-2 align-items-end">
-                          <div class="col-12 col-lg-5">
-                            <label class="form-label">Kategorie</label>
-                            <select class="form-select" name="reservation_categories[__INDEX__][category_id]" <?= $pdo === null ? 'disabled' : 'required' ?>>
-                              <?= $reservationCategoryOptionsHtml ?>
-                            </select>
-                          </div>
-                          <div class="col-6 col-lg-3">
-                            <label class="form-label">Zimmeranzahl</label>
-                            <input type="number" class="form-control" name="reservation_categories[__INDEX__][room_quantity]" min="1" max="50" step="1" value="1" <?= $pdo === null ? 'disabled' : 'required' ?>>
-                          </div>
-                          <div class="col-6 col-lg-4 d-flex align-items-end">
-                            <button type="button" class="btn btn-outline-danger w-100 remove-category-item" data-remove-category <?= $pdo === null ? 'disabled' : '' ?>>Entfernen</button>
-                          </div>
-                          <div class="col-12 col-lg-8 mt-2">
-                            <label class="form-label">Zimmerzuweisung</label>
-                            <select class="form-select reservation-room-select" data-room-select data-item-index="__INDEX__" name="reservation_categories[__INDEX__][room_id]" <?= $pdo === null ? 'disabled' : '' ?>>
-                              <option value="">Kein konkretes Zimmer – Überbuchung</option>
-                            </select>
-                            <div class="form-text">Leer lassen, um Überbuchungen zu planen.</div>
-                          </div>
-                          <div class="col-12 col-lg-4 mt-2">
-                            <label class="form-label">Zimmer-Anreise</label>
-                            <input type="date" class="form-control reservation-item-arrival" name="reservation_categories[__INDEX__][arrival_date]" value="<?= htmlspecialchars((string) $reservationFormData['arrival_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
-                            <div class="form-text">Standard ist die Reservierungs-Anreise.</div>
-                          </div>
-                          <div class="col-12 col-lg-4 mt-2">
-                            <label class="form-label">Zimmer-Abreise</label>
-                            <input type="date" class="form-control reservation-item-departure" name="reservation_categories[__INDEX__][departure_date]" value="<?= htmlspecialchars((string) $reservationFormData['departure_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
-                            <div class="form-text">Standard ist die Reservierungs-Abreise.</div>
-                          </div>
-                          <div class="col-12 col-xl-4 mt-2">
-                            <label class="form-label">Rate *</label>
-                            <?php if ($rates === []): ?>
-                              <select class="form-select reservation-item-rate" name="reservation_categories[__INDEX__][rate_id]" disabled>
-                                <?= $reservationRateOptionsHtml ?>
-                              </select>
-                              <div class="form-text text-danger">Bitte legen Sie zuvor Raten im Modul „Raten“ an.</div>
-                            <?php else: ?>
-                              <select class="form-select reservation-item-rate" name="reservation_categories[__INDEX__][rate_id]" data-rate-select <?= $pdo === null ? 'disabled' : 'required' ?>>
-                                <?= $reservationRateOptionsHtml ?>
-                              </select>
-                              <div class="form-text">Legt die Basispreise für diese Kategorie fest.</div>
-                            <?php endif; ?>
-                          </div>
-                          <div class="col-6 col-xl-4 mt-2">
-                            <label class="form-label">Preis pro Nacht (EUR)</label>
-                            <input type="text" class="form-control reservation-item-price-night" name="reservation_categories[__INDEX__][price_per_night]" value="" placeholder="z. B. 129,00" <?= $pdo === null ? 'disabled' : '' ?>>
-                            <div class="form-text">Bruttopreis pro Zimmer.</div>
-                          </div>
-                          <div class="col-6 col-xl-4 mt-2">
-                            <label class="form-label">Gesamtpreis (EUR)</label>
-                            <input type="text" class="form-control reservation-item-price-total" name="reservation_categories[__INDEX__][total_price]" value="" placeholder="z. B. 258,00" <?= $pdo === null ? 'disabled' : 'required' ?>>
-                            <div class="form-text">Summe für diese Kategorie.</div>
-                          </div>
-                          <div class="col-12 mt-2 d-flex align-items-center gap-2 flex-wrap">
-                            <button type="button" class="btn btn-outline-secondary btn-sm reservation-item-calc" data-calc-index="__INDEX__" <?= $pdo === null || $rates === [] ? 'disabled' : '' ?>>Preis anhand Rate berechnen</button>
-                            <span class="text-muted small" data-calc-feedback="__INDEX__">Berechnet die Preise für diese Zeile basierend auf Rate und Zeitraum.</span>
-                          </div>
-                        </div>
-                      </div>
-                    </template>
-                  <div class="col-12">
-                    <hr class="my-3">
-                  </div>
-                  <div class="col-12 col-md-6">
-                    <label class="form-label">Gesamtsumme (EUR)</label>
-                    <input type="text" class="form-control" id="reservation-grand-total" name="grand_total" value="<?= htmlspecialchars((string) $reservationFormData['grand_total']) ?>" readonly>
-                    <div class="form-text">Summe aller Kategorien (Brutto). Anpassungen erfolgen je Kategorie.</div>
-                  </div>
-                  <div class="col-12 col-md-6">
-                    <label class="form-label">Mehrwertsteuer (Übernachtung)</label>
-                    <?php $currentVatLabel = $formatPercent((float) $reservationFormData['vat_rate']); ?>
-                    <input type="text" class="form-control" value="<?= htmlspecialchars($currentVatLabel ?? number_format((float) $reservationFormData['vat_rate'], 2, ',', '.') . ' %') ?>" readonly>
-                    <div class="form-text">Verwaltet unter Einstellungen &gt; Mehrwertsteuer.</div>
-                  </div>
-                  <div class="col-md-6">
-                    <label for="reservation-status" class="form-label">Status *</label>
-                    <select class="form-select" id="reservation-status" name="status" required <?= $pdo === null ? 'disabled' : '' ?>>
-                      <?php foreach ($reservationStatuses as $statusOption): ?>
-                        <?php $statusLabel = $reservationStatusMeta[$statusOption]['label'] ?? ucfirst($statusOption); ?>
-                        <option value="<?= htmlspecialchars($statusOption) ?>" <?= $reservationFormData['status'] === $statusOption ? 'selected' : '' ?>><?= htmlspecialchars($statusLabel) ?></option>
-                      <?php endforeach; ?>
-                    </select>
-                  </div>
-                  <div class="col-12">
-                    <label for="reservation-notes" class="form-label">Notizen</label>
-                    <textarea class="form-control" id="reservation-notes" name="notes" rows="3" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $reservationFormData['notes']) ?></textarea>
-                    <div class="form-text">Interne Hinweise für Rezeption oder Housekeeping.</div>
-                  </div>
-                  <div class="col-12 d-flex justify-content-end gap-2 flex-wrap">
-                    <?php if ($isReservationEditing): ?>
-                      <a href="index.php?section=reservations" class="btn btn-outline-secondary">Abbrechen</a>
-                    <?php endif; ?>
-                    <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isReservationEditing ? 'Reservierung aktualisieren' : 'Reservierung speichern' ?></button>
-                  </div>
-                </form>
-                <?php if ($pdo === null): ?>
-                  <p class="text-muted mt-3 mb-0">Die Formularfelder werden aktiviert, sobald eine Datenbankverbindung besteht.</p>
-                <?php endif; ?>
-              </div>
-            </div>
-          </div>
-          <div class="col-12 col-xl-7">
+          <div class="col-12">
             <div class="card module-card">
               <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
                 <div>
                   <h2 class="h5 mb-1">Reservierungsübersicht</h2>
                   <p class="text-muted mb-0">Alle Aufenthalte inklusive Historie und Verantwortlichen.</p>
                 </div>
-                <span class="badge text-bg-info"><?= count($reservations) ?> Einträge</span>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                  <span class="badge text-bg-info"><?= count($reservations) ?> Einträge</span>
+                  <a class="btn btn-primary btn-sm" href="index.php?section=reservations&amp;openReservationModal=1">Neu</a>
+                </div>
               </div>
               <div class="card-body">
                 <form method="get" class="row g-3 align-items-end mb-3">
@@ -5854,7 +5598,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=reservations&amp;editReservation=<?= (int) $reservation['id'] ?>">Bearbeiten</a>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Reservierung wirklich löschen?');">
-                                  <?= $renderAdminCsrfInput() ?>
+                                  <?= $csrfFieldHtml ?>
                                   <input type="hidden" name="form" value="reservation_delete">
                                   <input type="hidden" name="id" value="<?= (int) $reservation['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
@@ -5915,7 +5659,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3">
-                  <?= $renderAdminCsrfInput() ?>
+                  <?= $csrfFieldHtml ?>
                   <input type="hidden" name="form" value="<?= $isEditingRate ? 'rate_update' : 'rate_create' ?>">
                   <input type="hidden" name="active_rate_category_id" value="<?= $selectedRateCategoryId !== null ? (int) $selectedRateCategoryId : '' ?>">
                   <?php if ($isEditingRate): ?>
@@ -6068,7 +5812,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                                 <a class="btn btn-outline-secondary btn-sm" href="<?= htmlspecialchars($rateViewUrl) ?>">Anzeigen</a>
                                 <a class="btn btn-outline-primary btn-sm" href="<?= htmlspecialchars($rateEditUrl) ?>">Bearbeiten</a>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Rate wirklich löschen?');">
-                                  <?= $renderAdminCsrfInput() ?>
+                                  <?= $csrfFieldHtml ?>
                                   <input type="hidden" name="form" value="rate_delete">
                                   <input type="hidden" name="id" value="<?= $rateId ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
@@ -6097,7 +5841,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="rate-event-form">
-                  <?= $renderAdminCsrfInput() ?>
+                  <?= $csrfFieldHtml ?>
                   <input type="hidden" name="form" value="<?= $isEditingRateEvent ? 'rate_event_update' : 'rate_event_create' ?>">
                   <input type="hidden" name="active_rate_category_id" value="<?= $selectedRateCategoryId !== null ? (int) $selectedRateCategoryId : '' ?>">
                   <?php if ($isEditingRateEvent): ?>
@@ -6251,7 +5995,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
                                 <a class="btn btn-outline-secondary btn-sm" href="<?= htmlspecialchars($eventEditUrl) ?>">Bearbeiten</a>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Messe wirklich löschen?');">
-                                  <?= $renderAdminCsrfInput() ?>
+                                  <?= $csrfFieldHtml ?>
                                   <input type="hidden" name="form" value="rate_event_delete">
                                   <input type="hidden" name="id" value="<?= $eventId ?>">
                                   <input type="hidden" name="rate_id" value="<?= $selectedRateId ?>">
@@ -6404,7 +6148,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="rate-period-form">
-                  <?= $renderAdminCsrfInput() ?>
+                  <?= $csrfFieldHtml ?>
                   <input type="hidden" name="form" value="<?= $isEditingRatePeriod ? 'rate_period_update' : 'rate_period_create' ?>">
                   <input type="hidden" name="active_rate_category_id" value="<?= $selectedRateCategoryId !== null ? (int) $selectedRateCategoryId : '' ?>">
                   <?php if ($isEditingRatePeriod): ?>
@@ -6570,7 +6314,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
                                 <a class="btn btn-outline-secondary btn-sm" href="<?= htmlspecialchars($periodEditUrl) ?>">Bearbeiten</a>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Preiszeitraum wirklich löschen?');">
-                                  <?= $renderAdminCsrfInput() ?>
+                                  <?= $csrfFieldHtml ?>
                                   <input type="hidden" name="form" value="rate_period_delete">
                                   <input type="hidden" name="id" value="<?= $periodId ?>">
                                   <input type="hidden" name="rate_id" value="<?= $selectedRateId ?>">
@@ -6612,7 +6356,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="category-form">
-                  <?= $renderAdminCsrfInput() ?>
+                  <?= $csrfFieldHtml ?>
                   <input type="hidden" name="form" value="<?= $isEditingCategory ? 'category_update' : 'category_create' ?>">
                   <?php if ($isEditingCategory): ?>
                     <input type="hidden" name="id" value="<?= (int) $categoryFormData['id'] ?>">
@@ -6683,7 +6427,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-center align-items-center gap-2 flex-wrap">
                                 <span class="badge text-bg-light" title="Sortierposition">#<?= $positionBadge ?></span>
                                 <form method="post" class="d-inline-flex" action="index.php?section=categories#category-management">
-                                  <?= $renderAdminCsrfInput() ?>
+                                  <?= $csrfFieldHtml ?>
                                   <input type="hidden" name="form" value="category_move">
                                   <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
                                   <div class="btn-group btn-group-sm" role="group" aria-label="Reihenfolge anpassen">
@@ -6706,7 +6450,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=categories&editCategory=<?= (int) $category['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Kategorie wirklich löschen?');">
-                                  <?= $renderAdminCsrfInput() ?>
+                                  <?= $csrfFieldHtml ?>
                                   <input type="hidden" name="form" value="category_delete">
                                   <input type="hidden" name="id" value="<?= (int) $category['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -6748,7 +6492,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                   <p class="text-muted mb-0">Die Farbverwaltung steht erst nach einer erfolgreichen Datenbankverbindung zur Verfügung.</p>
                 <?php else: ?>
                   <form method="post" class="row g-4 align-items-stretch">
-                    <?= $renderAdminCsrfInput() ?>
+                    <?= $csrfFieldHtml ?>
                     <input type="hidden" name="form" value="settings_status_colors">
                     <?php foreach ($reservationStatuses as $statusKey): ?>
                       <?php
@@ -6811,7 +6555,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                 <p class="text-muted mb-0">Die Mehrwertsteuer kann erst nach einer erfolgreichen Datenbankverbindung angepasst werden.</p>
               <?php else: ?>
                 <form method="post" class="row g-3 align-items-end">
-                  <?= $renderAdminCsrfInput() ?>
+                  <?= $csrfFieldHtml ?>
                   <input type="hidden" name="form" value="settings_vat">
                   <div class="col-md-4 col-lg-3">
                     <label for="overnight-vat-rate" class="form-label">Übernachtungs-MwSt. (%)</label>
@@ -6843,7 +6587,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="d-flex flex-column flex-md-row gap-3 align-items-start align-items-md-center">
-                  <?= $renderAdminCsrfInput() ?>
+                  <?= $csrfFieldHtml ?>
                   <input type="hidden" name="form" value="settings_clear_cache">
                   <div class="text-muted small flex-grow-1">
                     <p class="mb-1">Unterstützte Browser entfernen ihren Cache für diese Seite unmittelbar nach dem Ausführen.</p>
@@ -6864,7 +6608,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="d-flex flex-column flex-md-row gap-3 align-items-start align-items-md-center">
-                  <?= $renderAdminCsrfInput() ?>
+                  <?= $csrfFieldHtml ?>
                   <input type="hidden" name="form" value="settings_schema_refresh">
                   <div class="text-muted small flex-grow-1">
                     <p class="mb-1">Aktualisiert Reservierungs- und Einstellungstabellen sowie neue Felder aus aktuellen Releases.</p>
@@ -6892,7 +6636,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <h3 class="h6">Sicherung erstellen</h3>
                       <p class="small text-muted">Lädt eine JSON-Datei herunter, die Sie bei Bedarf wieder einspielen können.</p>
                       <form method="post">
-                        <?= $renderAdminCsrfInput() ?>
+                        <?= $csrfFieldHtml ?>
                         <input type="hidden" name="form" value="settings_backup_export">
                         <button type="submit" class="btn btn-outline-secondary">Backup herunterladen</button>
                       </form>
@@ -6901,7 +6645,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <h3 class="h6">Sicherung wiederherstellen</h3>
                       <p class="small text-muted">Bestehende Datensätze werden durch die Inhalte der Sicherung ersetzt.</p>
                       <form method="post" enctype="multipart/form-data" onsubmit="return confirm('Aktuelle Daten werden überschrieben. Fortfahren?');">
-                        <?= $renderAdminCsrfInput() ?>
+                        <?= $csrfFieldHtml ?>
                         <input type="hidden" name="form" value="settings_backup_import">
                         <div class="mb-3">
                           <label for="backup-file" class="form-label">JSON-Datei auswählen</label>
@@ -6933,7 +6677,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" action="update.php" class="d-flex flex-column gap-3">
-                  <?= $renderAdminCsrfInput() ?>
+                  <?= $csrfFieldHtml ?>
                   <input type="hidden" name="token" value="<?= htmlspecialchars($updateToken, ENT_QUOTES, 'UTF-8') ?>">
                   <div>
                     <label class="form-label">Repository</label>
@@ -6988,7 +6732,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="guest-form">
-                <?= $renderAdminCsrfInput() ?>
+                <?= $csrfFieldHtml ?>
                 <input type="hidden" name="form" value="<?= $isEditingGuest ? 'guest_update' : 'guest_create' ?>">
                 <?php if ($isEditingGuest): ?>
                   <input type="hidden" name="id" value="<?= (int) $guestFormData['id'] ?>">
@@ -7299,7 +7043,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2 flex-wrap">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editGuest=<?= (int) $guest['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Gast wirklich löschen?');">
-                                <?= $renderAdminCsrfInput() ?>
+                                <?= $csrfFieldHtml ?>
                                 <input type="hidden" name="form" value="guest_delete">
                                 <input type="hidden" name="id" value="<?= (int) $guest['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -7338,7 +7082,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="company-form">
-                <?= $renderAdminCsrfInput() ?>
+                <?= $csrfFieldHtml ?>
                 <input type="hidden" name="form" value="<?= $isEditingCompany ? 'company_update' : 'company_create' ?>">
                 <?php if ($isEditingCompany): ?>
                   <input type="hidden" name="id" value="<?= (int) $companyFormData['id'] ?>">
@@ -7454,7 +7198,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             <div class="d-flex justify-content-end gap-2">
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editCompany=<?= (int) $company['id'] ?>">Bearbeiten</a>
                               <form method="post" onsubmit="return confirm('Firma wirklich löschen?');">
-                                <?= $renderAdminCsrfInput() ?>
+                                <?= $csrfFieldHtml ?>
                                 <input type="hidden" name="form" value="company_delete">
                                 <input type="hidden" name="id" value="<?= (int) $company['id'] ?>">
                                 <button type="submit" class="btn btn-outline-danger btn-sm" <?= ($companyGuestCounts[$companyId] ?? 0) > 0 ? 'disabled title="Zuerst Gästezuordnungen entfernen"' : '' ?>>Löschen</button>
@@ -7496,7 +7240,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               </div>
               <div class="card-body">
                 <form method="post" class="row g-3" id="room-form">
-                  <?= $renderAdminCsrfInput() ?>
+                  <?= $csrfFieldHtml ?>
                   <input type="hidden" name="form" value="<?= $isEditingRoom ? 'room_update' : 'room_create' ?>">
                   <?php if ($isEditingRoom): ?>
                     <input type="hidden" name="id" value="<?= (int) $roomFormData['id'] ?>">
@@ -7582,7 +7326,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <div class="d-flex justify-content-end gap-2">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=rooms&editRoom=<?= (int) $room['id'] ?>">Bearbeiten</a>
                                 <form method="post" onsubmit="return confirm('Zimmer wirklich löschen?');">
-                                  <?= $renderAdminCsrfInput() ?>
+                                  <?= $csrfFieldHtml ?>
                                   <input type="hidden" name="form" value="room_delete">
                                   <input type="hidden" name="id" value="<?= (int) $room['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -7624,7 +7368,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             </div>
             <div class="card-body">
               <form method="post" class="row g-3" id="user-form">
-                <?= $renderAdminCsrfInput() ?>
+                <?= $csrfFieldHtml ?>
                 <input type="hidden" name="form" value="<?= $isEditingUser ? 'user_update' : 'user_create' ?>">
                 <?php if ($isEditingUser): ?>
                   <input type="hidden" name="id" value="<?= (int) $userFormData['id'] ?>">
@@ -7700,7 +7444,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                               <a class="btn btn-outline-secondary btn-sm" href="index.php?section=users&editUser=<?= (int) $user['id'] ?>">Bearbeiten</a>
                               <?php if ((int) $_SESSION['user_id'] !== (int) $user['id']): ?>
                                 <form method="post" onsubmit="return confirm('Benutzer wirklich löschen?');">
-                                  <?= $renderAdminCsrfInput() ?>
+                                  <?= $csrfFieldHtml ?>
                                   <input type="hidden" name="form" value="user_delete">
                                   <input type="hidden" name="id" value="<?= (int) $user['id'] ?>">
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
@@ -7728,6 +7472,299 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
       <?php endif; ?>
       </div>
     </main>
+
+    <div class="modal fade" id="reservationFormModal" tabindex="-1" aria-labelledby="reservationFormModalLabel" aria-hidden="true" data-reservation-mode="<?= $isEditingReservation ? 'update' : 'create' ?>">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header align-items-start">
+            <div>
+              <h1 class="modal-title fs-5" id="reservationFormModalLabel"><?= $isEditingReservation ? 'Reservierung bearbeiten' : 'Neue Reservierung' ?></h1>
+              <p class="mb-0 text-muted small">Aufenthalte mit Zimmer, Zeitraum und Status pflegen.</p>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              <?php if ($isEditingReservation): ?>
+                <span class="badge text-bg-primary" data-edit-badge>Bearbeitung</span>
+              <?php endif; ?>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+            </div>
+          </div>
+          <div class="modal-body">
+            <?php $isReservationEditing = $isEditingReservation; ?>
+            <form method="post" class="row g-3" id="reservation-form">
+              <?= $csrfFieldHtml ?>
+              <input type="hidden" name="form" value="<?= $isReservationEditing ? 'reservation_update' : 'reservation_create' ?>">
+              <?php if ($isReservationEditing): ?>
+                <input type="hidden" name="id" value="<?= (int) $reservationFormData['id'] ?>">
+              <?php endif; ?>
+              <?php if (!empty($reservationFormData['reservation_number'])): ?>
+                <div class="col-12">
+                  <label class="form-label">Reservierungsnummer</label>
+                  <input type="text" class="form-control" value="<?= htmlspecialchars((string) $reservationFormData['reservation_number']) ?>" readonly>
+                  <div class="form-text">Die Nummer wird automatisch vergeben und bleibt unverändert.</div>
+                </div>
+              <?php endif; ?>
+              <div class="col-12">
+                <label for="reservation-guest-query" class="form-label">Gast *</label>
+                <div class="typeahead position-relative" data-typeahead="guest" data-endpoint="index.php?ajax=guest_search">
+                  <input type="hidden" name="guest_id" id="reservation-guest-id" value="<?= htmlspecialchars((string) $reservationFormData['guest_id']) ?>">
+                  <input
+                    type="search"
+                    class="form-control typeahead-input"
+                    id="reservation-guest-query"
+                    name="guest_query"
+                    placeholder="z. B. Mustermann oder Musterfirma"
+                    value="<?= htmlspecialchars((string) $reservationFormData['guest_query']) ?>"
+                    autocomplete="off"
+                    data-minlength="2"
+                    <?= $pdo === null ? 'disabled' : 'required' ?>
+                    <?= $reservationGuestTooltip !== '' ? 'title="' . htmlspecialchars($reservationGuestTooltip) . '"' : '' ?>
+                  >
+                  <div class="typeahead-dropdown list-group shadow-sm" role="listbox" aria-label="Gastvorschläge"></div>
+                </div>
+                <div class="form-text">Neuer Gast? Über das Plus-Menü in der Navigation anlegen.</div>
+              </div>
+              <div class="col-12">
+                <label for="reservation-company-query" class="form-label">Firma</label>
+                <div class="typeahead position-relative" data-typeahead="company" data-endpoint="index.php?ajax=company_search">
+                  <input type="hidden" name="company_id" id="reservation-company-id" value="<?= htmlspecialchars((string) $reservationFormData['company_id']) ?>">
+                  <input
+                    type="search"
+                    class="form-control typeahead-input"
+                    id="reservation-company-query"
+                    name="company_query"
+                    placeholder="Optional: Firmenname suchen"
+                    value="<?= htmlspecialchars((string) $reservationFormData['company_query']) ?>"
+                    autocomplete="off"
+                    data-minlength="2"
+                    <?= $pdo === null ? 'disabled' : '' ?>
+                    <?= $reservationCompanyTooltip !== '' ? 'title="' . htmlspecialchars($reservationCompanyTooltip) . '"' : '' ?>
+                  >
+                  <div class="typeahead-dropdown list-group shadow-sm" role="listbox" aria-label="Firmenvorschläge"></div>
+                </div>
+                <div class="form-text">Optional: Firma zuordnen.</div>
+              </div>
+              <?php $categoryItemCount = count($reservationFormData['category_items']); ?>
+              <div class="col-12">
+                <label class="form-label">Kategorie &amp; Zimmer *</label>
+                <div id="reservation-category-list" class="reservation-category-list" data-next-index="<?= $categoryItemCount ?>">
+                  <?php foreach ($reservationFormData['category_items'] as $categoryIndex => $categoryItem): ?>
+                    <?php
+                      $selectedCategoryId = isset($categoryItem['category_id']) && $categoryItem['category_id'] !== ''
+                          ? (int) $categoryItem['category_id']
+                          : 0;
+                      $quantityValue = isset($categoryItem['room_quantity']) && $categoryItem['room_quantity'] !== ''
+                          ? (string) $categoryItem['room_quantity']
+                          : '1';
+                      $selectedRoomId = isset($categoryItem['room_id']) && $categoryItem['room_id'] !== ''
+                          ? (int) $categoryItem['room_id']
+                          : null;
+                      $roomArrivalValue = isset($categoryItem['arrival_date']) && $categoryItem['arrival_date'] !== ''
+                          ? (string) $categoryItem['arrival_date']
+                          : (string) $reservationFormData['arrival_date'];
+                      $roomDepartureValue = isset($categoryItem['departure_date']) && $categoryItem['departure_date'] !== ''
+                          ? (string) $categoryItem['departure_date']
+                          : (string) $reservationFormData['departure_date'];
+                      $roomPricePerNightValue = isset($categoryItem['price_per_night']) ? (string) $categoryItem['price_per_night'] : '';
+                      $roomTotalPriceValue = isset($categoryItem['total_price']) ? (string) $categoryItem['total_price'] : '';
+                      $selectedRateIdForItem = isset($categoryItem['rate_id']) && $categoryItem['rate_id'] !== ''
+                          ? (int) $categoryItem['rate_id']
+                          : 0;
+                      $itemRateOptionsHtml = $buildRateSelectOptions !== null
+                          ? $buildRateSelectOptions($selectedRateIdForItem)
+                          : $reservationRateOptionsHtml;
+                      $selectedRoomLabel = '';
+                      if ($selectedRoomId !== null) {
+                          if (isset($roomLookup[$selectedRoomId]['room_number'])) {
+                              $labelNumber = trim((string) $roomLookup[$selectedRoomId]['room_number']);
+                              $selectedRoomLabel = $labelNumber !== '' ? 'Zimmer ' . $labelNumber : 'Zimmer #' . $selectedRoomId;
+                          } else {
+                              $selectedRoomLabel = 'Zimmer #' . $selectedRoomId;
+                          }
+                      }
+                      $disableRemove = $categoryItemCount === 1 && $categoryIndex === 0;
+                    ?>
+                    <div class="reservation-category-item card card-body border p-3 mb-2" data-index="<?= $categoryIndex ?>">
+                      <div class="row g-2 align-items-end">
+                        <div class="col-12 col-lg-5">
+                          <label class="form-label">Kategorie</label>
+                          <select class="form-select" name="reservation_categories[<?= $categoryIndex ?>][category_id]" <?= $pdo === null ? 'disabled' : 'required' ?>>
+                            <option value="">Bitte auswählen</option>
+                            <?php foreach ($categories as $category): ?>
+                              <?php if (!isset($category['id'])) { continue; } ?>
+                              <option value="<?= (int) $category['id'] ?>" <?= $selectedCategoryId === (int) $category['id'] ? 'selected' : '' ?>><?= htmlspecialchars((string) ($category['name'] ?? 'Kategorie #' . $category['id'])) ?></option>
+                            <?php endforeach; ?>
+                          </select>
+                        </div>
+                        <div class="col-6 col-lg-3">
+                          <label class="form-label">Zimmer</label>
+                          <select class="form-select reservation-room-select" name="reservation_categories[<?= $categoryIndex ?>][room_id]" <?= $pdo === null ? 'disabled' : '' ?>>
+                            <option value="">Kein konkretes Zimmer – Überbuchung</option>
+                            <?php if ($selectedRoomId !== null): ?>
+                              <option value="<?= $selectedRoomId ?>" selected><?= htmlspecialchars($selectedRoomLabel) ?></option>
+                            <?php endif; ?>
+                          </select>
+                        </div>
+                        <div class="col-6 col-lg-4">
+                          <label class="form-label">Zimmeranzahl</label>
+                          <input type="number" class="form-control" name="reservation_categories[<?= $categoryIndex ?>][room_quantity]" min="1" value="<?= htmlspecialchars($quantityValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                          <div class="form-text">Automatisch 1 bei Zimmerauswahl.</div>
+                        </div>
+                        <div class="col-12 col-lg-4 mt-2">
+                          <label class="form-label">Zimmer-Anreise</label>
+                          <input type="date" class="form-control reservation-item-arrival" name="reservation_categories[<?= $categoryIndex ?>][arrival_date]" value="<?= htmlspecialchars($roomArrivalValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                          <div class="form-text">Standard ist die Reservierungs-Anreise.</div>
+                        </div>
+                        <div class="col-12 col-lg-4 mt-2">
+                          <label class="form-label">Zimmer-Abreise</label>
+                          <input type="date" class="form-control reservation-item-departure" name="reservation_categories[<?= $categoryIndex ?>][departure_date]" value="<?= htmlspecialchars($roomDepartureValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                          <div class="form-text">Standard ist die Reservierungs-Abreise.</div>
+                        </div>
+                        <div class="col-12 col-xl-4 mt-2">
+                          <label class="form-label">Rate *</label>
+                          <?php if ($rates === []): ?>
+                            <select class="form-select reservation-item-rate" name="reservation_categories[<?= $categoryIndex ?>][rate_id]" disabled>
+                              <?= $reservationRateOptionsHtml ?>
+                            </select>
+                            <div class="form-text text-danger">Bitte legen Sie zuvor Raten im Modul „Raten“ an.</div>
+                          <?php else: ?>
+                            <select class="form-select reservation-item-rate" name="reservation_categories[<?= $categoryIndex ?>][rate_id]" data-rate-select <?= $pdo === null ? 'disabled' : 'required' ?>>
+                              <?= $itemRateOptionsHtml ?>
+                            </select>
+                            <div class="form-text">Legt die Basispreise für diese Kategorie fest.</div>
+                          <?php endif; ?>
+                        </div>
+                        <div class="col-6 col-xl-4 mt-2">
+                          <label class="form-label">Preis pro Nacht (EUR)</label>
+                          <input type="text" class="form-control reservation-item-price-night" name="reservation_categories[<?= $categoryIndex ?>][price_per_night]" value="<?= htmlspecialchars($roomPricePerNightValue) ?>" placeholder="z. B. 129,00" <?= $pdo === null ? 'disabled' : '' ?>>
+                          <div class="form-text">Bruttopreis pro Zimmer.</div>
+                        </div>
+                        <div class="col-6 col-xl-4 mt-2">
+                          <label class="form-label">Gesamtpreis (EUR)</label>
+                          <input type="text" class="form-control reservation-item-price-total" name="reservation_categories[<?= $categoryIndex ?>][total_price]" value="<?= htmlspecialchars($roomTotalPriceValue) ?>" placeholder="z. B. 258,00" <?= $pdo === null ? 'disabled' : 'required' ?>>
+                          <div class="form-text">Summe für diese Kategorie.</div>
+                        </div>
+                        <div class="col-12 mt-2 d-flex align-items-center gap-2 flex-wrap">
+                          <button type="button" class="btn btn-outline-secondary btn-sm reservation-item-calc" data-calc-index="<?= $categoryIndex ?>" <?= $pdo === null || $rates === [] ? 'disabled' : '' ?>>Preis anhand Rate berechnen</button>
+                          <span class="text-muted small" data-calc-feedback="<?= $categoryIndex ?>">Berechnet die Preise für diese Zeile basierend auf Rate und Zeitraum.</span>
+                        </div>
+                        <div class="col-12 d-flex justify-content-end">
+                          <button type="button" class="btn btn-outline-danger btn-sm" data-remove-category <?= $disableRemove ? 'disabled' : '' ?>>Entfernen</button>
+                        </div>
+                      </div>
+                    </div>
+                  <?php endforeach; ?>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-3">
+                  <button type="button" class="btn btn-outline-primary btn-sm" id="add-reservation-category" <?= $pdo === null ? 'disabled' : '' ?>>Weitere Kategorie hinzufügen</button>
+                  <span class="text-muted small">Überbuchungen möglich, wenn kein Zimmer gewählt.</span>
+                </div>
+              </div>
+              <template id="reservation-category-template">
+                <div class="reservation-category-item card card-body border p-3 mb-2" data-index="__INDEX__">
+                  <div class="row g-2 align-items-end">
+                    <div class="col-12 col-lg-5">
+                      <label class="form-label">Kategorie</label>
+                      <select class="form-select" name="reservation_categories[__INDEX__][category_id]" <?= $pdo === null ? 'disabled' : 'required' ?>>
+                        <?= $reservationCategoryOptionsHtml ?>
+                      </select>
+                    </div>
+                    <div class="col-6 col-lg-3">
+                      <label class="form-label">Zimmer</label>
+                      <select class="form-select reservation-room-select" name="reservation_categories[__INDEX__][room_id]" <?= $pdo === null ? 'disabled' : '' ?>>
+                        <option value="">Kein konkretes Zimmer – Überbuchung</option>
+                      </select>
+                    </div>
+                    <div class="col-6 col-lg-4">
+                      <label class="form-label">Zimmeranzahl</label>
+                      <input type="number" class="form-control" name="reservation_categories[__INDEX__][room_quantity]" min="1" value="1" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <div class="form-text">Automatisch 1 bei Zimmerauswahl.</div>
+                    </div>
+                    <div class="col-12 col-lg-4 mt-2">
+                      <label class="form-label">Zimmer-Anreise</label>
+                      <input type="date" class="form-control reservation-item-arrival" name="reservation_categories[__INDEX__][arrival_date]" value="<?= htmlspecialchars((string) $reservationFormData['arrival_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <div class="form-text">Standard ist die Reservierungs-Anreise.</div>
+                    </div>
+                    <div class="col-12 col-lg-4 mt-2">
+                      <label class="form-label">Zimmer-Abreise</label>
+                      <input type="date" class="form-control reservation-item-departure" name="reservation_categories[__INDEX__][departure_date]" value="<?= htmlspecialchars((string) $reservationFormData['departure_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <div class="form-text">Standard ist die Reservierungs-Abreise.</div>
+                    </div>
+                    <div class="col-12 col-xl-4 mt-2">
+                      <label class="form-label">Rate *</label>
+                      <?php if ($rates === []): ?>
+                        <select class="form-select reservation-item-rate" name="reservation_categories[__INDEX__][rate_id]" disabled>
+                          <?= $reservationRateOptionsHtml ?>
+                        </select>
+                        <div class="form-text text-danger">Bitte legen Sie zuvor Raten im Modul „Raten“ an.</div>
+                      <?php else: ?>
+                        <select class="form-select reservation-item-rate" name="reservation_categories[__INDEX__][rate_id]" data-rate-select <?= $pdo === null ? 'disabled' : 'required' ?>>
+                          <?= $reservationRateOptionsHtml ?>
+                        </select>
+                        <div class="form-text">Legt die Basispreise für diese Kategorie fest.</div>
+                      <?php endif; ?>
+                    </div>
+                    <div class="col-6 col-xl-4 mt-2">
+                      <label class="form-label">Preis pro Nacht (EUR)</label>
+                      <input type="text" class="form-control reservation-item-price-night" name="reservation_categories[__INDEX__][price_per_night]" value="" placeholder="z. B. 129,00" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <div class="form-text">Bruttopreis pro Zimmer.</div>
+                    </div>
+                    <div class="col-6 col-xl-4 mt-2">
+                      <label class="form-label">Gesamtpreis (EUR)</label>
+                      <input type="text" class="form-control reservation-item-price-total" name="reservation_categories[__INDEX__][total_price]" value="" placeholder="z. B. 258,00" <?= $pdo === null ? 'disabled' : 'required' ?>>
+                      <div class="form-text">Summe für diese Kategorie.</div>
+                    </div>
+                    <div class="col-12 mt-2 d-flex align-items-center gap-2 flex-wrap">
+                      <button type="button" class="btn btn-outline-secondary btn-sm reservation-item-calc" data-calc-index="__INDEX__" <?= $pdo === null || $rates === [] ? 'disabled' : '' ?>>Preis anhand Rate berechnen</button>
+                      <span class="text-muted small" data-calc-feedback="__INDEX__">Berechnet die Preise für diese Zeile basierend auf Rate und Zeitraum.</span>
+                    </div>
+                  </div>
+                  <div class="d-flex justify-content-end">
+                    <button type="button" class="btn btn-outline-danger btn-sm" data-remove-category>Entfernen</button>
+                  </div>
+                </div>
+              </template>
+              <div class="col-12">
+                <hr class="my-3">
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label">Gesamtsumme (EUR)</label>
+                <input type="text" class="form-control" id="reservation-grand-total" name="grand_total" value="<?= htmlspecialchars((string) $reservationFormData['grand_total']) ?>" readonly>
+                <div class="form-text">Summe aller Kategorien (Brutto). Anpassungen erfolgen je Kategorie.</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label">Mehrwertsteuer (Übernachtung)</label>
+                <?php $currentVatLabel = $formatPercent((float) $reservationFormData['vat_rate']); ?>
+                <input type="text" class="form-control" value="<?= htmlspecialchars($currentVatLabel ?? number_format((float) $reservationFormData['vat_rate'], 2, ',', '.') . ' %') ?>" readonly>
+                <div class="form-text">Verwaltet unter Einstellungen &gt; Mehrwertsteuer.</div>
+              </div>
+              <div class="col-md-6">
+                <label for="reservation-status" class="form-label">Status *</label>
+                <select class="form-select" id="reservation-status" name="status" required <?= $pdo === null ? 'disabled' : '' ?>>
+                  <?php foreach ($reservationStatuses as $statusOption): ?>
+                    <?php $statusLabel = $reservationStatusMeta[$statusOption]['label'] ?? ucfirst($statusOption); ?>
+                    <option value="<?= htmlspecialchars($statusOption) ?>" <?= $reservationFormData['status'] === $statusOption ? 'selected' : '' ?>><?= htmlspecialchars($statusLabel) ?></option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+              <div class="col-12">
+                <label for="reservation-notes" class="form-label">Notizen</label>
+                <textarea class="form-control" id="reservation-notes" name="notes" rows="3" <?= $pdo === null ? 'disabled' : '' ?>><?= htmlspecialchars((string) $reservationFormData['notes']) ?></textarea>
+                <div class="form-text">Interne Hinweise für Rezeption oder Housekeeping.</div>
+              </div>
+              <div class="col-12 d-flex justify-content-end gap-2 flex-wrap">
+                <?php if ($isReservationEditing): ?>
+                  <a href="index.php?section=reservations" class="btn btn-outline-secondary">Abbrechen</a>
+                <?php endif; ?>
+                <button type="submit" class="btn btn-primary" <?= $pdo === null ? 'disabled' : '' ?>><?= $isReservationEditing ? 'Reservierung aktualisieren' : 'Reservierung speichern' ?></button>
+              </div>
+            </form>
+            <?php if ($pdo === null): ?>
+              <p class="text-muted mt-3 mb-0">Die Formularfelder werden aktiviert, sobald eine Datenbankverbindung besteht.</p>
+            <?php endif; ?>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <div class="modal fade" id="reservationDetailModal" tabindex="-1" aria-labelledby="reservationDetailModalLabel" aria-hidden="true">
       <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -7780,7 +7817,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           </div>
           <div class="modal-footer flex-wrap gap-2">
             <form method="post" id="reservation-status-form" class="d-flex flex-wrap gap-2 align-items-center">
-              <?= $renderAdminCsrfInput() ?>
+              <?= $csrfFieldHtml ?>
               <input type="hidden" name="form" value="reservation_status_update">
               <input type="hidden" name="id" id="reservation-status-id">
               <input type="hidden" name="status" id="reservation-status-value">
@@ -7803,6 +7840,58 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
     <script>
       (function () {
+        function setupReservationFormModal() {
+          var modalElement = document.getElementById('reservationFormModal');
+          var modalLibrary = window.bootstrap || (typeof bootstrap !== 'undefined' ? bootstrap : null);
+
+          if (!modalElement || !modalLibrary || !modalLibrary.Modal) {
+            return;
+          }
+
+          var modal = modalLibrary.Modal.getOrCreateInstance(modalElement);
+          var shouldOpen = <?= $shouldOpenReservationModal ? 'true' : 'false' ?>;
+
+          if (shouldOpen) {
+            modal.show();
+          }
+
+          modalElement.addEventListener('shown.bs.modal', function () {
+            var guestInput = modalElement.querySelector('#reservation-guest-query');
+            if (guestInput) {
+              try {
+                guestInput.focus({ preventScroll: true });
+              } catch (error) {
+                guestInput.focus();
+              }
+            }
+          });
+
+          modalElement.addEventListener('hidden.bs.modal', function () {
+            try {
+              var url = new URL(window.location.href);
+              var changed = false;
+
+              if (url.searchParams.has('openReservationModal')) {
+                url.searchParams.delete('openReservationModal');
+                changed = true;
+              }
+
+              if (url.searchParams.has('editReservation')) {
+                url.searchParams.delete('editReservation');
+                changed = true;
+              }
+
+              if (changed) {
+                var search = url.searchParams.toString();
+                var newUrl = url.pathname + (search ? '?' + search : '') + url.hash;
+                window.history.replaceState({}, '', newUrl);
+              }
+            } catch (error) {
+              console.warn('Konnte URL nach Schließen des Reservierungsformulars nicht aktualisieren', error);
+            }
+          });
+        }
+
         function setupReservationCategoryRepeater() {
           var container = document.getElementById('reservation-category-list');
           var template = document.getElementById('reservation-category-template');
@@ -9053,6 +9142,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           }
         });
 
+        setupReservationFormModal();
         setupReservationCategoryRepeater();
         setupReservationPricing();
         setupStatusColorPickers();
