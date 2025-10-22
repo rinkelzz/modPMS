@@ -160,11 +160,6 @@ class ReservationManager
                 }
             }
 
-            $index = $this->pdo->query("SHOW INDEX FROM reservations WHERE Key_name = 'uniq_reservations_number'");
-            if ($index === false || $index->fetch() === false) {
-                $this->pdo->exec('ALTER TABLE reservations ADD UNIQUE INDEX uniq_reservations_number (reservation_number)');
-            }
-
             if (!$needsPopulation) {
                 $missing = $this->pdo->query("SELECT COUNT(*) FROM reservations WHERE reservation_number IS NULL OR reservation_number = ''");
                 $needsPopulation = $missing !== false && (int) $missing->fetchColumn() > 0;
@@ -172,6 +167,11 @@ class ReservationManager
 
             if ($needsPopulation) {
                 $this->populateMissingReservationNumbers();
+            }
+
+            $index = $this->pdo->query("SHOW INDEX FROM reservations WHERE Key_name = 'uniq_reservations_number'");
+            if ($index === false || $index->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservations ADD UNIQUE INDEX uniq_reservations_number (reservation_number)');
             }
         } catch (PDOException $exception) {
             // ignore reservation number adjustments
