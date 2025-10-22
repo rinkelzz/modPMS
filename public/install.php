@@ -177,6 +177,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->exec('CREATE TABLE IF NOT EXISTS reservations (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     reservation_number VARCHAR(32) NOT NULL,
+                    rate_id INT UNSIGNED NULL,
                     guest_id INT UNSIGNED NOT NULL,
                     room_id INT UNSIGNED NULL,
                     category_id INT UNSIGNED NOT NULL,
@@ -185,18 +186,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     arrival_date DATE NOT NULL,
                     departure_date DATE NOT NULL,
                     status ENUM("geplant", "eingecheckt", "abgereist", "bezahlt", "noshow", "storniert") NOT NULL DEFAULT "geplant",
+                    price_per_night DECIMAL(10,2) NULL,
+                    total_price DECIMAL(10,2) NULL,
+                    vat_rate DECIMAL(5,2) NULL,
                     notes TEXT NULL,
                     created_by INT UNSIGNED NULL,
                     updated_by INT UNSIGNED NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     CONSTRAINT fk_reservations_guest FOREIGN KEY (guest_id) REFERENCES guests(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_reservations_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE SET NULL,
                     CONSTRAINT fk_reservations_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL,
                     CONSTRAINT fk_reservations_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE RESTRICT,
                     CONSTRAINT fk_reservations_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
                     CONSTRAINT fk_reservations_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
                     CONSTRAINT fk_reservations_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
                     UNIQUE KEY uniq_reservations_number (reservation_number),
+                    INDEX idx_reservations_rate (rate_id),
                     INDEX idx_reservations_arrival (arrival_date),
                     INDEX idx_reservations_guest (guest_id),
                     INDEX idx_reservations_room (room_id),
@@ -300,6 +306,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'value' => $colorValue,
                     ]);
                 }
+
+                $settingsStmt->execute([
+                    'key' => 'overnight_vat_rate',
+                    'value' => '7.00',
+                ]);
 
                 $seedCategory = $pdo->query('SELECT COUNT(*) AS total FROM room_categories')->fetchColumn();
                 if ((int) $seedCategory === 0) {

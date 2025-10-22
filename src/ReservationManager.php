@@ -160,6 +160,11 @@ class ReservationManager
                 }
             }
 
+            $index = $this->pdo->query("SHOW INDEX FROM reservations WHERE Key_name = 'uniq_reservations_number'");
+            if ($index === false || $index->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservations ADD UNIQUE INDEX uniq_reservations_number (reservation_number)');
+            }
+
             if (!$needsPopulation) {
                 $missing = $this->pdo->query("SELECT COUNT(*) FROM reservations WHERE reservation_number IS NULL OR reservation_number = ''");
                 $needsPopulation = $missing !== false && (int) $missing->fetchColumn() > 0;
@@ -168,13 +173,56 @@ class ReservationManager
             if ($needsPopulation) {
                 $this->populateMissingReservationNumbers();
             }
-
-            $index = $this->pdo->query("SHOW INDEX FROM reservations WHERE Key_name = 'uniq_reservations_number'");
-            if ($index === false || $index->fetch() === false) {
-                $this->pdo->exec('ALTER TABLE reservations ADD UNIQUE INDEX uniq_reservations_number (reservation_number)');
-            }
         } catch (PDOException $exception) {
             // ignore reservation number adjustments
+        }
+
+        try {
+            $column = $this->pdo->query("SHOW COLUMNS FROM reservations LIKE 'rate_id'");
+            if ($column === false || $column->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservations ADD COLUMN rate_id INT UNSIGNED NULL AFTER reservation_number');
+            }
+        } catch (PDOException $exception) {
+            // ignore missing rate column adjustments
+        }
+
+        try {
+            $this->pdo->exec('ALTER TABLE reservations ADD INDEX idx_reservations_rate (rate_id)');
+        } catch (PDOException $exception) {
+            // index may already exist
+        }
+
+        try {
+            $this->pdo->exec('ALTER TABLE reservations ADD CONSTRAINT fk_reservations_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE SET NULL');
+        } catch (PDOException $exception) {
+            // foreign key may already exist
+        }
+
+        try {
+            $column = $this->pdo->query("SHOW COLUMNS FROM reservations LIKE 'price_per_night'");
+            if ($column === false || $column->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservations ADD COLUMN price_per_night DECIMAL(10,2) NULL AFTER status');
+            }
+        } catch (PDOException $exception) {
+            // ignore
+        }
+
+        try {
+            $column = $this->pdo->query("SHOW COLUMNS FROM reservations LIKE 'total_price'");
+            if ($column === false || $column->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservations ADD COLUMN total_price DECIMAL(10,2) NULL AFTER price_per_night');
+            }
+        } catch (PDOException $exception) {
+            // ignore
+        }
+
+        try {
+            $column = $this->pdo->query("SHOW COLUMNS FROM reservations LIKE 'vat_rate'");
+            if ($column === false || $column->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservations ADD COLUMN vat_rate DECIMAL(5,2) NULL AFTER total_price');
+            }
+        } catch (PDOException $exception) {
+            // ignore
         }
     }
 
@@ -284,19 +332,22 @@ class ReservationManager
      */
     public function all(?string $search = null): array
     {
-        $sql = 'SELECT r.id, r.reservation_number, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, r.notes, '
+        $sql = 'SELECT r.id, r.reservation_number, r.rate_id, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, '
+            . 'r.price_per_night, r.total_price, r.vat_rate, r.notes, '
             . 'r.created_at, r.updated_at, r.created_by, r.updated_by, '
             . 'g.first_name AS guest_first_name, g.last_name AS guest_last_name, g.salutation AS guest_salutation, '
             . 'g.email AS guest_email, g.phone AS guest_phone, '
             . 'c.name AS company_name, '
             . 'rm.room_number, rm.status AS room_status, rm.category_id AS room_category_id, '
             . 'rc.name AS reservation_category_name, '
-            . 'created_user.name AS created_by_name, updated_user.name AS updated_by_name '
+            . 'created_user.name AS created_by_name, updated_user.name AS updated_by_name, '
+            . 'rate.name AS rate_name '
             . 'FROM reservations r '
             . 'LEFT JOIN guests g ON g.id = r.guest_id '
             . 'LEFT JOIN companies c ON c.id = r.company_id '
             . 'LEFT JOIN rooms rm ON rm.id = r.room_id '
             . 'LEFT JOIN room_categories rc ON rc.id = r.category_id '
+            . 'LEFT JOIN rates rate ON rate.id = r.rate_id '
             . 'LEFT JOIN users created_user ON created_user.id = r.created_by '
             . 'LEFT JOIN users updated_user ON updated_user.id = r.updated_by';
 
@@ -342,13 +393,16 @@ class ReservationManager
     public function find(int $id): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT r.id, r.reservation_number, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, r.notes, '
+            'SELECT r.id, r.reservation_number, r.rate_id, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, '
+            . 'r.price_per_night, r.total_price, r.vat_rate, r.notes, '
             . 'r.created_at, r.updated_at, r.created_by, r.updated_by, '
             . 'g.first_name AS guest_first_name, g.last_name AS guest_last_name, '
-            . 'c.name AS company_name '
+            . 'c.name AS company_name, '
+            . 'rate.name AS rate_name '
             . 'FROM reservations r '
             . 'LEFT JOIN guests g ON g.id = r.guest_id '
             . 'LEFT JOIN companies c ON c.id = r.company_id '
+            . 'LEFT JOIN rates rate ON rate.id = r.rate_id '
             . 'WHERE r.id = :id'
         );
         $stmt->execute(['id' => $id]);
@@ -376,8 +430,8 @@ class ReservationManager
     {
         $stmt = $this->pdo->prepare(
             'INSERT INTO reservations '
-            . '(reservation_number, guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) '
-            . 'VALUES (:reservation_number, :guest_id, :room_id, :category_id, :room_quantity, :company_id, :arrival_date, :departure_date, :status, :notes, :created_by, :updated_by, NOW(), NOW())'
+            . '(reservation_number, rate_id, guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, price_per_night, total_price, vat_rate, notes, created_by, updated_by, created_at, updated_at) '
+            . 'VALUES (:reservation_number, :rate_id, :guest_id, :room_id, :category_id, :room_quantity, :company_id, :arrival_date, :departure_date, :status, :price_per_night, :total_price, :vat_rate, :notes, :created_by, :updated_by, NOW(), NOW())'
         );
 
         if ($stmt === false) {
@@ -389,6 +443,11 @@ class ReservationManager
         while (true) {
             $attempts++;
             $payloadWithNumber = $payload;
+            foreach (['rate_id', 'price_per_night', 'total_price', 'vat_rate'] as $field) {
+                if (!array_key_exists($field, $payloadWithNumber)) {
+                    $payloadWithNumber[$field] = null;
+                }
+            }
             $payloadWithNumber['reservation_number'] = $this->generateReservationNumber();
 
             try {

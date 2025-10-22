@@ -2,6 +2,7 @@
 
 namespace ModPMS;
 
+use DateInterval;
 use DateTimeImmutable;
 use PDO;
 use PDOException;
@@ -669,6 +670,121 @@ class RateManager
             'year' => $year,
             'months' => $calendar,
         ];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function nightlyPrices(int $rateId, int $categoryId, DateTimeImmutable $arrival, DateTimeImmutable $departure): array
+    {
+        $rate = $this->find($rateId);
+        if ($rate === null) {
+            return [];
+        }
+
+        $categoryPrices = $this->getCategoryPrices($rateId);
+        $basePrice = array_key_exists($categoryId, $categoryPrices)
+            ? (float) $categoryPrices[$categoryId]
+            : null;
+
+        $periods = $this->periodsForRate($rateId);
+        $events = $this->eventsForRate($rateId);
+
+        $results = [];
+        $difference = $arrival->diff($departure);
+        $nightCount = (int) $difference->days;
+        if ($difference->invert === 1) {
+            $nightCount = 0;
+        }
+        if ($nightCount === 0) {
+            $nightCount = 1;
+        }
+
+        $current = $arrival;
+        for ($i = 0; $i < $nightCount; $i++) {
+            $dateString = $current->format('Y-m-d');
+            $price = $basePrice !== null ? (float) $basePrice : 0.0;
+            $source = 'base';
+            $sourcePeriod = null;
+            $sourceEvent = null;
+            $weekday = (int) $current->format('N');
+
+            foreach ($periods as $period) {
+                $startDate = (string) ($period['start_date'] ?? '');
+                $endDate = (string) ($period['end_date'] ?? '');
+
+                if ($dateString < $startDate || $dateString > $endDate) {
+                    continue;
+                }
+
+                $daysOfWeek = $period['days_of_week_list'] ?? [];
+                if ($daysOfWeek !== [] && !in_array($weekday, $daysOfWeek, true)) {
+                    continue;
+                }
+
+                $periodCategoryPrices = $period['category_prices'] ?? [];
+                if (array_key_exists($categoryId, $periodCategoryPrices)) {
+                    $price = (float) $periodCategoryPrices[$categoryId];
+                    $source = 'period';
+                    $sourcePeriod = $period;
+                    continue;
+                }
+
+                if ($periodCategoryPrices === [] && isset($period['price'])) {
+                    $price = (float) $period['price'];
+                    $source = 'period';
+                    $sourcePeriod = $period;
+                }
+            }
+
+            $activeEvents = [];
+            foreach ($events as $event) {
+                $startDate = (string) ($event['start_date'] ?? '');
+                $endDate = (string) ($event['end_date'] ?? '');
+
+                if ($dateString < $startDate || $dateString > $endDate) {
+                    continue;
+                }
+
+                $activeEvents[] = $event;
+            }
+
+            if ($activeEvents !== []) {
+                $selectedEvent = null;
+                foreach ($activeEvents as $event) {
+                    $eventPrices = $event['category_prices'] ?? [];
+                    if (isset($eventPrices[$categoryId])) {
+                        $selectedEvent = $event;
+                        $price = (float) $eventPrices[$categoryId];
+                        break;
+                    }
+                }
+
+                if ($selectedEvent === null) {
+                    $selectedEvent = $activeEvents[0];
+                    $eventDefaultPrice = isset($selectedEvent['default_price']) ? (float) $selectedEvent['default_price'] : null;
+                    if ($eventDefaultPrice !== null) {
+                        $price = $eventDefaultPrice;
+                    }
+                }
+
+                $source = 'event';
+                $sourceEvent = $selectedEvent;
+            }
+
+            $results[] = [
+                'date' => $dateString,
+                'price' => $price,
+                'source' => $source,
+                'period_id' => $sourcePeriod['id'] ?? null,
+                'event_id' => $sourceEvent['id'] ?? null,
+                'event_color' => $this->normaliseColorValue($sourceEvent['color'] ?? null),
+            ];
+
+            $current = $current->modify('+1 day');
+        }
+
+        return $results;
     }
 
     /**

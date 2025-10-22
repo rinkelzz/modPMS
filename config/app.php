@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.7.6',
+    'version' => '1.8.0',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',
@@ -14,7 +14,7 @@ return [
         ],
         'reservations' => [
             'title' => 'Reservierungen',
-            'description' => 'Aufenthalte verwalten und Historien nachvollziehen.'
+            'description' => 'Aufenthalte mit Tarifen, Preisen und Historien verwalten.'
         ],
         'rates' => [
             'title' => 'Raten',
@@ -38,7 +38,7 @@ return [
         ],
         'settings' => [
             'title' => 'Einstellungen',
-            'description' => 'Statusfarben anpassen, Cache leeren, Sicherungen (inkl. Raten & Messen) erstellen und Datenbanken aktualisieren.'
+            'description' => 'Statusfarben anpassen, Mehrwertsteuer pflegen, Cache leeren, Sicherungen (inkl. Raten & Messen) erstellen und Datenbanken aktualisieren.'
         ],
     ],
 ];
