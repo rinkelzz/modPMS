@@ -630,24 +630,30 @@ class ReservationManager
 
         $ignoreClause = '';
         if ($ignoreReservationId !== null && $ignoreReservationId > 0) {
-            $ignoreClause = ' AND r.id <> :ignore_id';
+            $ignoreClause = "\n      AND r.id <> :ignore_id";
             $params['ignore_id'] = $ignoreReservationId;
         }
 
-        $sql = 'SELECT rm.id, rm.room_number, rm.category_id, rm.status '
-            . 'FROM rooms rm '
-            . 'WHERE rm.category_id = :category_id '
-            . 'AND rm.id NOT IN (
-                SELECT DISTINCT ri.room_id
-                FROM reservation_items ri
-                INNER JOIN reservations r ON r.id = ri.reservation_id
-                WHERE ri.room_id IS NOT NULL
-                  AND r.status NOT IN (\'storniert\', \'noshow\')'
-                  . $ignoreClause
-                  . ' AND COALESCE(ri.arrival_date, r.arrival_date) < :departure
-                  AND COALESCE(ri.departure_date, r.departure_date) > :arrival
-            )
-            ORDER BY CAST(rm.room_number AS UNSIGNED), rm.room_number';
+        $sql = sprintf(
+            <<<'SQL'
+SELECT rm.id, rm.room_number, rm.category_id, rm.status
+FROM rooms rm
+WHERE rm.category_id = :category_id
+  AND rm.status = 'frei'
+  AND rm.id NOT IN (
+    SELECT DISTINCT ri.room_id
+    FROM reservation_items ri
+    INNER JOIN reservations r ON r.id = ri.reservation_id
+    WHERE ri.room_id IS NOT NULL
+      AND r.status NOT IN ('storniert', 'noshow')%s
+      AND COALESCE(ri.arrival_date, r.arrival_date) < :departure
+      AND COALESCE(ri.departure_date, r.departure_date) > :arrival
+  )
+ORDER BY CAST(rm.room_number AS UNSIGNED), rm.room_number
+SQL
+,
+            $ignoreClause
+        );
 
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
