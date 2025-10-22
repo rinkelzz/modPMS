@@ -68,6 +68,7 @@ class ReservationManager
                     reservation_id INT UNSIGNED NOT NULL,
                     category_id INT UNSIGNED NULL,
                     room_id INT UNSIGNED NULL,
+                    rate_id INT UNSIGNED NULL,
                     room_quantity INT UNSIGNED NOT NULL DEFAULT 1,
                     arrival_date DATE NULL,
                     departure_date DATE NULL,
@@ -87,7 +88,13 @@ class ReservationManager
             // ignore table creation issues
         }
 
-        foreach (['arrival_date DATE NULL AFTER room_quantity', 'departure_date DATE NULL AFTER arrival_date', 'price_per_night DECIMAL(10,2) NULL AFTER departure_date', 'total_price DECIMAL(10,2) NULL AFTER price_per_night'] as $definition) {
+        foreach ([
+            'rate_id INT UNSIGNED NULL AFTER room_id',
+            'arrival_date DATE NULL AFTER room_quantity',
+            'departure_date DATE NULL AFTER arrival_date',
+            'price_per_night DECIMAL(10,2) NULL AFTER departure_date',
+            'total_price DECIMAL(10,2) NULL AFTER price_per_night',
+        ] as $definition) {
             try {
                 if (preg_match('/^([a-z_]+)\s/i', $definition, $matches) === 1) {
                     $columnName = $matches[1];
@@ -528,8 +535,8 @@ class ReservationManager
         }
 
         $insert = $this->pdo->prepare(
-            'INSERT INTO reservation_items (reservation_id, category_id, room_id, room_quantity, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at)
-             VALUES (:reservation_id, :category_id, :room_id, :room_quantity, :arrival_date, :departure_date, :price_per_night, :total_price, NOW(), NOW())'
+            'INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at)
+             VALUES (:reservation_id, :category_id, :room_id, :rate_id, :room_quantity, :arrival_date, :departure_date, :price_per_night, :total_price, NOW(), NOW())'
         );
 
         foreach ($items as $item) {
@@ -546,6 +553,14 @@ class ReservationManager
             $quantity = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
             if ($quantity <= 0) {
                 $quantity = 1;
+            }
+
+            $rateId = null;
+            if (isset($item['rate_id']) && $item['rate_id'] !== null && $item['rate_id'] !== '') {
+                $rateId = (int) $item['rate_id'];
+                if ($rateId <= 0) {
+                    $rateId = null;
+                }
             }
 
             $arrivalDate = null;
@@ -572,6 +587,7 @@ class ReservationManager
                 'reservation_id' => $reservationId,
                 'category_id' => $categoryId,
                 'room_id' => $roomId,
+                'rate_id' => $rateId,
                 'room_quantity' => $quantity,
                 'arrival_date' => $arrivalDate,
                 'departure_date' => $departureDate,
@@ -630,30 +646,24 @@ class ReservationManager
 
         $ignoreClause = '';
         if ($ignoreReservationId !== null && $ignoreReservationId > 0) {
-            $ignoreClause = "\n      AND r.id <> :ignore_id";
+            $ignoreClause = ' AND r.id <> :ignore_id';
             $params['ignore_id'] = $ignoreReservationId;
         }
 
-        $sql = sprintf(
-            <<<'SQL'
-SELECT rm.id, rm.room_number, rm.category_id, rm.status
-FROM rooms rm
-WHERE rm.category_id = :category_id
-  AND rm.status = 'frei'
-  AND rm.id NOT IN (
-    SELECT DISTINCT ri.room_id
-    FROM reservation_items ri
-    INNER JOIN reservations r ON r.id = ri.reservation_id
-    WHERE ri.room_id IS NOT NULL
-      AND r.status NOT IN ('storniert', 'noshow')%s
-      AND COALESCE(ri.arrival_date, r.arrival_date) < :departure
-      AND COALESCE(ri.departure_date, r.departure_date) > :arrival
-  )
-ORDER BY CAST(rm.room_number AS UNSIGNED), rm.room_number
-SQL
-,
-            $ignoreClause
-        );
+        $sql = 'SELECT rm.id, rm.room_number, rm.category_id, rm.status '
+            . 'FROM rooms rm '
+            . 'WHERE rm.category_id = :category_id '
+            . 'AND rm.id NOT IN (
+                SELECT DISTINCT ri.room_id
+                FROM reservation_items ri
+                INNER JOIN reservations r ON r.id = ri.reservation_id
+                WHERE ri.room_id IS NOT NULL
+                  AND r.status NOT IN (\'storniert\', \'noshow\')'
+                  . $ignoreClause
+                  . ' AND COALESCE(ri.arrival_date, r.arrival_date) < :departure
+                  AND COALESCE(ri.departure_date, r.departure_date) > :arrival
+            )
+            ORDER BY CAST(rm.room_number AS UNSIGNED), rm.room_number';
 
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
@@ -706,12 +716,13 @@ SQL
         $placeholders = implode(', ', array_fill(0, count($reservationIds), '?'));
 
         $stmt = $this->pdo->prepare(
-            'SELECT ri.id, ri.reservation_id, ri.category_id, ri.room_id, ri.room_quantity, '
+            'SELECT ri.id, ri.reservation_id, ri.category_id, ri.room_id, ri.rate_id, ri.room_quantity, '
             . 'ri.arrival_date, ri.departure_date, ri.price_per_night, ri.total_price, '
-            . 'ri.created_at, ri.updated_at, rc.name AS category_name, rm.room_number '
+            . 'ri.created_at, ri.updated_at, rc.name AS category_name, rm.room_number, rt.name AS rate_name '
             . 'FROM reservation_items ri '
             . 'LEFT JOIN room_categories rc ON rc.id = ri.category_id '
             . 'LEFT JOIN rooms rm ON rm.id = ri.room_id '
+            . 'LEFT JOIN rates rt ON rt.id = ri.rate_id '
             . 'WHERE ri.reservation_id IN (' . $placeholders . ') '
             . 'ORDER BY ri.id ASC'
         );

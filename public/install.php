@@ -214,6 +214,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     reservation_id INT UNSIGNED NOT NULL,
                     category_id INT UNSIGNED NULL,
                     room_id INT UNSIGNED NULL,
+                    rate_id INT UNSIGNED NULL,
                     room_quantity INT UNSIGNED NOT NULL DEFAULT 1,
                     arrival_date DATE NULL,
                     departure_date DATE NULL,
@@ -224,6 +225,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     CONSTRAINT fk_install_reservation_items_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE,
                     CONSTRAINT fk_install_reservation_items_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE SET NULL,
                     CONSTRAINT fk_install_reservation_items_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_reservation_items_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE SET NULL,
                     INDEX idx_install_reservation_items_reservation (reservation_id),
                     INDEX idx_install_reservation_items_category (category_id),
                     INDEX idx_install_reservation_items_room (room_id)
@@ -481,11 +483,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $samplePricePerNight = 129.00;
                 $sampleItemTotal = $samplePricePerNight * $sampleNights;
 
-                $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, room_quantity, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+                $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
                 $itemInsert->execute([
                     $reservationId,
                     $sampleCategoryId,
                     $sampleRoomId,
+                    null,
                     1,
                     $arrival,
                     $departure,
@@ -522,7 +525,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $overbookingReservationId = (int) $pdo->lastInsertId();
             if ($overbookingReservationId > 0) {
-                $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, room_quantity, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, ?, NULL, NULL, NOW(), NOW())');
+                $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at) VALUES (?, ?, NULL, NULL, ?, ?, ?, NULL, NULL, NOW(), NOW())');
                 $itemInsert->execute([
                     $overbookingReservationId,
                     $sampleCategoryId,
