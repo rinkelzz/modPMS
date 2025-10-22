@@ -20,6 +20,12 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
+if (!isset($_SESSION['admin_csrf_token'], $_POST['csrf_token']) || !hash_equals((string) $_SESSION['admin_csrf_token'], (string) $_POST['csrf_token'])) {
+    http_response_code(400);
+    echo 'Ungültiger Sicherheits-Token';
+    exit;
+}
+
 if (!isset($_POST['token'], $_SESSION['update_token']) || !hash_equals($_SESSION['update_token'], $_POST['token'])) {
     http_response_code(400);
     echo 'Ungültiger Token';
