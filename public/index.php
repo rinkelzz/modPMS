@@ -116,6 +116,11 @@ $reservationFormData = [
         [
             'category_id' => '',
             'room_quantity' => '1',
+            'room_id' => '',
+            'arrival_date' => '',
+            'departure_date' => '',
+            'price_per_night' => '',
+            'total_price' => '',
         ],
     ],
 ];
@@ -301,7 +306,6 @@ $reservationManager = null;
 $rateManager = null;
 $backupManager = null;
 $reservationCategoryOptionsHtml = '<option value="">Bitte auswählen</option>';
-$reservationRoomOptionsHtml = '<option value="">Kein konkretes Zimmer – Überbuchung</option>';
 $buildRoomSelectOptions = null;
 $buildRateSelectOptions = null;
 $reservationSearchTerm = isset($_GET['reservation_search']) ? trim((string) $_GET['reservation_search']) : '';
@@ -654,22 +658,66 @@ $computeReservationPricing = static function (
     }
 
     $totalsPerNight = [];
+    $itemResults = [];
+    $overallTotal = 0.0;
 
-    if ($rateManager instanceof RateManager && $rateId !== null && $rateId > 0) {
-        foreach ($categoryItems as $item) {
-            $categoryId = isset($item['category_id']) ? (int) $item['category_id'] : 0;
-            if ($categoryId <= 0) {
-                continue;
+    foreach ($categoryItems as $item) {
+        $categoryId = isset($item['category_id']) ? (int) $item['category_id'] : 0;
+        if ($categoryId <= 0) {
+            continue;
+        }
+
+        $quantity = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
+        if ($quantity <= 0) {
+            $quantity = 1;
+        }
+
+        $itemArrival = $arrival;
+        if (isset($item['arrival_date']) && $item['arrival_date'] !== null && $item['arrival_date'] !== '') {
+            try {
+                $itemArrival = new DateTimeImmutable((string) $item['arrival_date']);
+            } catch (Throwable $exception) {
+                $itemArrival = $arrival;
             }
+        }
 
-            $quantity = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
-            if ($quantity <= 0) {
-                $quantity = 1;
+        $itemDeparture = $departure;
+        if (isset($item['departure_date']) && $item['departure_date'] !== null && $item['departure_date'] !== '') {
+            try {
+                $itemDeparture = new DateTimeImmutable((string) $item['departure_date']);
+            } catch (Throwable $exception) {
+                $itemDeparture = $departure;
             }
+        }
 
-            $nightlyEntries = $rateManager->nightlyPrices($rateId, $categoryId, $arrival, $departure);
+        if ($itemDeparture <= $itemArrival) {
+            $itemDeparture = $itemArrival->modify('+1 day');
+        }
+
+        $itemDiff = $itemArrival->diff($itemDeparture);
+        $itemNights = (int) $itemDiff->days;
+        if ($itemDiff->invert === 1 || $itemNights === 0) {
+            $itemNights = 1;
+        }
+
+        $itemTotal = 0.0;
+        $nightlyEntries = [];
+        if ($rateManager instanceof RateManager && $rateId !== null && $rateId > 0) {
+            $nightlyEntries = $rateManager->nightlyPrices($rateId, $categoryId, $itemArrival, $itemDeparture);
+        }
+
+        if ($nightlyEntries === []) {
+            $cursor = $itemArrival;
+            for ($i = 0; $i < $itemNights; $i++) {
+                $dateKey = $cursor->format('Y-m-d');
+                if (!isset($totalsPerNight[$dateKey])) {
+                    $totalsPerNight[$dateKey] = 0.0;
+                }
+                $cursor = $cursor->modify('+1 day');
+            }
+        } else {
             foreach ($nightlyEntries as $entry) {
-                $dateKey = $entry['date'] ?? $arrival->format('Y-m-d');
+                $dateKey = isset($entry['date']) ? (string) $entry['date'] : $itemArrival->format('Y-m-d');
                 $priceValue = isset($entry['price']) ? (float) $entry['price'] : 0.0;
 
                 if (!isset($totalsPerNight[$dateKey])) {
@@ -677,8 +725,27 @@ $computeReservationPricing = static function (
                 }
 
                 $totalsPerNight[$dateKey] += $priceValue * $quantity;
+                $itemTotal += $priceValue * $quantity;
             }
         }
+
+        $overallTotal += $itemTotal;
+
+        $itemIndex = null;
+        if (isset($item['index'])) {
+            $itemIndex = (int) $item['index'];
+        }
+
+        $itemResults[] = [
+            'index' => $itemIndex,
+            'category_id' => $categoryId,
+            'room_quantity' => $quantity,
+            'arrival_date' => $itemArrival->format('Y-m-d'),
+            'departure_date' => $itemDeparture->format('Y-m-d'),
+            'nights' => $itemNights,
+            'price_per_night' => $itemNights > 0 ? round($itemTotal / $itemNights, 2) : round($itemTotal, 2),
+            'total_price' => round($itemTotal, 2),
+        ];
     }
 
     if ($totalsPerNight === []) {
@@ -702,7 +769,7 @@ $computeReservationPricing = static function (
         }
     }
 
-    $totalPrice = array_sum($totalsPerNight);
+    $totalPrice = $overallTotal > 0.0 ? $overallTotal : array_sum($totalsPerNight);
     $pricePerNight = $nightCount > 0 ? $totalPrice / $nightCount : $totalPrice;
 
     return [
@@ -710,6 +777,7 @@ $computeReservationPricing = static function (
         'price_per_night' => round($pricePerNight, 2),
         'total_price' => round($totalPrice, 2),
         'nightly' => $totalsPerNight,
+        'items' => $itemResults,
     ];
 };
 
@@ -878,6 +946,59 @@ if ($pdo !== null && isset($_GET['ajax'])) {
             exit;
         }
 
+        if ($ajaxAction === 'available_rooms' && $reservationManager instanceof ReservationManager) {
+            $categoryId = isset($_GET['categoryId']) ? (int) $_GET['categoryId'] : 0;
+            $arrivalInput = isset($_GET['arrivalDate']) ? (string) $_GET['arrivalDate'] : '';
+            $departureInput = isset($_GET['departureDate']) ? (string) $_GET['departureDate'] : '';
+            $ignoreIdInput = isset($_GET['ignoreReservationId']) ? (string) $_GET['ignoreReservationId'] : '';
+
+            $normalizedArrival = $normalizeDateInput($arrivalInput);
+            $normalizedDeparture = $normalizeDateInput($departureInput);
+
+            if ($categoryId <= 0 || $normalizedArrival === null || $normalizedDeparture === null) {
+                echo json_encode(['rooms' => []], JSON_THROW_ON_ERROR);
+                exit;
+            }
+
+            $arrivalDate = new DateTimeImmutable($normalizedArrival);
+            $departureDate = new DateTimeImmutable($normalizedDeparture);
+
+            $ignoreReservationId = null;
+            if ($ignoreIdInput !== '') {
+                $candidate = (int) $ignoreIdInput;
+                if ($candidate > 0) {
+                    $ignoreReservationId = $candidate;
+                }
+            }
+
+            $rooms = $reservationManager->findAvailableRooms($categoryId, $arrivalDate, $departureDate, $ignoreReservationId);
+
+            $response = [];
+            foreach ($rooms as $room) {
+                if (!isset($room['id'])) {
+                    continue;
+                }
+
+                $roomId = (int) $room['id'];
+                $roomNumber = isset($room['room_number']) ? trim((string) $room['room_number']) : '';
+                if ($roomNumber === '' && isset($room['number'])) {
+                    $roomNumber = trim((string) $room['number']);
+                }
+
+                if ($roomNumber === '') {
+                    $roomNumber = 'Zimmer ' . $roomId;
+                }
+
+                $response[] = [
+                    'id' => $roomId,
+                    'label' => $roomNumber,
+                ];
+            }
+
+            echo json_encode(['rooms' => $response], JSON_THROW_ON_ERROR);
+            exit;
+        }
+
         if ($ajaxAction === 'rate_quote' && $rateManager instanceof RateManager) {
             $rawBody = file_get_contents('php://input');
             $payload = [];
@@ -931,9 +1052,33 @@ if ($pdo !== null && isset($_GET['ajax'])) {
                     $quantity = 1;
                 }
 
+                $itemArrivalInput = null;
+                if (isset($categoryPayload['arrival_date'])) {
+                    $itemArrivalInput = (string) $categoryPayload['arrival_date'];
+                } elseif (isset($categoryPayload['arrivalDate'])) {
+                    $itemArrivalInput = (string) $categoryPayload['arrivalDate'];
+                }
+
+                $itemDepartureInput = null;
+                if (isset($categoryPayload['departure_date'])) {
+                    $itemDepartureInput = (string) $categoryPayload['departure_date'];
+                } elseif (isset($categoryPayload['departureDate'])) {
+                    $itemDepartureInput = (string) $categoryPayload['departureDate'];
+                }
+
+                $itemArrivalNormalized = $itemArrivalInput !== null ? $normalizeDateInput($itemArrivalInput) : $normalizedArrival;
+                $itemDepartureNormalized = $itemDepartureInput !== null ? $normalizeDateInput($itemDepartureInput) : $normalizedDeparture;
+
+                if ($itemArrivalNormalized === null || $itemDepartureNormalized === null) {
+                    $itemArrivalNormalized = $normalizedArrival;
+                    $itemDepartureNormalized = $normalizedDeparture;
+                }
+
                 $categoryItems[] = [
                     'category_id' => $categoryId,
                     'room_quantity' => $quantity,
+                    'arrival_date' => $itemArrivalNormalized,
+                    'departure_date' => $itemDepartureNormalized,
                 ];
             }
 
@@ -2836,10 +2981,40 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $reservationFormMode = $form === 'reservation_update' ? 'update' : 'create';
             $isEditingReservation = $form === 'reservation_update';
             $categoryItemsForForm = [];
-            $validCategoryItems = [];
-            $categoryValidationErrors = false;
-            $selectedRoomIds = [];
-            $roomValidationCache = [];
+            if (is_array($categoryItemsInput)) {
+                foreach ($categoryItemsInput as $categoryIndex => $item) {
+                    if (!is_array($item)) {
+                        continue;
+                    }
+
+                    $categoryItemsForForm[$categoryIndex] = [
+                        'category_id' => trim((string) ($item['category_id'] ?? '')),
+                        'room_quantity' => trim((string) ($item['room_quantity'] ?? '')),
+                        'room_id' => trim((string) ($item['room_id'] ?? '')),
+                        'arrival_date' => trim((string) ($item['arrival_date'] ?? '')),
+                        'departure_date' => trim((string) ($item['departure_date'] ?? '')),
+                        'price_per_night' => '',
+                        'total_price' => '',
+                    ];
+                }
+            }
+
+            if ($categoryItemsForForm === []) {
+                $categoryItemsForForm[] = [
+                    'category_id' => '',
+                    'room_quantity' => '1',
+                    'room_id' => '',
+                    'arrival_date' => $arrivalInput,
+                    'departure_date' => $departureInput,
+                    'price_per_night' => '',
+                    'total_price' => '',
+                ];
+            }
+
+            ksort($categoryItemsForForm);
+            $categoryItemsForForm = array_values($categoryItemsForForm);
+
+            $reservationFormData['category_items'] = $categoryItemsForForm;
 
             $availableCategories = $categoryManager->all();
             $categoryLookupForValidation = [];
@@ -2851,100 +3026,158 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $categoryLookupForValidation[(int) $availableCategory['id']] = $availableCategory;
             }
 
-            if (is_array($categoryItemsInput)) {
-                foreach ($categoryItemsInput as $item) {
-                    if (!is_array($item)) {
-                        continue;
-                    }
+            $normalizedArrivalInput = $normalizeDateInput($arrivalInput);
+            $normalizedDepartureInput = $normalizeDateInput($departureInput);
 
-                    $rawCategoryId = trim((string) ($item['category_id'] ?? ''));
-                    $rawQuantity = trim((string) ($item['room_quantity'] ?? ''));
-                    $rawRoomId = trim((string) ($item['room_id'] ?? ''));
-
-                    $categoryIdValue = $rawCategoryId !== '' ? (int) $rawCategoryId : 0;
-                    $quantityValue = $rawQuantity !== '' ? (int) $rawQuantity : 0;
-                    $roomIdValue = $rawRoomId !== '' ? (int) $rawRoomId : 0;
-
-                    $categoryItemsForForm[] = [
-                        'category_id' => $categoryIdValue > 0 ? (string) $categoryIdValue : '',
-                        'room_quantity' => $rawQuantity !== '' ? $rawQuantity : '',
-                        'room_id' => $roomIdValue > 0 ? (string) $roomIdValue : '',
-                    ];
-
-                    if ($categoryIdValue <= 0 || !isset($categoryLookupForValidation[$categoryIdValue])) {
-                        $categoryValidationErrors = true;
-                        continue;
-                    }
-
-                    if ($roomIdValue > 0) {
-                        if (!isset($roomValidationCache[$roomIdValue])) {
-                            $roomValidationCache[$roomIdValue] = $roomManager->find($roomIdValue);
-                        }
-
-                        $roomRecord = $roomValidationCache[$roomIdValue];
-                        if ($roomRecord === null) {
-                            $categoryValidationErrors = true;
-                            continue;
-                        }
-
-                        $roomCategoryId = isset($roomRecord['category_id']) ? (int) $roomRecord['category_id'] : null;
-                        if ($roomCategoryId !== null && $roomCategoryId !== $categoryIdValue) {
-                            $categoryValidationErrors = true;
-                            continue;
-                        }
-
-                        if (in_array($roomIdValue, $selectedRoomIds, true)) {
-                            $categoryValidationErrors = true;
-                            continue;
-                        }
-
-                        $selectedRoomIds[] = $roomIdValue;
-                        $quantityValue = 1;
-                    }
-
-                    if ($quantityValue <= 0) {
-                        $categoryValidationErrors = true;
-                        continue;
-                    }
-
-                    if ($quantityValue > 50) {
-                        $quantityValue = 50;
-                    }
-
-                    $validCategoryItems[] = [
-                        'category_id' => $categoryIdValue,
-                        'room_quantity' => $quantityValue,
-                        'room_id' => $roomIdValue > 0 ? $roomIdValue : null,
-                    ];
-                }
+            if ($normalizedArrivalInput === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Anreisedatum ist ungültig. Bitte verwenden Sie das Format JJJJ-MM-TT.',
+                ];
+                break;
             }
 
-            if ($categoryItemsForForm === []) {
-                $categoryItemsForForm[] = [
-                    'category_id' => '',
-                    'room_quantity' => '1',
-                    'room_id' => '',
+            if ($normalizedDepartureInput === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Abreisedatum ist ungültig. Bitte verwenden Sie das Format JJJJ-MM-TT.',
+                ];
+                break;
+            }
+
+            $arrivalDate = new DateTimeImmutable($normalizedArrivalInput);
+            $departureDate = new DateTimeImmutable($normalizedDepartureInput);
+
+            if ($departureDate <= $arrivalDate) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Abreise muss mindestens einen Tag nach der Anreise liegen.',
+                ];
+                break;
+            }
+
+            $reservationFormData['arrival_date'] = $normalizedArrivalInput;
+            $reservationFormData['departure_date'] = $normalizedDepartureInput;
+
+            $validCategoryItems = [];
+            $categoryValidationErrors = false;
+            $selectedRoomIds = [];
+            $roomValidationCache = [];
+
+            foreach ($categoryItemsForForm as $categoryIndex => $categoryItem) {
+                $rawCategoryId = $categoryItem['category_id'];
+                $rawQuantity = $categoryItem['room_quantity'];
+                $rawRoomId = $categoryItem['room_id'];
+
+                $categoryIdValue = $rawCategoryId !== '' ? (int) $rawCategoryId : 0;
+                $quantityValue = $rawQuantity !== '' ? (int) $rawQuantity : 0;
+                $roomIdValue = $rawRoomId !== '' ? (int) $rawRoomId : 0;
+
+                $itemArrivalRaw = $categoryItem['arrival_date'] !== '' ? $categoryItem['arrival_date'] : $normalizedArrivalInput;
+                $itemDepartureRaw = $categoryItem['departure_date'] !== '' ? $categoryItem['departure_date'] : $normalizedDepartureInput;
+
+                $normalizedItemArrival = $normalizeDateInput($itemArrivalRaw);
+                $normalizedItemDeparture = $normalizeDateInput($itemDepartureRaw);
+
+                if ($normalizedItemArrival === null || $normalizedItemDeparture === null) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                try {
+                    $itemArrivalDate = new DateTimeImmutable($normalizedItemArrival);
+                    $itemDepartureDate = new DateTimeImmutable($normalizedItemDeparture);
+                } catch (Throwable $exception) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                if ($itemDepartureDate <= $itemArrivalDate) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                if ($itemArrivalDate < $arrivalDate || $itemDepartureDate > $departureDate) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                $categoryItemsForForm[$categoryIndex]['arrival_date'] = $normalizedItemArrival;
+                $categoryItemsForForm[$categoryIndex]['departure_date'] = $normalizedItemDeparture;
+
+                if ($categoryIdValue <= 0 || !isset($categoryLookupForValidation[$categoryIdValue])) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                if ($roomIdValue > 0) {
+                    if (!isset($roomValidationCache[$roomIdValue])) {
+                        $roomValidationCache[$roomIdValue] = $roomManager->find($roomIdValue);
+                    }
+
+                    $roomRecord = $roomValidationCache[$roomIdValue];
+                    if ($roomRecord === null) {
+                        $categoryValidationErrors = true;
+                        continue;
+                    }
+
+                    $roomCategoryId = isset($roomRecord['category_id']) ? (int) $roomRecord['category_id'] : null;
+                    if ($roomCategoryId !== null && $roomCategoryId !== $categoryIdValue) {
+                        $categoryValidationErrors = true;
+                        continue;
+                    }
+
+                    if (in_array($roomIdValue, $selectedRoomIds, true)) {
+                        $categoryValidationErrors = true;
+                        continue;
+                    }
+
+                    if ($reservationManager->isRoomAvailable($roomIdValue, $itemArrivalDate, $itemDepartureDate, $reservationIdForUpdate)) {
+                        $selectedRoomIds[] = $roomIdValue;
+                        $quantityValue = 1;
+                    } else {
+                        $categoryValidationErrors = true;
+                        continue;
+                    }
+                }
+
+                if ($quantityValue <= 0) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                if ($quantityValue > 50) {
+                    $quantityValue = 50;
+                }
+
+                $categoryItemsForForm[$categoryIndex]['category_id'] = $categoryIdValue > 0 ? (string) $categoryIdValue : '';
+                $categoryItemsForForm[$categoryIndex]['room_quantity'] = (string) $quantityValue;
+                $categoryItemsForForm[$categoryIndex]['room_id'] = $roomIdValue > 0 ? (string) $roomIdValue : '';
+
+                $validCategoryItems[] = [
+                    'index' => $categoryIndex,
+                    'category_id' => $categoryIdValue,
+                    'room_quantity' => $quantityValue,
+                    'room_id' => $roomIdValue > 0 ? $roomIdValue : null,
+                    'arrival_date' => $itemArrivalDate->format('Y-m-d'),
+                    'departure_date' => $itemDepartureDate->format('Y-m-d'),
                 ];
             }
 
-            $reservationFormData = [
-                'id' => $reservationIdForUpdate,
-                'guest_id' => $guestIdInput,
-                'guest_query' => $guestQueryInput,
-                'company_id' => $companyIdInput,
-                'company_query' => $companyQueryInput,
-                'arrival_date' => $arrivalInput,
-                'departure_date' => $departureInput,
-                'status' => in_array($statusInput, $reservationStatuses, true) ? $statusInput : 'geplant',
-                'notes' => $notes,
-                'reservation_number' => $existingReservationForUpdate['reservation_number'] ?? '',
-                'rate_id' => $rateIdInput,
-                'price_per_night' => $pricePerNightInput,
-                'total_price' => $totalPriceInput,
-                'vat_rate' => $formVatRateValue,
-                'night_count' => '',
-                'category_items' => $categoryItemsForForm,
-            ];
+            $reservationFormData['category_items'] = $categoryItemsForForm;
+            $reservationFormData['id'] = $reservationIdForUpdate;
+            $reservationFormData['guest_id'] = $guestIdInput;
+            $reservationFormData['guest_query'] = $guestQueryInput;
+            $reservationFormData['company_id'] = $companyIdInput;
+            $reservationFormData['company_query'] = $companyQueryInput;
+            $reservationFormData['status'] = in_array($statusInput, $reservationStatuses, true) ? $statusInput : 'geplant';
+            $reservationFormData['notes'] = $notes;
+            $reservationFormData['reservation_number'] = $existingReservationForUpdate['reservation_number'] ?? '';
+            $reservationFormData['rate_id'] = $rateIdInput;
+            $reservationFormData['price_per_night'] = $pricePerNightInput;
+            $reservationFormData['total_price'] = $totalPriceInput;
+            $reservationFormData['vat_rate'] = $formVatRateValue;
+            $reservationFormData['night_count'] = $reservationFormData['night_count'] ?? '';
 
             $guestId = (int) $guestIdInput;
             if ($guestId <= 0) {
@@ -3043,42 +3276,16 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $formVatRateValue = number_format($vatRateValue, 2, '.', '');
             $reservationFormData['vat_rate'] = $formVatRateValue;
 
-            $normalizedArrival = $normalizeDateInput($arrivalInput);
-            if ($normalizedArrival === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Das Anreisedatum ist ungültig. Bitte verwenden Sie das Format JJJJ-MM-TT.',
-                ];
-                break;
-            }
-
-            $normalizedDeparture = $normalizeDateInput($departureInput);
-            if ($normalizedDeparture === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Das Abreisedatum ist ungültig. Bitte verwenden Sie das Format JJJJ-MM-TT.',
-                ];
-                break;
-            }
-
-            $arrivalDate = new DateTimeImmutable($normalizedArrival);
-            $departureDate = new DateTimeImmutable($normalizedDeparture);
-
-            if ($departureDate <= $arrivalDate) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die Abreise muss mindestens einen Tag nach der Anreise liegen.',
-                ];
-                break;
-            }
-
             $reservationStatus = in_array($statusInput, $reservationStatuses, true) ? $statusInput : 'geplant';
 
             $pricingItems = [];
             foreach ($validCategoryItems as $item) {
                 $pricingItems[] = [
+                    'index' => $item['index'],
                     'category_id' => $item['category_id'],
                     'room_quantity' => $item['room_quantity'],
+                    'arrival_date' => $item['arrival_date'],
+                    'departure_date' => $item['departure_date'],
                 ];
             }
 
@@ -3088,6 +3295,43 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             $calculatedPricePerNight = $pricing['price_per_night'];
             $calculatedTotalPrice = $pricing['total_price'];
+
+            $itemPriceMap = [];
+            if (isset($pricing['items']) && is_array($pricing['items'])) {
+                foreach ($pricing['items'] as $pricingItem) {
+                    if (!is_array($pricingItem) || !isset($pricingItem['index'])) {
+                        continue;
+                    }
+
+                    $itemPriceMap[(int) $pricingItem['index']] = $pricingItem;
+                }
+            }
+
+            foreach ($validCategoryItems as $index => $item) {
+                $itemIndex = $item['index'];
+                if ($itemIndex === null || !isset($itemPriceMap[$itemIndex])) {
+                    continue;
+                }
+
+                $pricingEntry = $itemPriceMap[$itemIndex];
+                $validCategoryItems[$index]['price_per_night'] = isset($pricingEntry['price_per_night'])
+                    ? (float) $pricingEntry['price_per_night']
+                    : null;
+                $validCategoryItems[$index]['total_price'] = isset($pricingEntry['total_price'])
+                    ? (float) $pricingEntry['total_price']
+                    : null;
+
+                if (isset($categoryItemsForForm[$itemIndex])) {
+                    $categoryItemsForForm[$itemIndex]['price_per_night'] = isset($pricingEntry['price_per_night'])
+                        ? number_format((float) $pricingEntry['price_per_night'], 2, ',', '.')
+                        : '';
+                    $categoryItemsForForm[$itemIndex]['total_price'] = isset($pricingEntry['total_price'])
+                        ? number_format((float) $pricingEntry['total_price'], 2, ',', '.')
+                        : '';
+                }
+            }
+
+            $reservationFormData['category_items'] = $categoryItemsForForm;
 
             $pricePerNightValue = null;
             if ($pricePerNightInput !== '') {
@@ -3652,67 +3896,6 @@ if ($pdo !== null) {
     }
     $reservationCategoryOptionsHtml = implode('', $options);
     $rooms = $roomManager->all();
-    $roomsByCategory = [];
-    foreach ($rooms as $room) {
-        if (!isset($room['id'])) {
-            continue;
-        }
-
-        $categoryId = isset($room['category_id']) && $room['category_id'] !== null
-            ? (int) $room['category_id']
-            : 0;
-
-        if (!isset($roomsByCategory[$categoryId])) {
-            $roomsByCategory[$categoryId] = [];
-        }
-
-        $roomsByCategory[$categoryId][] = $room;
-    }
-
-    $buildRoomSelectOptions = static function (?int $selectedRoomId) use ($roomsByCategory, $categoryLookup): string {
-        $options = ['<option value="">Kein konkretes Zimmer – Überbuchung</option>'];
-
-        foreach ($roomsByCategory as $categoryId => $categoryRooms) {
-            if ($categoryRooms === []) {
-                continue;
-            }
-
-            $label = $categoryId > 0 && isset($categoryLookup[$categoryId]['name'])
-                ? (string) $categoryLookup[$categoryId]['name']
-                : 'Ohne Kategorie';
-
-            $options[] = '<optgroup label="' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '">';
-
-            foreach ($categoryRooms as $room) {
-                if (!isset($room['id'])) {
-                    continue;
-                }
-
-                $roomId = (int) $room['id'];
-                $roomNumber = trim((string) ($room['number'] ?? $room['room_number'] ?? $roomId));
-                $roomLabelParts = ['Zimmer ' . $roomNumber];
-
-                if (isset($room['category_name']) && $room['category_name'] !== null && $room['category_name'] !== '') {
-                    $roomLabelParts[] = '(' . $room['category_name'] . ')';
-                }
-
-                $roomLabel = trim(implode(' ', $roomLabelParts));
-
-                $options[] = sprintf(
-                    '<option value="%d"%s>%s</option>',
-                    $roomId,
-                    $selectedRoomId !== null && $roomId === $selectedRoomId ? ' selected' : '',
-                    htmlspecialchars($roomLabel, ENT_QUOTES, 'UTF-8')
-                );
-            }
-
-            $options[] = '</optgroup>';
-        }
-
-        return implode('', $options);
-    };
-
-    $reservationRoomOptionsHtml = $buildRoomSelectOptions(null);
     $guests = $guestManager->all();
     if ($companyManager !== null) {
         $companies = $companyManager->all();
@@ -4020,6 +4203,16 @@ if ($pdo !== null) {
             $itemDetail['guestCount'] = $itemGuestCount;
             $itemDetail['categoryCapacity'] = $itemCategoryCapacity;
 
+            $itemArrivalDate = $createDateImmutable($item['arrival_date'] ?? null) ?? $arrivalDate;
+            $itemDepartureDate = $createDateImmutable($item['departure_date'] ?? null) ?? $departureDate;
+
+            if (isset($item['price_per_night']) && $item['price_per_night'] !== null) {
+                $itemDetail['pricePerNight'] = (float) $item['price_per_night'];
+            }
+            if (isset($item['total_price']) && $item['total_price'] !== null) {
+                $itemDetail['totalPrice'] = (float) $item['total_price'];
+            }
+
             if ($itemDetail['type'] === 'overbooking') {
                 $itemDetail['roomName'] = 'Überbuchung' . ($itemCategoryName !== '' ? ' – ' . $itemCategoryName : '');
             } else {
@@ -4027,11 +4220,33 @@ if ($pdo !== null) {
                 $itemDetail['roomName'] = $roomNumberLabel !== '' ? 'Zimmer ' . $roomNumberLabel : 'Zimmer';
             }
 
+            if ($itemArrivalDate instanceof DateTimeImmutable) {
+                $itemDetail['arrivalDate'] = $itemArrivalDate->format('Y-m-d');
+                $itemDetail['arrivalDateFormatted'] = $itemArrivalDate->format('d.m.Y');
+            }
+            if ($itemDepartureDate instanceof DateTimeImmutable) {
+                $itemDetail['departureDate'] = $itemDepartureDate->format('Y-m-d');
+                $itemDetail['departureDateFormatted'] = $itemDepartureDate->format('d.m.Y');
+            }
+
+            if (isset($itemDetail['pricePerNight'])) {
+                $formatted = $formatCurrency($itemDetail['pricePerNight']);
+                if ($formatted !== null) {
+                    $itemDetail['pricePerNightFormatted'] = $formatted;
+                }
+            }
+            if (isset($itemDetail['totalPrice'])) {
+                $formattedTotal = $formatCurrency($itemDetail['totalPrice']);
+                if ($formattedTotal !== null) {
+                    $itemDetail['totalPriceFormatted'] = $formattedTotal;
+                }
+            }
+
             if ($itemRoomId > 0) {
                 $roomStays[$itemRoomId][] = [
                     'label' => $itemLabel,
-                    'arrival' => $arrivalDate,
-                    'departure' => $departureDate,
+                    'arrival' => $itemArrivalDate,
+                    'departure' => $itemDepartureDate,
                     'guestCount' => $itemGuestCount,
                     'details' => $itemDetail,
                 ];
@@ -4054,8 +4269,8 @@ if ($pdo !== null) {
 
             $categoryOverbookingStays[$itemCategoryId][] = [
                 'label' => $itemLabel,
-                'arrival' => $arrivalDate,
-                'departure' => $departureDate,
+                'arrival' => $itemArrivalDate,
+                'departure' => $itemDepartureDate,
                 'quantity' => $itemQuantity,
                 'guestCount' => $itemGuestCount,
                 'details' => $itemDetail,
@@ -4622,6 +4837,10 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                     'category_id' => isset($item['category_id']) && $item['category_id'] !== null ? (string) $item['category_id'] : '',
                     'room_quantity' => isset($item['room_quantity']) && (int) $item['room_quantity'] > 0 ? (string) $item['room_quantity'] : '1',
                     'room_id' => isset($item['room_id']) && $item['room_id'] !== null ? (string) $item['room_id'] : '',
+                    'arrival_date' => isset($item['arrival_date']) && $item['arrival_date'] !== null ? (string) $item['arrival_date'] : ($reservationToEdit['arrival_date'] ?? ''),
+                    'departure_date' => isset($item['departure_date']) && $item['departure_date'] !== null ? (string) $item['departure_date'] : ($reservationToEdit['departure_date'] ?? ''),
+                    'price_per_night' => isset($item['price_per_night']) && $item['price_per_night'] !== null ? number_format((float) $item['price_per_night'], 2, ',', '.') : '',
+                    'total_price' => isset($item['total_price']) && $item['total_price'] !== null ? number_format((float) $item['total_price'], 2, ',', '.') : '',
                 ];
             }
 
@@ -5274,9 +5493,23 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                           $selectedRoomId = isset($categoryItem['room_id']) && $categoryItem['room_id'] !== ''
                               ? (int) $categoryItem['room_id']
                               : null;
-                          $roomOptions = $buildRoomSelectOptions !== null
-                              ? $buildRoomSelectOptions($selectedRoomId)
-                              : $reservationRoomOptionsHtml;
+                          $roomArrivalValue = isset($categoryItem['arrival_date']) && $categoryItem['arrival_date'] !== ''
+                              ? (string) $categoryItem['arrival_date']
+                              : (string) $reservationFormData['arrival_date'];
+                          $roomDepartureValue = isset($categoryItem['departure_date']) && $categoryItem['departure_date'] !== ''
+                              ? (string) $categoryItem['departure_date']
+                              : (string) $reservationFormData['departure_date'];
+                          $roomPricePerNightValue = isset($categoryItem['price_per_night']) ? (string) $categoryItem['price_per_night'] : '';
+                          $roomTotalPriceValue = isset($categoryItem['total_price']) ? (string) $categoryItem['total_price'] : '';
+                          $selectedRoomLabel = '';
+                          if ($selectedRoomId !== null) {
+                              if (isset($roomLookup[$selectedRoomId]['room_number'])) {
+                                  $labelNumber = trim((string) $roomLookup[$selectedRoomId]['room_number']);
+                                  $selectedRoomLabel = $labelNumber !== '' ? 'Zimmer ' . $labelNumber : 'Zimmer #' . $selectedRoomId;
+                              } else {
+                                  $selectedRoomLabel = 'Zimmer #' . $selectedRoomId;
+                              }
+                          }
                           $disableRemove = $categoryItemCount === 1 && $categoryIndex === 0;
                         ?>
                         <div class="reservation-category-item card card-body border p-3 mb-2" data-index="<?= $categoryIndex ?>">
@@ -5301,10 +5534,31 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                             </div>
                             <div class="col-12 col-lg-8 mt-2">
                               <label class="form-label">Zimmerzuweisung</label>
-                              <select class="form-select reservation-room-select" name="reservation_categories[<?= $categoryIndex ?>][room_id]" <?= $pdo === null ? 'disabled' : '' ?>>
-                                <?= $roomOptions ?>
+                              <select class="form-select reservation-room-select" data-room-select data-item-index="<?= $categoryIndex ?>" name="reservation_categories[<?= $categoryIndex ?>][room_id]" <?= $pdo === null ? 'disabled' : '' ?>>
+                                <option value="">Kein konkretes Zimmer – Überbuchung</option>
+                                <?php if ($selectedRoomId !== null && $selectedRoomLabel !== ''): ?>
+                                  <option value="<?= $selectedRoomId ?>" selected><?= htmlspecialchars($selectedRoomLabel) ?> (zugewiesen)</option>
+                                <?php endif; ?>
                               </select>
                               <div class="form-text">Leer lassen, um Überbuchungen zu planen.</div>
+                            </div>
+                            <div class="col-12 col-lg-4 mt-2">
+                              <label class="form-label">Zimmer-Anreise</label>
+                              <input type="date" class="form-control reservation-item-arrival" name="reservation_categories[<?= $categoryIndex ?>][arrival_date]" value="<?= htmlspecialchars($roomArrivalValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                              <div class="form-text">Standard ist die Reservierungs-Anreise.</div>
+                            </div>
+                            <div class="col-12 col-lg-4 mt-2">
+                              <label class="form-label">Zimmer-Abreise</label>
+                              <input type="date" class="form-control reservation-item-departure" name="reservation_categories[<?= $categoryIndex ?>][departure_date]" value="<?= htmlspecialchars($roomDepartureValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                              <div class="form-text">Standard ist die Reservierungs-Abreise.</div>
+                            </div>
+                            <div class="col-12 col-lg-4 mt-2">
+                              <div class="reservation-item-pricing border rounded p-2 bg-body-tertiary" data-pricing-index="<?= $categoryIndex ?>">
+                                <div class="small text-muted">Preis pro Nacht</div>
+                                <div class="fw-semibold" data-pricing-night><?= $roomPricePerNightValue !== '' ? htmlspecialchars($roomPricePerNightValue) . ' €' : '–' ?></div>
+                                <div class="small text-muted mt-2">Gesamtpreis</div>
+                                <div class="fw-semibold" data-pricing-total><?= $roomTotalPriceValue !== '' ? htmlspecialchars($roomTotalPriceValue) . ' €' : '–' ?></div>
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -5332,10 +5586,28 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                           </div>
                           <div class="col-12 col-lg-8 mt-2">
                             <label class="form-label">Zimmerzuweisung</label>
-                            <select class="form-select reservation-room-select" name="reservation_categories[__INDEX__][room_id]" <?= $pdo === null ? 'disabled' : '' ?>>
-                              <?= $reservationRoomOptionsHtml ?>
+                            <select class="form-select reservation-room-select" data-room-select data-item-index="__INDEX__" name="reservation_categories[__INDEX__][room_id]" <?= $pdo === null ? 'disabled' : '' ?>>
+                              <option value="">Kein konkretes Zimmer – Überbuchung</option>
                             </select>
                             <div class="form-text">Leer lassen, um Überbuchungen zu planen.</div>
+                          </div>
+                          <div class="col-12 col-lg-4 mt-2">
+                            <label class="form-label">Zimmer-Anreise</label>
+                            <input type="date" class="form-control reservation-item-arrival" name="reservation_categories[__INDEX__][arrival_date]" value="<?= htmlspecialchars((string) $reservationFormData['arrival_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                            <div class="form-text">Standard ist die Reservierungs-Anreise.</div>
+                          </div>
+                          <div class="col-12 col-lg-4 mt-2">
+                            <label class="form-label">Zimmer-Abreise</label>
+                            <input type="date" class="form-control reservation-item-departure" name="reservation_categories[__INDEX__][departure_date]" value="<?= htmlspecialchars((string) $reservationFormData['departure_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                            <div class="form-text">Standard ist die Reservierungs-Abreise.</div>
+                          </div>
+                          <div class="col-12 col-lg-4 mt-2">
+                            <div class="reservation-item-pricing border rounded p-2 bg-body-tertiary" data-pricing-index="__INDEX__">
+                              <div class="small text-muted">Preis pro Nacht</div>
+                              <div class="fw-semibold" data-pricing-night>–</div>
+                              <div class="small text-muted mt-2">Gesamtpreis</div>
+                              <div class="fw-semibold" data-pricing-total>–</div>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -7624,6 +7896,11 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             nextIndex = container.children.length;
           }
 
+          var masterArrivalInput = document.getElementById('reservation-arrival');
+          var masterDepartureInput = document.getElementById('reservation-departure');
+          var reservationIdField = document.querySelector('#reservation-form input[name="id"]');
+          var reservationIdValue = reservationIdField ? parseInt(reservationIdField.value || '0', 10) : 0;
+
           function updateRemoveButtons() {
             var items = container.querySelectorAll('.reservation-category-item');
             items.forEach(function (item, index) {
@@ -7668,6 +7945,181 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             updateQuantityState();
           }
 
+          function updateItemDateLimits(item) {
+            if (!item) {
+              return;
+            }
+
+            var arrivalField = item.querySelector('.reservation-item-arrival');
+            var departureField = item.querySelector('.reservation-item-departure');
+
+            if (arrivalField) {
+              if (masterArrivalInput && masterArrivalInput.value) {
+                arrivalField.setAttribute('min', masterArrivalInput.value);
+              } else {
+                arrivalField.removeAttribute('min');
+              }
+
+              if (masterDepartureInput && masterDepartureInput.value) {
+                arrivalField.setAttribute('max', masterDepartureInput.value);
+              } else {
+                arrivalField.removeAttribute('max');
+              }
+            }
+
+            if (departureField) {
+              if (masterDepartureInput && masterDepartureInput.value) {
+                departureField.setAttribute('max', masterDepartureInput.value);
+              } else {
+                departureField.removeAttribute('max');
+              }
+
+              if (arrivalField && arrivalField.value) {
+                departureField.setAttribute('min', arrivalField.value);
+              } else if (masterArrivalInput && masterArrivalInput.value) {
+                departureField.setAttribute('min', masterArrivalInput.value);
+              } else {
+                departureField.removeAttribute('min');
+              }
+            }
+          }
+
+          function updateRoomOptions(item) {
+            if (!item) {
+              return;
+            }
+
+            var categorySelect = item.querySelector('select[name$="[category_id]"]');
+            var roomSelect = item.querySelector('.reservation-room-select');
+            var arrivalField = item.querySelector('.reservation-item-arrival');
+            var departureField = item.querySelector('.reservation-item-departure');
+
+            if (!categorySelect || !roomSelect || !arrivalField || !departureField) {
+              return;
+            }
+
+            var categoryId = parseInt(categorySelect.value || '', 10);
+            var arrivalValue = arrivalField.value || (masterArrivalInput ? masterArrivalInput.value : '');
+            var departureValue = departureField.value || (masterDepartureInput ? masterDepartureInput.value : '');
+            var currentValue = roomSelect.value || '';
+            var currentLabel = '';
+            if (currentValue) {
+              var selectedOption = roomSelect.querySelector('option[value="' + currentValue + '"]');
+              if (selectedOption) {
+                currentLabel = selectedOption.textContent || '';
+              }
+            }
+
+            while (roomSelect.options.length > 0) {
+              roomSelect.remove(0);
+            }
+            roomSelect.add(new Option('Kein konkretes Zimmer – Überbuchung', ''));
+
+            if (!categoryId || !arrivalValue || !departureValue) {
+              if (currentValue) {
+                var fallbackLabel = currentLabel || ('Zimmer #' + currentValue + ' (zugewiesen)');
+                var fallbackOption = new Option(fallbackLabel, currentValue);
+                fallbackOption.selected = true;
+                roomSelect.add(fallbackOption);
+              }
+              roomSelect.disabled = false;
+              return;
+            }
+
+            roomSelect.disabled = true;
+
+            var params = new URLSearchParams({
+              ajax: 'available_rooms',
+              categoryId: categoryId,
+              arrivalDate: arrivalValue,
+              departureDate: departureValue
+            });
+            if (reservationIdValue) {
+              params.append('ignoreReservationId', String(reservationIdValue));
+            }
+
+            fetch('index.php?' + params.toString())
+              .then(function (response) { return response.json(); })
+              .then(function (data) {
+                var rooms = data && Array.isArray(data.rooms) ? data.rooms : [];
+                var currentIncluded = false;
+
+                rooms.forEach(function (room) {
+                  if (!room || room.id == null) {
+                    return;
+                  }
+
+                  var roomId = String(room.id);
+                  var rawLabel = room.label ? String(room.label).trim() : '';
+                  var optionLabel = rawLabel;
+
+                  if (!optionLabel) {
+                    optionLabel = '#' + roomId;
+                  }
+
+                  if (/^#?\d+$/u.test(optionLabel)) {
+                    optionLabel = optionLabel.replace(/^#/, '');
+                    optionLabel = 'Zimmer ' + optionLabel;
+                  }
+
+                  var option = new Option(optionLabel, roomId);
+                  if (roomId === currentValue) {
+                    option.selected = true;
+                    currentIncluded = true;
+                  }
+                  roomSelect.add(option);
+                });
+
+                if (currentValue && !currentIncluded) {
+                  var fallbackLabel = currentLabel || ('Zimmer #' + currentValue + ' (zugewiesen)');
+                  var fallbackOption = new Option(fallbackLabel, currentValue);
+                  fallbackOption.selected = true;
+                  roomSelect.add(fallbackOption);
+                }
+              })
+              .catch(function () {
+                if (currentValue) {
+                  var fallbackLabel = currentLabel || ('Zimmer #' + currentValue + ' (zugewiesen)');
+                  var fallbackOption = new Option(fallbackLabel, currentValue);
+                  fallbackOption.selected = true;
+                  roomSelect.add(fallbackOption);
+                }
+              })
+              .finally(function () {
+                roomSelect.disabled = false;
+              });
+          }
+
+          function bindItemDateBehaviour(item) {
+            if (!item) {
+              return;
+            }
+
+            var arrivalField = item.querySelector('.reservation-item-arrival');
+            var departureField = item.querySelector('.reservation-item-departure');
+
+            function sync() {
+              updateItemDateLimits(item);
+              updateRoomOptions(item);
+            }
+
+            if (arrivalField) {
+              arrivalField.addEventListener('change', function () {
+                sync();
+                document.dispatchEvent(new CustomEvent('reservation:categories-changed'));
+              });
+            }
+
+            if (departureField) {
+              departureField.addEventListener('change', function () {
+                sync();
+                document.dispatchEvent(new CustomEvent('reservation:categories-changed'));
+              });
+            }
+
+            sync();
+          }
+
           function createItem() {
             var html = template.innerHTML.replace(/__INDEX__/g, String(nextIndex));
             nextIndex += 1;
@@ -7685,6 +8137,14 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
 
             container.appendChild(newItem);
             bindRoomQuantityBehaviour(newItem);
+            bindItemDateBehaviour(newItem);
+            var categorySelect = newItem.querySelector('select[name$="[category_id]"]');
+            if (categorySelect) {
+              categorySelect.addEventListener('change', function () {
+                updateRoomOptions(newItem);
+              });
+            }
+            updateRoomOptions(newItem);
             updateRemoveButtons();
             document.dispatchEvent(new CustomEvent('reservation:categories-changed'));
           });
@@ -7711,8 +8171,23 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
 
           container.querySelectorAll('.reservation-category-item').forEach(function (item) {
             bindRoomQuantityBehaviour(item);
+            bindItemDateBehaviour(item);
+            var categorySelect = item.querySelector('select[name$="[category_id]"]');
+            if (categorySelect) {
+              categorySelect.addEventListener('change', function () {
+                updateRoomOptions(item);
+              });
+            }
+            updateRoomOptions(item);
           });
           updateRemoveButtons();
+
+          document.addEventListener('reservation:master-dates-changed', function () {
+            container.querySelectorAll('.reservation-category-item').forEach(function (item) {
+              updateItemDateLimits(item);
+              updateRoomOptions(item);
+            });
+          });
         }
 
         function setupReservationPricing() {
@@ -7859,7 +8334,24 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                 quantity = 1;
               }
 
+              var roomSelect = item.querySelector('.reservation-room-select');
+              var arrivalField = item.querySelector('.reservation-item-arrival');
+              var departureField = item.querySelector('.reservation-item-departure');
+              var itemIndex = parseInt(item.getAttribute('data-index') || String(items.length), 10);
+
+              var roomId = roomSelect && roomSelect.value ? parseInt(roomSelect.value, 10) : null;
+              if (Number.isNaN(roomId)) {
+                roomId = null;
+              }
+
+              var arrivalDateValue = arrivalField && arrivalField.value ? arrivalField.value : '';
+              var departureDateValue = departureField && departureField.value ? departureField.value : '';
+
               items.push({ categoryId: categoryId, quantity: quantity });
+              items[items.length - 1].index = itemIndex;
+              items[items.length - 1].roomId = roomId;
+              items[items.length - 1].arrivalDate = arrivalDateValue;
+              items[items.length - 1].departureDate = departureDateValue;
             });
 
             return items;
@@ -7889,6 +8381,39 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               totalPriceInput.value = formatMoney(result.totalPrice);
             } else if (typeof result.totalPriceFormatted === 'string') {
               totalPriceInput.value = result.totalPriceFormatted.replace(/[^0-9.,-]/g, '');
+            }
+
+            if (Array.isArray(result.items)) {
+              result.items.forEach(function (entry) {
+                if (!entry || typeof entry.index === 'undefined') {
+                  return;
+                }
+
+                var index = entry.index;
+                var pricingContainer = categoryContainer.querySelector('[data-pricing-index="' + index + '"]');
+                if (!pricingContainer) {
+                  return;
+                }
+
+                var nightLabel = pricingContainer.querySelector('[data-pricing-night]');
+                var totalLabel = pricingContainer.querySelector('[data-pricing-total]');
+
+                if (nightLabel) {
+                  if (typeof entry.price_per_night === 'number') {
+                    nightLabel.textContent = formatMoney(entry.price_per_night) + ' €';
+                  } else {
+                    nightLabel.textContent = '–';
+                  }
+                }
+
+                if (totalLabel) {
+                  if (typeof entry.total_price === 'number') {
+                    totalLabel.textContent = formatMoney(entry.total_price) + ' €';
+                  } else {
+                    totalLabel.textContent = '–';
+                  }
+                }
+              });
             }
 
             setFeedback('Preise wurden aktualisiert.', 'success');
@@ -7923,7 +8448,12 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               arrivalDate: arrivalValue,
               departureDate: departureValue,
               categories: categories.map(function (item) {
-                return { categoryId: item.categoryId, quantity: item.quantity };
+                return {
+                  categoryId: item.categoryId,
+                  quantity: item.quantity,
+                  arrivalDate: item.arrivalDate || arrivalValue,
+                  departureDate: item.departureDate || departureValue
+                };
               })
             };
 
@@ -7971,12 +8501,14 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             updateDateConstraints();
             updateNightField();
             markDirty();
+            document.dispatchEvent(new CustomEvent('reservation:master-dates-changed'));
           });
 
           departureInput.addEventListener('change', function () {
             updateDateConstraints();
             updateNightField();
             markDirty();
+            document.dispatchEvent(new CustomEvent('reservation:master-dates-changed'));
           });
 
           categoryContainer.addEventListener('change', function (event) {
@@ -7985,14 +8517,14 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
               return;
             }
 
-            if (target.matches('select[name$="[category_id]"]') || target.matches('input[name$="[room_quantity]"]') || target.matches('.reservation-room-select')) {
+            if (target.matches('select[name$="[category_id]"]') || target.matches('input[name$="[room_quantity]"]') || target.matches('.reservation-room-select') || target.matches('.reservation-item-arrival') || target.matches('.reservation-item-departure')) {
               markDirty();
             }
           });
 
           categoryContainer.addEventListener('input', function (event) {
             var target = event.target;
-            if (target && target.matches('input[name$="[room_quantity]"]')) {
+            if (target && (target.matches('input[name$="[room_quantity]"]') || target.matches('.reservation-item-arrival') || target.matches('.reservation-item-departure'))) {
               markDirty();
             }
           });

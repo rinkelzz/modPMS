@@ -69,6 +69,10 @@ class ReservationManager
                     category_id INT UNSIGNED NULL,
                     room_id INT UNSIGNED NULL,
                     room_quantity INT UNSIGNED NOT NULL DEFAULT 1,
+                    arrival_date DATE NULL,
+                    departure_date DATE NULL,
+                    price_per_night DECIMAL(10,2) NULL,
+                    total_price DECIMAL(10,2) NULL,
                     created_at TIMESTAMP NULL DEFAULT NULL,
                     updated_at TIMESTAMP NULL DEFAULT NULL,
                     CONSTRAINT fk_reservation_items_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE,
@@ -81,6 +85,20 @@ class ReservationManager
             );
         } catch (PDOException $exception) {
             // ignore table creation issues
+        }
+
+        foreach (['arrival_date DATE NULL AFTER room_quantity', 'departure_date DATE NULL AFTER arrival_date', 'price_per_night DECIMAL(10,2) NULL AFTER departure_date', 'total_price DECIMAL(10,2) NULL AFTER price_per_night'] as $definition) {
+            try {
+                if (preg_match('/^([a-z_]+)\s/i', $definition, $matches) === 1) {
+                    $columnName = $matches[1];
+                    $columnCheck = $this->pdo->query("SHOW COLUMNS FROM reservation_items LIKE '" . $columnName . "'");
+                    if ($columnCheck === false || $columnCheck->fetch() === false) {
+                        $this->pdo->exec('ALTER TABLE reservation_items ADD COLUMN ' . $definition);
+                    }
+                }
+            } catch (PDOException $exception) {
+                // ignore column adjustments
+            }
         }
 
         try {
@@ -510,8 +528,8 @@ class ReservationManager
         }
 
         $insert = $this->pdo->prepare(
-            'INSERT INTO reservation_items (reservation_id, category_id, room_id, room_quantity, created_at, updated_at)
-             VALUES (:reservation_id, :category_id, :room_id, :room_quantity, NOW(), NOW())'
+            'INSERT INTO reservation_items (reservation_id, category_id, room_id, room_quantity, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at)
+             VALUES (:reservation_id, :category_id, :room_id, :room_quantity, :arrival_date, :departure_date, :price_per_night, :total_price, NOW(), NOW())'
         );
 
         foreach ($items as $item) {
@@ -530,13 +548,119 @@ class ReservationManager
                 $quantity = 1;
             }
 
+            $arrivalDate = null;
+            if (isset($item['arrival_date']) && $item['arrival_date'] !== null && $item['arrival_date'] !== '') {
+                $arrivalDate = (string) $item['arrival_date'];
+            }
+
+            $departureDate = null;
+            if (isset($item['departure_date']) && $item['departure_date'] !== null && $item['departure_date'] !== '') {
+                $departureDate = (string) $item['departure_date'];
+            }
+
+            $pricePerNight = null;
+            if (isset($item['price_per_night']) && $item['price_per_night'] !== null && $item['price_per_night'] !== '') {
+                $pricePerNight = number_format((float) $item['price_per_night'], 2, '.', '');
+            }
+
+            $totalPrice = null;
+            if (isset($item['total_price']) && $item['total_price'] !== null && $item['total_price'] !== '') {
+                $totalPrice = number_format((float) $item['total_price'], 2, '.', '');
+            }
+
             $insert->execute([
                 'reservation_id' => $reservationId,
                 'category_id' => $categoryId,
                 'room_id' => $roomId,
                 'room_quantity' => $quantity,
+                'arrival_date' => $arrivalDate,
+                'departure_date' => $departureDate,
+                'price_per_night' => $pricePerNight,
+                'total_price' => $totalPrice,
             ]);
         }
+    }
+
+    public function isRoomAvailable(int $roomId, DateTimeImmutable $arrival, DateTimeImmutable $departure, ?int $ignoreReservationId = null): bool
+    {
+        if ($roomId <= 0) {
+            return true;
+        }
+
+        $sql = 'SELECT COUNT(*) FROM reservation_items ri '
+            . 'INNER JOIN reservations r ON r.id = ri.reservation_id '
+            . 'WHERE ri.room_id = :room_id '
+            . 'AND r.status NOT IN (\'storniert\', \'noshow\') '
+            . 'AND COALESCE(ri.arrival_date, r.arrival_date) < :departure '
+            . 'AND COALESCE(ri.departure_date, r.departure_date) > :arrival';
+
+        $params = [
+            'room_id' => $roomId,
+            'arrival' => $arrival->format('Y-m-d'),
+            'departure' => $departure->format('Y-m-d'),
+        ];
+
+        if ($ignoreReservationId !== null && $ignoreReservationId > 0) {
+            $sql .= ' AND r.id <> :ignore_id';
+            $params['ignore_id'] = $ignoreReservationId;
+        }
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+
+        $conflicts = (int) $stmt->fetchColumn();
+
+        return $conflicts === 0;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    public function findAvailableRooms(int $categoryId, DateTimeImmutable $arrival, DateTimeImmutable $departure, ?int $ignoreReservationId = null): array
+    {
+        if ($categoryId <= 0) {
+            return [];
+        }
+
+        $params = [
+            'category_id' => $categoryId,
+            'arrival' => $arrival->format('Y-m-d'),
+            'departure' => $departure->format('Y-m-d'),
+        ];
+
+        $ignoreClause = '';
+        if ($ignoreReservationId !== null && $ignoreReservationId > 0) {
+            $ignoreClause = "\n      AND r.id <> :ignore_id";
+            $params['ignore_id'] = $ignoreReservationId;
+        }
+
+        $sql = sprintf(
+            <<<'SQL'
+SELECT rm.id, rm.room_number, rm.category_id, rm.status
+FROM rooms rm
+WHERE rm.category_id = :category_id
+  AND rm.status = 'frei'
+  AND rm.id NOT IN (
+    SELECT DISTINCT ri.room_id
+    FROM reservation_items ri
+    INNER JOIN reservations r ON r.id = ri.reservation_id
+    WHERE ri.room_id IS NOT NULL
+      AND r.status NOT IN ('storniert', 'noshow')%s
+      AND COALESCE(ri.arrival_date, r.arrival_date) < :departure
+      AND COALESCE(ri.departure_date, r.departure_date) > :arrival
+  )
+ORDER BY CAST(rm.room_number AS UNSIGNED), rm.room_number
+SQL
+,
+            $ignoreClause
+        );
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+
+        $rooms = $stmt->fetchAll();
+
+        return is_array($rooms) ? $rooms : [];
     }
 
     public function updateStatus(int $id, string $status, ?int $userId = null): void
@@ -582,8 +706,9 @@ class ReservationManager
         $placeholders = implode(', ', array_fill(0, count($reservationIds), '?'));
 
         $stmt = $this->pdo->prepare(
-            'SELECT ri.id, ri.reservation_id, ri.category_id, ri.room_id, ri.room_quantity, ri.created_at, ri.updated_at, '
-            . 'rc.name AS category_name, rm.room_number '
+            'SELECT ri.id, ri.reservation_id, ri.category_id, ri.room_id, ri.room_quantity, '
+            . 'ri.arrival_date, ri.departure_date, ri.price_per_night, ri.total_price, '
+            . 'ri.created_at, ri.updated_at, rc.name AS category_name, rm.room_number '
             . 'FROM reservation_items ri '
             . 'LEFT JOIN room_categories rc ON rc.id = ri.category_id '
             . 'LEFT JOIN rooms rm ON rm.id = ri.room_id '
