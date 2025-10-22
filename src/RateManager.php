@@ -645,6 +645,8 @@ class RateManager
                     $sourceEvent = $selectedEvent;
                 }
 
+                $eventColor = $this->normaliseColorValue($sourceEvent['color'] ?? null);
+
                 $calendar[$monthKey][] = [
                     'date' => $dateString,
                     'price' => $price,
@@ -653,7 +655,7 @@ class RateManager
                     'period_label' => $sourcePeriod !== null ? $this->formatPeriodLabel($sourcePeriod) : null,
                     'event_id' => $sourceEvent['id'] ?? null,
                     'event_label' => $sourceEvent['name'] ?? null,
-                    'event_color' => $sourceEvent['color'] ?? null,
+                    'event_color' => $eventColor,
                 ];
             }
         }
@@ -910,7 +912,7 @@ class RateManager
             return 0;
         }
 
-        $normalizedColor = $this->normaliseColorValue($data['color'] ?? null);
+        $normalizedColor = $this->normaliseColorValue($data['color'] ?? null) ?? '#B91C1C';
         $normalizedDefaultPrice = $this->normalisePriceInput($data['default_price'] ?? null);
 
         $descriptionValue = $data['description'] ?? null;
@@ -961,7 +963,7 @@ class RateManager
             return;
         }
 
-        $normalizedColor = $this->normaliseColorValue($data['color'] ?? null);
+        $normalizedColor = $this->normaliseColorValue($data['color'] ?? null) ?? '#B91C1C';
         $normalizedDefaultPrice = $this->normalisePriceInput($data['default_price'] ?? null);
 
         $descriptionValue = $data['description'] ?? null;
