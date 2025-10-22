@@ -476,19 +476,6 @@ try {
 
 $settingsAvailable = $settingsManager instanceof SettingManager && $pdo !== null;
 
-$overnightVatRate = 7.0;
-if ($settingsManager instanceof SettingManager) {
-    $storedVat = $settingsManager->get('overnight_vat_rate');
-    if ($storedVat !== null && $storedVat !== '') {
-        $parsedVat = $normalizeMoneyInput($storedVat);
-        if ($parsedVat !== null) {
-            $overnightVatRate = $parsedVat;
-        }
-    }
-}
-$overnightVatRateValue = number_format($overnightVatRate, 2, '.', '');
-$overnightVatRateLabel = $formatPercent($overnightVatRate);
-
 if ($settingsManager instanceof SettingManager) {
     $keys = array_map(static fn (string $status): string => 'reservation_status_color_' . $status, $reservationStatuses);
     $storedColors = $settingsManager->getMany($keys);
@@ -608,59 +595,8 @@ $normalizeMoneyInput = static function (?string $value): ?float {
         return null;
     }
 
-    $sanitized = preg_replace('/[^0-9,\.\-]/', '', $trimmed);
-    if ($sanitized === '' || $sanitized === '-') {
-        return null;
-    }
-
-    $sign = '';
-    if ($sanitized[0] === '-') {
-        $sign = '-';
-        $sanitized = substr($sanitized, 1);
-    }
-
-    if ($sanitized === '') {
-        return null;
-    }
-
-    $commaPos = strrpos($sanitized, ',');
-    $dotPos = strrpos($sanitized, '.');
-    if ($commaPos !== false && $dotPos !== false) {
-        $decimalSeparator = $commaPos > $dotPos ? ',' : '.';
-    } elseif ($commaPos !== false) {
-        $decimalSeparator = ',';
-    } elseif ($dotPos !== false) {
-        $decimalSeparator = '.';
-    } else {
-        $decimalSeparator = null;
-    }
-
-    if ($decimalSeparator !== null) {
-        $parts = explode($decimalSeparator, $sanitized);
-        $decimalPart = array_pop($parts);
-        $integerPart = implode('', $parts);
-
-        $integerPart = preg_replace('/\D/', '', $integerPart);
-        $decimalPart = preg_replace('/\D/', '', $decimalPart);
-
-        if ($integerPart === '' && $decimalPart === '') {
-            return null;
-        }
-
-        $normalized = $sign . ($integerPart === '' ? '0' : $integerPart);
-        if ($decimalPart !== '') {
-            $normalized .= '.' . $decimalPart;
-        }
-    } else {
-        $digitsOnly = preg_replace('/\D/', '', $sanitized);
-        if ($digitsOnly === '') {
-            return null;
-        }
-
-        $normalized = $sign . $digitsOnly;
-    }
-
-    if (!is_numeric($normalized)) {
+    $normalized = str_replace(',', '.', preg_replace('/[^0-9,\.\-]/', '', $trimmed));
+    if ($normalized === '' || !is_numeric($normalized)) {
         return null;
     }
 
@@ -687,6 +623,19 @@ $formatPercent = static function (?float $value): ?string {
 
     return number_format($value, 2, ',', '.') . ' %';
 };
+
+$overnightVatRate = 7.0;
+if ($settingsManager instanceof SettingManager) {
+    $storedVat = $settingsManager->get('overnight_vat_rate');
+    if ($storedVat !== null && $storedVat !== '') {
+        $parsedVat = $normalizeMoneyInput($storedVat);
+        if ($parsedVat !== null) {
+            $overnightVatRate = $parsedVat;
+        }
+    }
+}
+$overnightVatRateValue = number_format($overnightVatRate, 2, '.', '');
+$overnightVatRateLabel = $formatPercent($overnightVatRate);
 
 $computeReservationPricing = static function (
     ?RateManager $rateManager,

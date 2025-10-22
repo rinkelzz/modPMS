@@ -2,7 +2,7 @@
 
 Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP und MySQL. Dieses Repository enthält das Basis-Modul mit Dashboard, Kalender, Zimmerkategorien und integriertem Update-Workflow.
 
-## Features Basis-Modul (Version 1.8.0)
+## Features Basis-Modul (Version 1.8.1)
 
 - **Dashboard** mit gleitendem 8-Tage-Zimmerkalender (Zimmer auf Y-Achse, Tage auf X-Achse) inklusive aufgeräumter Kategorien-/Zimmerleiste in voller Inhaltsbreite, kategorieweiser Übersichtszeile (Belegung/Frei/Überbuchungen je Tag), eigener Zimmer- und Überbuchungsdarstellung pro Kategorie, flexibler Datums-Navigation (−2 Tage bis +5 Tage) sowie Umschaltmöglichkeit zwischen Firmen- oder Gästenamen in der Belegungsanzeige – Belegungen erscheinen mit frei konfigurierbaren Statusfarben hervorgehoben und zeigen die gebuchte Personenanzahl direkt in Klammern.
 - **Reservierungsdetails im Kalender** per Klick auf belegte Zellen inkl. Popup mit vollständigen Angaben (Gast, Firma, Zeitraum, Notizen) und Schnellaktionen zum Markieren als *Angereist*, *Abgereist*, *Bezahlt* oder *No-Show* – wahlweise auch für Überbuchungen ohne Zimmer.
