@@ -2806,7 +2806,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $rateIdInput = trim((string) ($_POST['rate_id'] ?? ''));
             $pricePerNightInput = trim((string) ($_POST['price_per_night'] ?? ''));
             $totalPriceInput = trim((string) ($_POST['total_price'] ?? ''));
-            $vatRateInput = trim((string) ($_POST['vat_rate'] ?? ''));
 
             $reservationIdForUpdate = $form === 'reservation_update' ? (int) ($_POST['id'] ?? 0) : null;
             $existingReservationForUpdate = null;
@@ -2831,9 +2830,8 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $existingVatRate = (float) $existingReservationForUpdate['vat_rate'];
             }
 
-            $formVatRateValue = $vatRateInput !== ''
-                ? $vatRateInput
-                : ($existingVatRate !== null ? number_format($existingVatRate, 2, '.', '') : $overnightVatRateValue);
+            $vatRateValue = $existingVatRate ?? $overnightVatRate;
+            $formVatRateValue = number_format($vatRateValue, 2, '.', '');
 
             $reservationFormMode = $form === 'reservation_update' ? 'update' : 'create';
             $isEditingReservation = $form === 'reservation_update';
@@ -3042,27 +3040,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             $vatRateValue = $existingVatRate ?? $overnightVatRate;
-            if ($vatRateInput !== '') {
-                $parsedVatInput = $normalizeMoneyInput($vatRateInput);
-                if ($parsedVatInput === null) {
-                    $alert = [
-                        'type' => 'danger',
-                        'message' => 'Bitte geben Sie einen gültigen Mehrwertsteuersatz an.',
-                    ];
-                    break;
-                }
-
-                if ($parsedVatInput < 0 || $parsedVatInput > 100) {
-                    $alert = [
-                        'type' => 'danger',
-                        'message' => 'Der Mehrwertsteuersatz muss zwischen 0 und 100 liegen.',
-                    ];
-                    break;
-                }
-
-                $vatRateValue = $parsedVatInput;
-            }
-
             $formVatRateValue = number_format($vatRateValue, 2, '.', '');
             $reservationFormData['vat_rate'] = $formVatRateValue;
 
@@ -3087,10 +3064,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $arrivalDate = new DateTimeImmutable($normalizedArrival);
             $departureDate = new DateTimeImmutable($normalizedDeparture);
 
-            if ($departureDate < $arrivalDate) {
+            if ($departureDate <= $arrivalDate) {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Das Abreisedatum darf nicht vor dem Anreisedatum liegen.',
+                    'message' => 'Die Abreise muss mindestens einen Tag nach der Anreise liegen.',
                 ];
                 break;
             }
@@ -5390,7 +5367,6 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                     }
                   ?>
                   </div>
-                  <input type="hidden" name="vat_rate" id="reservation-vat-rate" value="<?= htmlspecialchars($reservationFormData['vat_rate'] !== '' ? $reservationFormData['vat_rate'] : $overnightVatRateValue) ?>">
                   <div class="col-12">
                     <label for="reservation-rate" class="form-label">Rate *</label>
                     <?php if ($rates === []): ?>
@@ -5438,11 +5414,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
                       <?= $pdo === null ? 'disabled' : '' ?>
                     >
                     <div class="form-text">Kann bei Bedarf manuell angepasst werden.</div>
-                  </div>
-                  <div class="col-md-4">
-                    <label for="reservation-vat-rate-display" class="form-label">MwSt. Übernachtung</label>
-                    <input type="text" class="form-control" id="reservation-vat-rate-display" value="<?= htmlspecialchars($formVatRateLabel) ?>" readonly>
-                    <div class="form-text">Ändern Sie den Steuersatz unter Einstellungen &gt; Mehrwertsteuer.</div>
+                    <div class="form-text text-muted">Aktueller Mehrwertsteuersatz: <?= htmlspecialchars($formVatRateLabel) ?> (verwaltet unter Einstellungen &gt; Mehrwertsteuer)</div>
                   </div>
                   <div class="col-md-6">
                     <label for="reservation-arrival" class="form-label">Anreise *</label>
@@ -7790,35 +7762,43 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             return value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           }
 
+          function parseDateInput(value) {
+            if (!value) {
+              return null;
+            }
+
+            var parts = value.split('-');
+            if (parts.length !== 3) {
+              return null;
+            }
+
+            var year = parseInt(parts[0], 10);
+            var month = parseInt(parts[1], 10) - 1;
+            var day = parseInt(parts[2], 10);
+
+            if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) {
+              return null;
+            }
+
+            var date = new Date(Date.UTC(year, month, day));
+            return Number.isNaN(date.getTime()) ? null : date;
+          }
+
           function computeNightCount(arrival, departure) {
-            if (!arrival || !departure) {
-              return null;
-            }
+            var arrivalDate = parseDateInput(arrival);
+            var departureDate = parseDateInput(departure);
 
-            var arrivalParts = arrival.split('-');
-            var departureParts = departure.split('-');
-            if (arrivalParts.length !== 3 || departureParts.length !== 3) {
-              return null;
-            }
-
-            var arrivalDate = new Date(Date.UTC(parseInt(arrivalParts[0], 10), parseInt(arrivalParts[1], 10) - 1, parseInt(arrivalParts[2], 10)));
-            var departureDate = new Date(Date.UTC(parseInt(departureParts[0], 10), parseInt(departureParts[1], 10) - 1, parseInt(departureParts[2], 10)));
-
-            if (Number.isNaN(arrivalDate.getTime()) || Number.isNaN(departureDate.getTime())) {
+            if (!arrivalDate || !departureDate) {
               return null;
             }
 
             var diff = departureDate.getTime() - arrivalDate.getTime();
-            if (diff < 0) {
+            if (diff <= 0) {
               return null;
             }
 
             var nights = Math.round(diff / 86400000);
-            if (nights <= 0) {
-              nights = 1;
-            }
-
-            return nights;
+            return nights > 0 ? nights : null;
           }
 
           function updateNightField() {
@@ -7828,6 +7808,36 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             }
 
             return nights;
+          }
+
+          function updateDateConstraints() {
+            if (!arrivalInput || !departureInput) {
+              return;
+            }
+
+            var arrivalDate = parseDateInput(arrivalInput.value);
+            var departureDate = parseDateInput(departureInput.value);
+            var errorMessage = '';
+
+            if (arrivalDate) {
+              var minDeparture = new Date(arrivalDate.getTime() + 86400000);
+              departureInput.setAttribute('min', minDeparture.toISOString().slice(0, 10));
+            } else {
+              departureInput.removeAttribute('min');
+            }
+
+            if (departureDate) {
+              var maxArrival = new Date(departureDate.getTime() - 86400000);
+              arrivalInput.setAttribute('max', maxArrival.toISOString().slice(0, 10));
+            } else {
+              arrivalInput.removeAttribute('max');
+            }
+
+            if (arrivalDate && departureDate && departureDate.getTime() <= arrivalDate.getTime()) {
+              errorMessage = 'Die Abreise muss mindestens einen Tag nach der Anreise liegen.';
+            }
+
+            departureInput.setCustomValidity(errorMessage);
           }
 
           function collectCategories() {
@@ -7895,12 +7905,18 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             var departureValue = departureInput.value;
             var categories = collectCategories();
 
+            updateDateConstraints();
+
             if (!rateId || !arrivalValue || !departureValue || categories.length === 0) {
               setFeedback('Bitte Rate, Zeitraum und mindestens eine Kategorie auswählen.', 'error');
               return;
             }
 
-            updateNightField();
+            var calculatedNights = updateNightField();
+            if (calculatedNights === null) {
+              setFeedback('Bitte wählen Sie einen gültigen Aufenthalt (Abreise nach Anreise).', 'error');
+              return;
+            }
 
             var payload = {
               rateId: rateId,
@@ -7952,11 +7968,13 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
           }
 
           arrivalInput.addEventListener('change', function () {
+            updateDateConstraints();
             updateNightField();
             markDirty();
           });
 
           departureInput.addEventListener('change', function () {
+            updateDateConstraints();
             updateNightField();
             markDirty();
           });
@@ -7988,6 +8006,7 @@ $updater = new SystemUpdater(dirname(__DIR__), $config['repository']['branch'], 
             });
           }
 
+          updateDateConstraints();
           updateNightField();
 
           if (
