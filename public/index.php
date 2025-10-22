@@ -28,7 +28,7 @@ require_once __DIR__ . '/../src/RateManager.php';
 
 session_start();
 
-$generateToken = static function (): string {
+ $generateToken = static function (): string {
     try {
         return bin2hex(random_bytes(32));
     } catch (Throwable $exception) {
