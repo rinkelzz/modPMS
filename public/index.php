@@ -608,8 +608,59 @@ $normalizeMoneyInput = static function (?string $value): ?float {
         return null;
     }
 
-    $normalized = str_replace(',', '.', preg_replace('/[^0-9,\.\-]/', '', $trimmed));
-    if ($normalized === '' || !is_numeric($normalized)) {
+    $sanitized = preg_replace('/[^0-9,\.\-]/', '', $trimmed);
+    if ($sanitized === '' || $sanitized === '-') {
+        return null;
+    }
+
+    $sign = '';
+    if ($sanitized[0] === '-') {
+        $sign = '-';
+        $sanitized = substr($sanitized, 1);
+    }
+
+    if ($sanitized === '') {
+        return null;
+    }
+
+    $commaPos = strrpos($sanitized, ',');
+    $dotPos = strrpos($sanitized, '.');
+    if ($commaPos !== false && $dotPos !== false) {
+        $decimalSeparator = $commaPos > $dotPos ? ',' : '.';
+    } elseif ($commaPos !== false) {
+        $decimalSeparator = ',';
+    } elseif ($dotPos !== false) {
+        $decimalSeparator = '.';
+    } else {
+        $decimalSeparator = null;
+    }
+
+    if ($decimalSeparator !== null) {
+        $parts = explode($decimalSeparator, $sanitized);
+        $decimalPart = array_pop($parts);
+        $integerPart = implode('', $parts);
+
+        $integerPart = preg_replace('/\D/', '', $integerPart);
+        $decimalPart = preg_replace('/\D/', '', $decimalPart);
+
+        if ($integerPart === '' && $decimalPart === '') {
+            return null;
+        }
+
+        $normalized = $sign . ($integerPart === '' ? '0' : $integerPart);
+        if ($decimalPart !== '') {
+            $normalized .= '.' . $decimalPart;
+        }
+    } else {
+        $digitsOnly = preg_replace('/\D/', '', $sanitized);
+        if ($digitsOnly === '') {
+            return null;
+        }
+
+        $normalized = $sign . $digitsOnly;
+    }
+
+    if (!is_numeric($normalized)) {
         return null;
     }
 
