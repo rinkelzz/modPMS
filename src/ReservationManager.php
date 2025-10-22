@@ -2,6 +2,7 @@
 
 namespace ModPMS;
 
+use DateTimeImmutable;
 use PDO;
 use PDOException;
 
@@ -144,6 +145,37 @@ class ReservationManager
         } catch (PDOException $exception) {
             // ignore data migration issues
         }
+
+        try {
+            $column = $this->pdo->query("SHOW COLUMNS FROM reservations LIKE 'reservation_number'");
+            $columnInfo = $column !== false ? $column->fetch() : false;
+            $needsPopulation = false;
+
+            if ($columnInfo === false) {
+                $this->pdo->exec("ALTER TABLE reservations ADD COLUMN reservation_number VARCHAR(32) NOT NULL AFTER id");
+                $needsPopulation = true;
+            } else {
+                if (!isset($columnInfo['Null']) || strtoupper((string) $columnInfo['Null']) !== 'NO') {
+                    $this->pdo->exec('ALTER TABLE reservations MODIFY reservation_number VARCHAR(32) NOT NULL');
+                }
+            }
+
+            if (!$needsPopulation) {
+                $missing = $this->pdo->query("SELECT COUNT(*) FROM reservations WHERE reservation_number IS NULL OR reservation_number = ''");
+                $needsPopulation = $missing !== false && (int) $missing->fetchColumn() > 0;
+            }
+
+            if ($needsPopulation) {
+                $this->populateMissingReservationNumbers();
+            }
+
+            $index = $this->pdo->query("SHOW INDEX FROM reservations WHERE Key_name = 'uniq_reservations_number'");
+            if ($index === false || $index->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservations ADD UNIQUE INDEX uniq_reservations_number (reservation_number)');
+            }
+        } catch (PDOException $exception) {
+            // ignore reservation number adjustments
+        }
     }
 
     public function refreshSchema(): void
@@ -151,12 +183,108 @@ class ReservationManager
         $this->ensureSchema();
     }
 
+    private function populateMissingReservationNumbers(): void
+    {
+        try {
+            $existingNumbers = $this->pdo->query("SELECT reservation_number FROM reservations WHERE reservation_number IS NOT NULL AND reservation_number <> ''");
+            $yearCounters = [];
+
+            if ($existingNumbers !== false) {
+                while (($value = $existingNumbers->fetchColumn()) !== false) {
+                    if (!is_string($value)) {
+                        continue;
+                    }
+
+                    if (preg_match('/^Res(\d{4})(\d{6})$/', $value, $matches) === 1) {
+                        $year = (int) $matches[1];
+                        $sequence = (int) $matches[2];
+                        if (!isset($yearCounters[$year]) || $sequence > $yearCounters[$year]) {
+                            $yearCounters[$year] = $sequence;
+                        }
+                    }
+                }
+            }
+
+            $pending = $this->pdo->query("SELECT id, arrival_date, created_at FROM reservations WHERE reservation_number IS NULL OR reservation_number = '' ORDER BY id ASC");
+            if ($pending === false) {
+                return;
+            }
+
+            $update = $this->pdo->prepare('UPDATE reservations SET reservation_number = :reservation_number WHERE id = :id');
+            if ($update === false) {
+                return;
+            }
+
+            while (($row = $pending->fetch(PDO::FETCH_ASSOC)) !== false) {
+                if (!is_array($row) || !isset($row['id'])) {
+                    continue;
+                }
+
+                $year = $this->determineReservationYear($row['arrival_date'] ?? null, $row['created_at'] ?? null);
+                if (!isset($yearCounters[$year])) {
+                    $yearCounters[$year] = 0;
+                }
+
+                $yearCounters[$year]++;
+                $number = sprintf('Res%d%06d', $year, $yearCounters[$year]);
+
+                $update->execute([
+                    'reservation_number' => $number,
+                    'id' => (int) $row['id'],
+                ]);
+            }
+        } catch (PDOException $exception) {
+            // ignore repopulation failures
+        }
+    }
+
+    private function determineReservationYear(?string $primaryDate, ?string $fallbackDate): int
+    {
+        foreach ([$primaryDate, $fallbackDate] as $value) {
+            if (!is_string($value) || $value === '') {
+                continue;
+            }
+
+            try {
+                $date = new DateTimeImmutable($value);
+                return (int) $date->format('Y');
+            } catch (\Throwable $exception) {
+                // try next value
+            }
+        }
+
+        return (int) (new DateTimeImmutable('today'))->format('Y');
+    }
+
+    private function generateReservationNumber(?int $year = null): string
+    {
+        $year = $year ?? (int) (new DateTimeImmutable('today'))->format('Y');
+        $prefix = sprintf('Res%d', $year);
+
+        try {
+            $stmt = $this->pdo->prepare('SELECT reservation_number FROM reservations WHERE reservation_number LIKE :prefix ORDER BY reservation_number DESC LIMIT 1');
+            if ($stmt !== false) {
+                $stmt->execute(['prefix' => $prefix . '%']);
+                $lastNumber = $stmt->fetchColumn();
+
+                if (is_string($lastNumber) && preg_match('/^' . preg_quote($prefix, '/') . '(\d{6})$/', $lastNumber, $matches) === 1) {
+                    $sequence = (int) $matches[1] + 1;
+                    return sprintf('%s%06d', $prefix, $sequence);
+                }
+            }
+        } catch (PDOException $exception) {
+            // ignore lookup failures and fall back to default sequence
+        }
+
+        return sprintf('%s%06d', $prefix, 1);
+    }
+
     /**
      * @return array<int, array<string, mixed>>
      */
     public function all(?string $search = null): array
     {
-        $sql = 'SELECT r.id, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, r.notes, '
+        $sql = 'SELECT r.id, r.reservation_number, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, r.notes, '
             . 'r.created_at, r.updated_at, r.created_by, r.updated_by, '
             . 'g.first_name AS guest_first_name, g.last_name AS guest_last_name, g.salutation AS guest_salutation, '
             . 'g.email AS guest_email, g.phone AS guest_phone, '
@@ -214,7 +342,7 @@ class ReservationManager
     public function find(int $id): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT r.id, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, r.notes, '
+            'SELECT r.id, r.reservation_number, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, r.notes, '
             . 'r.created_at, r.updated_at, r.created_by, r.updated_by, '
             . 'g.first_name AS guest_first_name, g.last_name AS guest_last_name, '
             . 'c.name AS company_name '
@@ -248,12 +376,31 @@ class ReservationManager
     {
         $stmt = $this->pdo->prepare(
             'INSERT INTO reservations '
-            . '(guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) '
-            . 'VALUES (:guest_id, :room_id, :category_id, :room_quantity, :company_id, :arrival_date, :departure_date, :status, :notes, :created_by, :updated_by, NOW(), NOW())'
+            . '(reservation_number, guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) '
+            . 'VALUES (:reservation_number, :guest_id, :room_id, :category_id, :room_quantity, :company_id, :arrival_date, :departure_date, :status, :notes, :created_by, :updated_by, NOW(), NOW())'
         );
-        $stmt->execute($payload);
 
-        return (int) $this->pdo->lastInsertId();
+        if ($stmt === false) {
+            throw new PDOException('Reservierung konnte nicht vorbereitet werden.');
+        }
+
+        $attempts = 0;
+
+        while (true) {
+            $attempts++;
+            $payloadWithNumber = $payload;
+            $payloadWithNumber['reservation_number'] = $this->generateReservationNumber();
+
+            try {
+                $stmt->execute($payloadWithNumber);
+                return (int) $this->pdo->lastInsertId();
+            } catch (PDOException $exception) {
+                $errorCode = $exception->errorInfo[1] ?? null;
+                if ($errorCode !== 1062 || $attempts >= 5) {
+                    throw $exception;
+                }
+            }
+        }
     }
 
     /**
@@ -261,6 +408,10 @@ class ReservationManager
      */
     public function update(int $id, array $payload): void
     {
+        if (isset($payload['reservation_number'])) {
+            unset($payload['reservation_number']);
+        }
+
         if ($payload === []) {
             return;
         }
@@ -348,7 +499,7 @@ class ReservationManager
     public function latestForGuest(int $guestId): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status '
+            'SELECT id, reservation_number, guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status '
             . 'FROM reservations WHERE guest_id = :guest_id '
             . 'ORDER BY arrival_date DESC, id DESC LIMIT 1'
         );

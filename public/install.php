@@ -176,6 +176,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $pdo->exec('CREATE TABLE IF NOT EXISTS reservations (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    reservation_number VARCHAR(32) NOT NULL,
                     guest_id INT UNSIGNED NOT NULL,
                     room_id INT UNSIGNED NULL,
                     category_id INT UNSIGNED NOT NULL,
@@ -195,6 +196,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     CONSTRAINT fk_reservations_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
                     CONSTRAINT fk_reservations_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
                     CONSTRAINT fk_reservations_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+                    UNIQUE KEY uniq_reservations_number (reservation_number),
                     INDEX idx_reservations_arrival (arrival_date),
                     INDEX idx_reservations_guest (guest_id),
                     INDEX idx_reservations_room (room_id),
@@ -411,11 +413,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             && $sampleGuestId !== null
             && $sampleCategoryId !== null
         ) {
+            $reservationNumberCounters = [];
+            $generateReservationNumber = static function (?string $date, array &$counters): string {
+                try {
+                    $dateObject = $date !== null && $date !== ''
+                        ? new DateTimeImmutable($date)
+                        : new DateTimeImmutable('today');
+                } catch (Exception $exception) {
+                    $dateObject = new DateTimeImmutable('today');
+                }
+
+                $year = (int) $dateObject->format('Y');
+                if (!isset($counters[$year])) {
+                    $counters[$year] = 0;
+                }
+
+                $counters[$year]++;
+
+                return sprintf('Res%d%06d', $year, $counters[$year]);
+            };
+
             $arrival = (new DateTimeImmutable('today'))->format('Y-m-d');
             $departure = (new DateTimeImmutable('+3 days'))->format('Y-m-d');
 
-            $stmt = $pdo->prepare('INSERT INTO reservations (guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+            $stmt = $pdo->prepare('INSERT INTO reservations (reservation_number, guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
             $stmt->execute([
+                $generateReservationNumber($arrival, $reservationNumberCounters),
                 $sampleGuestId,
                 $sampleRoomId,
                 $sampleCategoryId,
@@ -451,8 +474,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $overbookingArrival = (new DateTimeImmutable('+5 days'))->format('Y-m-d');
             $overbookingDeparture = (new DateTimeImmutable('+8 days'))->format('Y-m-d');
 
-            $overbookingInsert = $pdo->prepare('INSERT INTO reservations (guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+            $overbookingInsert = $pdo->prepare('INSERT INTO reservations (reservation_number, guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, notes, created_by, updated_by, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
             $overbookingInsert->execute([
+                $generateReservationNumber($overbookingArrival, $reservationNumberCounters),
                 $sampleGuestId,
                 $sampleCategoryId,
                 2,
