@@ -8,6 +8,11 @@ use PDOException;
 
 class ReservationManager
 {
+    /**
+     * @var array<int, string>
+     */
+    private const ARCHIVE_STATUSES = ['bezahlt', 'storniert'];
+
     private PDO $pdo;
 
     public function __construct(PDO $pdo)
@@ -249,6 +254,48 @@ class ReservationManager
         } catch (PDOException $exception) {
             // ignore
         }
+
+        try {
+            $column = $this->pdo->query("SHOW COLUMNS FROM reservations LIKE 'archived_at'");
+            if ($column === false || $column->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservations ADD COLUMN archived_at DATETIME NULL AFTER updated_at');
+            }
+        } catch (PDOException $exception) {
+            // ignore
+        }
+
+        try {
+            $column = $this->pdo->query("SHOW COLUMNS FROM reservations LIKE 'archived_by'");
+            if ($column === false || $column->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservations ADD COLUMN archived_by INT UNSIGNED NULL AFTER archived_at');
+            }
+        } catch (PDOException $exception) {
+            // ignore
+        }
+
+        try {
+            $index = $this->pdo->query("SHOW INDEX FROM reservations WHERE Key_name = 'idx_reservations_archived'");
+            if ($index === false || $index->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservations ADD INDEX idx_reservations_archived (archived_at)');
+            }
+        } catch (PDOException $exception) {
+            // ignore missing index additions
+        }
+
+        try {
+            $this->pdo->exec('ALTER TABLE reservations ADD CONSTRAINT fk_reservations_archived_by FOREIGN KEY (archived_by) REFERENCES users(id) ON DELETE SET NULL');
+        } catch (PDOException $exception) {
+            // foreign key might already exist
+        }
+
+        try {
+            $this->pdo->exec(
+                "UPDATE reservations SET archived_at = COALESCE(updated_at, NOW()), archived_by = COALESCE(updated_by, created_by) "
+                . "WHERE status IN ('bezahlt', 'storniert') AND archived_at IS NULL"
+            );
+        } catch (PDOException $exception) {
+            // ignore archive backfills
+        }
     }
 
     public function refreshSchema(): void
@@ -355,11 +402,11 @@ class ReservationManager
     /**
      * @return array<int, array<string, mixed>>
      */
-    public function all(?string $search = null): array
+    public function all(?string $search = null, bool $includeArchived = false): array
     {
         $sql = 'SELECT r.id, r.reservation_number, r.rate_id, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, '
             . 'r.price_per_night, r.total_price, r.vat_rate, r.notes, '
-            . 'r.created_at, r.updated_at, r.created_by, r.updated_by, '
+            . 'r.created_at, r.updated_at, r.created_by, r.updated_by, r.archived_at, r.archived_by, '
             . 'g.first_name AS guest_first_name, g.last_name AS guest_last_name, g.salutation AS guest_salutation, '
             . 'g.email AS guest_email, g.phone AS guest_phone, '
             . 'c.name AS company_name, '
@@ -377,12 +424,22 @@ class ReservationManager
             . 'LEFT JOIN users updated_user ON updated_user.id = r.updated_by';
 
         $params = [];
+        $conditions = [];
+
+        if (!$includeArchived) {
+            $conditions[] = 'r.archived_at IS NULL';
+        }
+
         if ($search !== null && $search !== '') {
-            $sql .= ' WHERE (g.last_name LIKE :search '
+            $conditions[] = '(g.last_name LIKE :search '
                 . 'OR g.first_name LIKE :search '
                 . 'OR CONCAT_WS(" ", g.first_name, g.last_name) LIKE :search '
                 . 'OR c.name LIKE :search)';
             $params['search'] = '%' . $search . '%';
+        }
+
+        if ($conditions !== []) {
+            $sql .= ' WHERE ' . implode(' AND ', $conditions);
         }
 
         $sql .= ' ORDER BY r.arrival_date ASC, r.departure_date ASC, r.id DESC';
@@ -419,7 +476,7 @@ class ReservationManager
     {
         $stmt = $this->pdo->prepare(
             'SELECT r.id, r.reservation_number, r.rate_id, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, '
-            . 'r.price_per_night, r.total_price, r.vat_rate, r.notes, '
+            . 'r.price_per_night, r.total_price, r.vat_rate, r.notes, r.archived_at, r.archived_by, '
             . 'r.created_at, r.updated_at, r.created_by, r.updated_by, '
             . 'g.first_name AS guest_first_name, g.last_name AS guest_last_name, '
             . 'c.name AS company_name, '
@@ -455,8 +512,8 @@ class ReservationManager
     {
         $stmt = $this->pdo->prepare(
             'INSERT INTO reservations '
-            . '(reservation_number, rate_id, guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, price_per_night, total_price, vat_rate, notes, created_by, updated_by, created_at, updated_at) '
-            . 'VALUES (:reservation_number, :rate_id, :guest_id, :room_id, :category_id, :room_quantity, :company_id, :arrival_date, :departure_date, :status, :price_per_night, :total_price, :vat_rate, :notes, :created_by, :updated_by, NOW(), NOW())'
+            . '(reservation_number, rate_id, guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status, price_per_night, total_price, vat_rate, notes, created_by, updated_by, created_at, updated_at, archived_at, archived_by) '
+            . 'VALUES (:reservation_number, :rate_id, :guest_id, :room_id, :category_id, :room_quantity, :company_id, :arrival_date, :departure_date, :status, :price_per_night, :total_price, :vat_rate, :notes, :created_by, :updated_by, NOW(), NOW(), :archived_at, :archived_by)'
         );
 
         if ($stmt === false) {
@@ -464,6 +521,24 @@ class ReservationManager
         }
 
         $attempts = 0;
+
+        $statusValue = isset($payload['status']) ? (string) $payload['status'] : 'geplant';
+        $shouldArchive = in_array($statusValue, self::ARCHIVE_STATUSES, true);
+        $archivedAtValue = $shouldArchive ? date('Y-m-d H:i:s') : null;
+        $archivedByValue = null;
+        if ($shouldArchive) {
+            foreach ([$payload['updated_by'] ?? null, $payload['created_by'] ?? null] as $candidate) {
+                if ($candidate === null) {
+                    continue;
+                }
+
+                $candidateValue = (int) $candidate;
+                if ($candidateValue > 0) {
+                    $archivedByValue = $candidateValue;
+                    break;
+                }
+            }
+        }
 
         while (true) {
             $attempts++;
@@ -473,6 +548,8 @@ class ReservationManager
                     $payloadWithNumber[$field] = null;
                 }
             }
+            $payloadWithNumber['archived_at'] = $archivedAtValue;
+            $payloadWithNumber['archived_by'] = $archivedByValue;
             $payloadWithNumber['reservation_number'] = $this->generateReservationNumber();
 
             try {
@@ -498,6 +575,22 @@ class ReservationManager
 
         if ($payload === []) {
             return;
+        }
+
+        if (array_key_exists('status', $payload)) {
+            $statusValue = (string) $payload['status'];
+            $shouldArchive = in_array($statusValue, self::ARCHIVE_STATUSES, true);
+            $payload['archived_at'] = $shouldArchive ? date('Y-m-d H:i:s') : null;
+
+            $archiveUserId = null;
+            if ($shouldArchive && isset($payload['updated_by'])) {
+                $candidate = (int) $payload['updated_by'];
+                if ($candidate > 0) {
+                    $archiveUserId = $candidate;
+                }
+            }
+
+            $payload['archived_by'] = $archiveUserId;
         }
 
         $columns = [];
@@ -607,6 +700,7 @@ class ReservationManager
             . 'INNER JOIN reservations r ON r.id = ri.reservation_id '
             . 'WHERE ri.room_id = :room_id '
             . 'AND r.status NOT IN (\'storniert\', \'noshow\') '
+            . 'AND r.archived_at IS NULL '
             . 'AND COALESCE(ri.arrival_date, r.arrival_date) < :departure '
             . 'AND COALESCE(ri.departure_date, r.departure_date) > :arrival';
 
@@ -658,7 +752,8 @@ class ReservationManager
                 FROM reservation_items ri
                 INNER JOIN reservations r ON r.id = ri.reservation_id
                 WHERE ri.room_id IS NOT NULL
-                  AND r.status NOT IN (\'storniert\', \'noshow\')'
+                  AND r.status NOT IN (\'storniert\', \'noshow\')
+                  AND r.archived_at IS NULL'
                   . $ignoreClause
                   . ' AND COALESCE(ri.arrival_date, r.arrival_date) < :departure
                   AND COALESCE(ri.departure_date, r.departure_date) > :arrival
@@ -675,14 +770,23 @@ class ReservationManager
 
     public function updateStatus(int $id, string $status, ?int $userId = null): void
     {
+        $shouldArchive = in_array($status, self::ARCHIVE_STATUSES, true);
+        $archivedAt = $shouldArchive ? date('Y-m-d H:i:s') : null;
+        $archivedBy = null;
+        if ($shouldArchive && $userId !== null && $userId > 0) {
+            $archivedBy = $userId;
+        }
+
         $stmt = $this->pdo->prepare(
-            'UPDATE reservations SET status = :status, updated_by = :updated_by, updated_at = NOW() WHERE id = :id'
+            'UPDATE reservations SET status = :status, updated_by = :updated_by, updated_at = NOW(), archived_at = :archived_at, archived_by = :archived_by WHERE id = :id'
         );
 
         $stmt->execute([
             'id' => $id,
             'status' => $status,
             'updated_by' => $userId !== null && $userId > 0 ? $userId : null,
+            'archived_at' => $archivedAt,
+            'archived_by' => $archivedBy,
         ]);
     }
 
@@ -693,7 +797,7 @@ class ReservationManager
     {
         $stmt = $this->pdo->prepare(
             'SELECT id, reservation_number, guest_id, room_id, category_id, room_quantity, company_id, arrival_date, departure_date, status '
-            . 'FROM reservations WHERE guest_id = :guest_id '
+            . 'FROM reservations WHERE guest_id = :guest_id AND archived_at IS NULL '
             . 'ORDER BY arrival_date DESC, id DESC LIMIT 1'
         );
         $stmt->execute(['guest_id' => $guestId]);
