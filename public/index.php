@@ -3511,8 +3511,19 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 }
 
                 if ($primaryGuestRecord === null) {
-                    $categoryValidationErrors = true;
-                    continue;
+                    if ($guest !== null && isset($guest['id'])) {
+                        $fallbackGuestId = (int) $guest['id'];
+                        if ($fallbackGuestId > 0) {
+                            $primaryGuestIdValue = $fallbackGuestId;
+                            $primaryGuestRecord = $guest;
+                            $guestLookup[$fallbackGuestId] = $guest;
+                        }
+                    }
+
+                    if ($primaryGuestRecord === null) {
+                        $categoryValidationErrors = true;
+                        continue;
+                    }
                 }
 
                 $primaryGuestLabel = $buildGuestReservationLabel($primaryGuestRecord);
