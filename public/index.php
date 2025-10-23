@@ -3410,6 +3410,27 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $quantityValue = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
                 $roomIdValue = isset($item['room_id']) ? (int) $item['room_id'] : 0;
                 $rateIdValue = isset($item['rate_id']) ? (int) $item['rate_id'] : 0;
+                $missingRateWasCleared = false;
+                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue]) && $rateManager instanceof RateManager) {
+                    try {
+                        $rateRecord = $rateManager->find($rateIdValue);
+                    } catch (Throwable $exception) {
+                        $rateRecord = null;
+                    }
+
+                    if ($rateRecord !== null) {
+                        $rateLookup[$rateIdValue] = $rateRecord;
+                    }
+                }
+
+                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue])) {
+                    $missingRateWasCleared = true;
+                    $rateIdValue = 0;
+
+                    if (isset($categoryItemsForForm[$categoryIndex])) {
+                        $categoryItemsForForm[$categoryIndex]['rate_id'] = '';
+                    }
+                }
 
                 $arrivalValue = isset($item['arrival_date']) ? trim((string) $item['arrival_date']) : '';
                 $departureValue = isset($item['departure_date']) ? trim((string) $item['departure_date']) : '';
@@ -3561,7 +3582,12 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $quantityValue = 1;
                 }
 
-                if ($rateIdValue <= 0 || !isset($rateLookup[$rateIdValue])) {
+                if ($rateIdValue <= 0 && !$missingRateWasCleared) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue])) {
                     $categoryValidationErrors = true;
                     continue;
                 }
