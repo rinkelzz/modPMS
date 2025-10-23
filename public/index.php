@@ -3443,20 +3443,22 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $normalizedArrival = $normalizeDateInput($arrivalValue);
                 $normalizedDeparture = $normalizeDateInput($departureValue);
 
-                $isCategoryRowEmpty = $categoryIdValue <= 0
-                    && $roomIdValue <= 0
-                    && $rateIdValue <= 0
-                    && $arrivalValue === ''
-                    && $departureValue === ''
-                    && $pricePerNightInput === ''
-                    && $totalPriceInput === ''
-                    && $primaryGuestIdRaw <= 0
-                    && $primaryGuestQueryInput === ''
-                    && !$hasArticleSelection;
+                $hasCoreSelection = $categoryIdValue > 0
+                    || $roomIdValue > 0
+                    || $rateIdValue > 0
+                    || $arrivalValue !== ''
+                    || $departureValue !== ''
+                    || $pricePerNightInput !== ''
+                    || $totalPriceInput !== ''
+                    || $hasArticleSelection;
 
-                if ($isCategoryRowEmpty) {
+                if (!$hasCoreSelection) {
                     if (isset($categoryItemsForForm[$categoryIndex])) {
                         $categoryItemsForForm[$categoryIndex]['articles_total'] = '';
+                        $categoryItemsForForm[$categoryIndex]['price_per_night'] = '';
+                        $categoryItemsForForm[$categoryIndex]['total_price'] = '';
+                        $categoryItemsForForm[$categoryIndex]['primary_guest_id'] = '';
+                        $categoryItemsForForm[$categoryIndex]['primary_guest_query'] = '';
                     }
 
                     continue;
