@@ -9223,6 +9223,18 @@ if ($activeSection === 'reservations') {
           var reservationIdField = document.querySelector('#reservation-form input[name="id"]');
           var reservationIdValue = reservationIdField ? parseInt(reservationIdField.value || '0', 10) : 0;
 
+          function formatMoney(value) {
+            if (typeof value !== 'number' || Number.isNaN(value)) {
+              return '';
+            }
+
+            return value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          }
+
+          function triggerGrandTotalUpdate() {
+            document.dispatchEvent(new CustomEvent('reservation:grand-total-recalculate'));
+          }
+
           container.querySelectorAll('.reservation-category-item').forEach(function (item) {
             initializeItemGuestTypeahead(item);
           });
@@ -9615,7 +9627,7 @@ if ($activeSection === 'reservations') {
               }
             }
 
-            updateGrandTotal();
+            triggerGrandTotalUpdate();
           }
 
           function bindArticleSection(item) {
@@ -9663,7 +9675,8 @@ if ($activeSection === 'reservations') {
                 if (row) {
                   section.querySelector('[data-article-list]').appendChild(row);
                   recalculateArticleRow(item, row);
-                  updateGrandTotal();
+                  recalculateArticlesForItem(item);
+                  triggerGrandTotalUpdate();
                 }
                 return;
               }
@@ -9700,6 +9713,7 @@ if ($activeSection === 'reservations') {
                 section.setAttribute('data-next-article-index', String(list.querySelectorAll('[data-article-row]').length));
 
                 recalculateArticlesForItem(item);
+                triggerGrandTotalUpdate();
                 return;
               }
             });
@@ -9714,6 +9728,7 @@ if ($activeSection === 'reservations') {
                 var row = target.closest('[data-article-row]');
                 recalculateArticleRow(item, row);
                 recalculateArticlesForItem(item);
+                triggerGrandTotalUpdate();
               }
             });
 
@@ -9727,10 +9742,12 @@ if ($activeSection === 'reservations') {
                 var row = target.closest('[data-article-row]');
                 recalculateArticleRow(item, row);
                 recalculateArticlesForItem(item);
+                triggerGrandTotalUpdate();
               }
             });
 
             recalculateArticlesForItem(item);
+            triggerGrandTotalUpdate();
           }
 
           function createItem() {
@@ -9867,6 +9884,8 @@ if ($activeSection === 'reservations') {
 
             totalField.value = sum > 0 ? formatMoney(sum) : '';
           }
+
+          document.addEventListener('reservation:grand-total-recalculate', updateGrandTotal);
 
           function setItemFeedback(item, message, type) {
             var feedback = item.querySelector('[data-calc-feedback]');
