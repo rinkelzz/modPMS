@@ -220,6 +220,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     room_id INT UNSIGNED NULL,
                     rate_id INT UNSIGNED NULL,
                     room_quantity INT UNSIGNED NOT NULL DEFAULT 1,
+                    occupancy INT UNSIGNED NOT NULL DEFAULT 1,
+                    primary_guest_id INT UNSIGNED NULL,
                     arrival_date DATE NULL,
                     departure_date DATE NULL,
                     price_per_night DECIMAL(10,2) NULL,
@@ -230,9 +232,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     CONSTRAINT fk_install_reservation_items_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE SET NULL,
                     CONSTRAINT fk_install_reservation_items_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL,
                     CONSTRAINT fk_install_reservation_items_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_reservation_items_primary_guest FOREIGN KEY (primary_guest_id) REFERENCES guests(id) ON DELETE SET NULL,
                     INDEX idx_install_reservation_items_reservation (reservation_id),
                     INDEX idx_install_reservation_items_category (category_id),
-                    INDEX idx_install_reservation_items_room (room_id)
+                    INDEX idx_install_reservation_items_room (room_id),
+                    INDEX idx_install_reservation_items_primary_guest (primary_guest_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
                 $pdo->exec('CREATE TABLE IF NOT EXISTS rates (
@@ -487,13 +491,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $samplePricePerNight = 129.00;
                 $sampleItemTotal = $samplePricePerNight * $sampleNights;
 
-                $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+                $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, occupancy, primary_guest_id, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
                 $itemInsert->execute([
                     $reservationId,
                     $sampleCategoryId,
                     $sampleRoomId,
                     null,
                     1,
+                    1,
+                    $sampleGuestId,
                     $arrival,
                     $departure,
                     $samplePricePerNight,
@@ -529,11 +535,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $overbookingReservationId = (int) $pdo->lastInsertId();
             if ($overbookingReservationId > 0) {
-                $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at) VALUES (?, ?, NULL, NULL, ?, ?, ?, NULL, NULL, NOW(), NOW())');
+                $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, occupancy, primary_guest_id, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL, NOW(), NOW())');
                 $itemInsert->execute([
                     $overbookingReservationId,
                     $sampleCategoryId,
                     2,
+                    2,
+                    $sampleGuestId,
                     $overbookingArrival,
                     $overbookingDeparture,
                 ]);

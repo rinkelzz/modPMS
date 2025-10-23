@@ -75,6 +75,8 @@ class ReservationManager
                     room_id INT UNSIGNED NULL,
                     rate_id INT UNSIGNED NULL,
                     room_quantity INT UNSIGNED NOT NULL DEFAULT 1,
+                    occupancy INT UNSIGNED NOT NULL DEFAULT 1,
+                    primary_guest_id INT UNSIGNED NULL,
                     arrival_date DATE NULL,
                     departure_date DATE NULL,
                     price_per_night DECIMAL(10,2) NULL,
@@ -84,9 +86,11 @@ class ReservationManager
                     CONSTRAINT fk_reservation_items_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE,
                     CONSTRAINT fk_reservation_items_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE SET NULL,
                     CONSTRAINT fk_reservation_items_room FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_reservation_items_primary_guest FOREIGN KEY (primary_guest_id) REFERENCES guests(id) ON DELETE SET NULL,
                     INDEX idx_reservation_items_reservation (reservation_id),
                     INDEX idx_reservation_items_category (category_id),
-                    INDEX idx_reservation_items_room (room_id)
+                    INDEX idx_reservation_items_room (room_id),
+                    INDEX idx_reservation_items_primary_guest (primary_guest_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
             );
         } catch (PDOException $exception) {
@@ -99,6 +103,8 @@ class ReservationManager
             'departure_date DATE NULL AFTER arrival_date',
             'price_per_night DECIMAL(10,2) NULL AFTER departure_date',
             'total_price DECIMAL(10,2) NULL AFTER price_per_night',
+            'occupancy INT UNSIGNED NOT NULL DEFAULT 1 AFTER room_quantity',
+            'primary_guest_id INT UNSIGNED NULL AFTER occupancy',
         ] as $definition) {
             try {
                 if (preg_match('/^([a-z_]+)\s/i', $definition, $matches) === 1) {
@@ -114,15 +120,36 @@ class ReservationManager
         }
 
         try {
+            $indexCheck = $this->pdo->query("SHOW INDEX FROM reservation_items WHERE Key_name = 'idx_reservation_items_primary_guest'");
+            if ($indexCheck === false || $indexCheck->fetch() === false) {
+                $this->pdo->exec('ALTER TABLE reservation_items ADD INDEX idx_reservation_items_primary_guest (primary_guest_id)');
+            }
+        } catch (PDOException $exception) {
+            // ignore index adjustments
+        }
+
+        try {
+            $this->pdo->exec('ALTER TABLE reservation_items ADD CONSTRAINT fk_reservation_items_primary_guest FOREIGN KEY (primary_guest_id) REFERENCES guests(id) ON DELETE SET NULL');
+        } catch (PDOException $exception) {
+            // ignore constraint adjustments
+        }
+
+        try {
+            $this->pdo->exec('UPDATE reservation_items SET occupancy = CASE WHEN occupancy IS NULL OR occupancy <= 0 THEN GREATEST(COALESCE(room_quantity, 1), 1) ELSE occupancy END');
+        } catch (PDOException $exception) {
+            // ignore data backfill issues
+        }
+
+        try {
             $countStatement = $this->pdo->query('SELECT COUNT(*) FROM reservation_items');
             $hasItems = $countStatement !== false ? (int) $countStatement->fetchColumn() : 0;
 
             if ($hasItems === 0) {
-                $source = $this->pdo->query('SELECT id, category_id, room_id, room_quantity FROM reservations');
+                $source = $this->pdo->query('SELECT id, category_id, room_id, room_quantity, guest_id FROM reservations');
                 if ($source !== false) {
                     $insert = $this->pdo->prepare(
-                        'INSERT INTO reservation_items (reservation_id, category_id, room_id, room_quantity, created_at, updated_at)
-                         VALUES (:reservation_id, :category_id, :room_id, :room_quantity, NOW(), NOW())'
+                        'INSERT INTO reservation_items (reservation_id, category_id, room_id, room_quantity, occupancy, primary_guest_id, created_at, updated_at)
+                         VALUES (:reservation_id, :category_id, :room_id, :room_quantity, :occupancy, :primary_guest_id, NOW(), NOW())'
                     );
 
                     while ($row = $source->fetch()) {
@@ -163,11 +190,23 @@ class ReservationManager
                             }
                         }
 
+                        $occupancy = $quantity > 0 ? $quantity : 1;
+
+                        $primaryGuestId = null;
+                        if (isset($row['guest_id']) && $row['guest_id'] !== null) {
+                            $candidateGuestId = (int) $row['guest_id'];
+                            if ($candidateGuestId > 0) {
+                                $primaryGuestId = $candidateGuestId;
+                            }
+                        }
+
                         $insert->execute([
                             'reservation_id' => $reservationId,
                             'category_id' => $categoryId,
                             'room_id' => $roomId,
                             'room_quantity' => $quantity,
+                            'occupancy' => $occupancy,
+                            'primary_guest_id' => $primaryGuestId,
                         ]);
                     }
                 }
@@ -631,8 +670,8 @@ class ReservationManager
         }
 
         $insert = $this->pdo->prepare(
-            'INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at)
-             VALUES (:reservation_id, :category_id, :room_id, :rate_id, :room_quantity, :arrival_date, :departure_date, :price_per_night, :total_price, NOW(), NOW())'
+            'INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, occupancy, primary_guest_id, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at)'
+            . ' VALUES (:reservation_id, :category_id, :room_id, :rate_id, :room_quantity, :occupancy, :primary_guest_id, :arrival_date, :departure_date, :price_per_night, :total_price, NOW(), NOW())'
         );
 
         foreach ($items as $item) {
@@ -649,6 +688,19 @@ class ReservationManager
             $quantity = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
             if ($quantity <= 0) {
                 $quantity = 1;
+            }
+
+            $occupancy = isset($item['occupancy']) ? (int) $item['occupancy'] : $quantity;
+            if ($occupancy <= 0) {
+                $occupancy = $quantity > 0 ? $quantity : 1;
+            }
+
+            $primaryGuestId = null;
+            if (isset($item['primary_guest_id']) && $item['primary_guest_id'] !== null && $item['primary_guest_id'] !== '') {
+                $primaryGuestId = (int) $item['primary_guest_id'];
+                if ($primaryGuestId <= 0) {
+                    $primaryGuestId = null;
+                }
             }
 
             $rateId = null;
@@ -685,6 +737,8 @@ class ReservationManager
                 'room_id' => $roomId,
                 'rate_id' => $rateId,
                 'room_quantity' => $quantity,
+                'occupancy' => $occupancy,
+                'primary_guest_id' => $primaryGuestId,
                 'arrival_date' => $arrivalDate,
                 'departure_date' => $departureDate,
                 'price_per_night' => $pricePerNight,
@@ -824,12 +878,17 @@ class ReservationManager
 
         $stmt = $this->pdo->prepare(
             'SELECT ri.id, ri.reservation_id, ri.category_id, ri.room_id, ri.rate_id, ri.room_quantity, '
+            . 'ri.occupancy, ri.primary_guest_id, '
             . 'ri.arrival_date, ri.departure_date, ri.price_per_night, ri.total_price, '
-            . 'ri.created_at, ri.updated_at, rc.name AS category_name, rm.room_number, rt.name AS rate_name '
+            . 'ri.created_at, ri.updated_at, rc.name AS category_name, rm.room_number, rt.name AS rate_name, '
+            . 'pg.first_name AS primary_guest_first_name, pg.last_name AS primary_guest_last_name, pg.company_id AS primary_guest_company_id, '
+            . 'pg_company.name AS primary_guest_company_name '
             . 'FROM reservation_items ri '
             . 'LEFT JOIN room_categories rc ON rc.id = ri.category_id '
             . 'LEFT JOIN rooms rm ON rm.id = ri.room_id '
             . 'LEFT JOIN rates rt ON rt.id = ri.rate_id '
+            . 'LEFT JOIN guests pg ON pg.id = ri.primary_guest_id '
+            . 'LEFT JOIN companies pg_company ON pg_company.id = pg.company_id '
             . 'WHERE ri.reservation_id IN (' . $placeholders . ') '
             . 'ORDER BY ri.id ASC'
         );

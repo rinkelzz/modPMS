@@ -113,12 +113,15 @@ $reservationFormData = [
         [
             'category_id' => '',
             'room_quantity' => '1',
+            'occupancy' => '1',
             'room_id' => '',
             'arrival_date' => '',
             'departure_date' => '',
             'rate_id' => '',
             'price_per_night' => '',
             'total_price' => '',
+            'primary_guest_id' => '',
+            'primary_guest_query' => '',
         ],
     ],
 ];
@@ -1098,21 +1101,8 @@ if ($pdo !== null && isset($_GET['ajax'])) {
     exit;
 }
 
-$isAdminUser = isset($_SESSION['user_role']) && $_SESSION['user_role'] === 'admin';
-$adminPermissionDeniedMessage = 'Sie besitzen nicht die erforderlichen Rechte, um diese Aktion auszuführen.';
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form']) && $_POST['form'] === 'settings_clear_cache') {
     $activeSection = 'settings';
-
-    if (!$isAdminUser) {
-        $_SESSION['alert'] = [
-            'type' => 'danger',
-            'message' => $adminPermissionDeniedMessage,
-        ];
-
-        header('Location: index.php?section=settings#cache-tools');
-        exit;
-    }
 
     header('Clear-Site-Data: "cache"');
 
@@ -1131,16 +1121,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
     switch ($form) {
         case 'settings_schema_refresh':
             $activeSection = 'settings';
-
-            if (!$isAdminUser) {
-                $_SESSION['alert'] = [
-                    'type' => 'danger',
-                    'message' => $adminPermissionDeniedMessage,
-                ];
-
-                header('Location: index.php?section=settings#database-maintenance');
-                exit;
-            }
 
             if ($pdo === null) {
                 $alert = [
@@ -1205,16 +1185,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'settings_vat':
             $activeSection = 'settings';
 
-            if (!$isAdminUser) {
-                $_SESSION['alert'] = [
-                    'type' => 'danger',
-                    'message' => $adminPermissionDeniedMessage,
-                ];
-
-                header('Location: index.php?section=settings#vat-settings');
-                exit;
-            }
-
             if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
                 $alert = [
                     'type' => 'danger',
@@ -1258,16 +1228,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'settings_status_colors':
             $activeSection = 'settings';
-
-            if (!$isAdminUser) {
-                $_SESSION['alert'] = [
-                    'type' => 'danger',
-                    'message' => $adminPermissionDeniedMessage,
-                ];
-
-                header('Location: index.php?section=settings');
-                exit;
-            }
 
             if (!$settingsAvailable) {
                 $alert = [
@@ -1328,16 +1288,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'settings_backup_export':
             $activeSection = 'settings';
 
-            if (!$isAdminUser) {
-                $_SESSION['alert'] = [
-                    'type' => 'danger',
-                    'message' => $adminPermissionDeniedMessage,
-                ];
-
-                header('Location: index.php?section=settings#database-backups');
-                exit;
-            }
-
             if ($pdo === null || !$backupManager instanceof BackupManager) {
                 $alert = [
                     'type' => 'danger',
@@ -1367,16 +1317,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'settings_backup_import':
             $activeSection = 'settings';
-
-            if (!$isAdminUser) {
-                $_SESSION['alert'] = [
-                    'type' => 'danger',
-                    'message' => $adminPermissionDeniedMessage,
-                ];
-
-                header('Location: index.php?section=settings#database-backups');
-                exit;
-            }
 
             if ($pdo === null || !$backupManager instanceof BackupManager) {
                 $alert = [
@@ -3018,12 +2958,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $categoryItemsForForm[$categoryIndex] = [
                         'category_id' => trim((string) ($item['category_id'] ?? '')),
                         'room_quantity' => trim((string) ($item['room_quantity'] ?? '1')),
+                        'occupancy' => trim((string) ($item['occupancy'] ?? '1')),
                         'room_id' => trim((string) ($item['room_id'] ?? '')),
                         'arrival_date' => trim((string) ($item['arrival_date'] ?? '')),
                         'departure_date' => trim((string) ($item['departure_date'] ?? '')),
                         'rate_id' => trim((string) ($item['rate_id'] ?? '')),
                         'price_per_night' => trim((string) ($item['price_per_night'] ?? '')),
                         'total_price' => trim((string) ($item['total_price'] ?? '')),
+                        'primary_guest_id' => trim((string) ($item['primary_guest_id'] ?? '')),
+                        'primary_guest_query' => trim((string) ($item['primary_guest_query'] ?? '')),
                     ];
                 }
             }
@@ -3032,12 +2975,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $categoryItemsForForm[] = [
                     'category_id' => '',
                     'room_quantity' => '1',
+                    'occupancy' => '1',
                     'room_id' => '',
                     'arrival_date' => '',
                     'departure_date' => '',
                     'rate_id' => '',
                     'price_per_night' => '',
                     'total_price' => '',
+                    'primary_guest_id' => '',
+                    'primary_guest_query' => '',
                 ];
             }
 
@@ -3145,6 +3091,42 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     continue;
                 }
 
+                $occupancyValue = isset($item['occupancy']) ? (int) $item['occupancy'] : 0;
+                if ($occupancyValue <= 0) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                $primaryGuestIdValue = isset($item['primary_guest_id']) ? (int) $item['primary_guest_id'] : 0;
+                if ($primaryGuestIdValue <= 0 && $guestId > 0) {
+                    $primaryGuestIdValue = $guestId;
+                }
+
+                $primaryGuestRecord = null;
+                if ($primaryGuestIdValue > 0) {
+                    if (isset($guestLookup[$primaryGuestIdValue])) {
+                        $primaryGuestRecord = $guestLookup[$primaryGuestIdValue];
+                    } else {
+                        $primaryGuestRecord = $guestManager->find($primaryGuestIdValue);
+                        if ($primaryGuestRecord !== null) {
+                            $guestLookup[$primaryGuestIdValue] = $primaryGuestRecord;
+                        }
+                    }
+                }
+
+                if ($primaryGuestRecord === null) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                $primaryGuestLabel = $buildGuestReservationLabel($primaryGuestRecord);
+
+                if (isset($categoryItemsForForm[$categoryIndex])) {
+                    $categoryItemsForForm[$categoryIndex]['occupancy'] = (string) $occupancyValue;
+                    $categoryItemsForForm[$categoryIndex]['primary_guest_id'] = (string) $primaryGuestIdValue;
+                    $categoryItemsForForm[$categoryIndex]['primary_guest_query'] = $primaryGuestLabel;
+                }
+
                 $roomIdNormalized = null;
                 if ($roomIdValue > 0) {
                     if (in_array($roomIdValue, $selectedRoomIds, true)) {
@@ -3195,6 +3177,9 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     'index' => $categoryIndex,
                     'category_id' => $categoryIdValue,
                     'room_quantity' => $quantityValue,
+                    'occupancy' => $occupancyValue,
+                    'primary_guest_id' => $primaryGuestIdValue,
+                    'primary_guest_label' => $primaryGuestLabel,
                     'room_id' => $roomIdNormalized,
                     'arrival_date' => $normalizedArrival,
                     'departure_date' => $normalizedDeparture,
@@ -3274,6 +3259,9 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         ? number_format($pricePerNightValue, 2, ',', '.')
                         : '';
                     $categoryItemsForForm[$itemIndex]['total_price'] = number_format($totalPriceValue, 2, ',', '.');
+                    $categoryItemsForForm[$itemIndex]['occupancy'] = (string) $item['occupancy'];
+                    $categoryItemsForForm[$itemIndex]['primary_guest_id'] = (string) $item['primary_guest_id'];
+                    $categoryItemsForForm[$itemIndex]['primary_guest_query'] = $item['primary_guest_label'];
                 }
             }
 
@@ -3417,16 +3405,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
-
-            if (!$isAdminUser) {
-                $_SESSION['alert'] = [
-                    'type' => 'danger',
-                    'message' => $adminPermissionDeniedMessage,
-                ];
-
-                header('Location: index.php?section=users');
-                exit;
-            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -3555,16 +3533,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
-
-            if (!$isAdminUser) {
-                $_SESSION['alert'] = [
-                    'type' => 'danger',
-                    'message' => $adminPermissionDeniedMessage,
-                ];
-
-                header('Location: index.php?section=users');
-                exit;
-            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
@@ -3802,6 +3770,32 @@ if ($pdo !== null) {
         }
     }
 
+    foreach ($reservationFormData['category_items'] as $categoryIndex => $categoryItem) {
+        $categoryOccupancy = isset($categoryItem['occupancy']) ? (string) $categoryItem['occupancy'] : '';
+        if ($categoryOccupancy === '') {
+            $reservationFormData['category_items'][$categoryIndex]['occupancy'] = '1';
+        }
+
+        $itemPrimaryGuestId = isset($categoryItem['primary_guest_id']) ? (int) $categoryItem['primary_guest_id'] : 0;
+        if ($itemPrimaryGuestId <= 0 && $reservationFormData['guest_id'] !== '') {
+            $itemPrimaryGuestId = (int) $reservationFormData['guest_id'];
+            if ($itemPrimaryGuestId > 0) {
+                $reservationFormData['category_items'][$categoryIndex]['primary_guest_id'] = (string) $itemPrimaryGuestId;
+            }
+        }
+
+        if ($itemPrimaryGuestId > 0) {
+            if (isset($guestLookup[$itemPrimaryGuestId])) {
+                $reservationFormData['category_items'][$categoryIndex]['primary_guest_query'] = $buildGuestReservationLabel($guestLookup[$itemPrimaryGuestId]);
+            } elseif ($guestManager instanceof GuestManager) {
+                $primaryGuestRecord = $guestManager->find($itemPrimaryGuestId);
+                if ($primaryGuestRecord !== null) {
+                    $reservationFormData['category_items'][$categoryIndex]['primary_guest_query'] = $buildGuestReservationLabel($primaryGuestRecord);
+                }
+            }
+        }
+    }
+
     foreach ($companies as $company) {
         if (!isset($company['id'])) {
             continue;
@@ -4025,11 +4019,35 @@ if ($pdo !== null) {
                 $itemCategoryCapacity = null;
             }
 
+            $primaryGuestId = isset($item['primary_guest_id']) ? (int) $item['primary_guest_id'] : 0;
+            $primaryGuestLabel = '';
+            if ($primaryGuestId > 0) {
+                if (isset($guestLookup[$primaryGuestId])) {
+                    $primaryGuestLabel = $buildGuestReservationLabel($guestLookup[$primaryGuestId]);
+                } else {
+                    $primaryGuestLabel = $buildGuestReservationLabel([
+                        'id' => $primaryGuestId,
+                        'first_name' => $item['primary_guest_first_name'] ?? '',
+                        'last_name' => $item['primary_guest_last_name'] ?? '',
+                        'company_name' => $item['primary_guest_company_name'] ?? '',
+                    ]);
+                }
+            }
+
             $itemGuestCount = null;
-            if ($itemCategoryCapacity !== null) {
-                $itemGuestCount = $itemCategoryCapacity * $itemQuantity;
-            } elseif ($itemQuantity > 0) {
-                $itemGuestCount = $itemQuantity;
+            if (isset($item['occupancy']) && $item['occupancy'] !== null) {
+                $itemGuestCount = (int) $item['occupancy'];
+                if ($itemGuestCount <= 0) {
+                    $itemGuestCount = null;
+                }
+            }
+
+            if ($itemGuestCount === null) {
+                if ($itemCategoryCapacity !== null) {
+                    $itemGuestCount = $itemCategoryCapacity * $itemQuantity;
+                } elseif ($itemQuantity > 0) {
+                    $itemGuestCount = $itemQuantity;
+                }
             }
 
             $itemLabel = $baseLabel;
@@ -4056,6 +4074,9 @@ if ($pdo !== null) {
             $itemDetail['roomQuantity'] = $itemQuantity;
             $itemDetail['type'] = $itemRoomId > 0 ? 'room' : 'overbooking';
             $itemDetail['guestCount'] = $itemGuestCount;
+            $itemDetail['occupancy'] = $itemGuestCount;
+            $itemDetail['primaryGuestId'] = $primaryGuestId > 0 ? $primaryGuestId : null;
+            $itemDetail['primaryGuestName'] = $primaryGuestLabel;
             $itemDetail['categoryCapacity'] = $itemCategoryCapacity;
 
             $itemRateId = isset($item['rate_id']) ? (int) $item['rate_id'] : 0;
@@ -4127,6 +4148,8 @@ if ($pdo !== null) {
                     'arrival' => $itemArrivalDate,
                     'departure' => $itemDepartureDate,
                     'guestCount' => $itemGuestCount,
+                    'occupancy' => $itemGuestCount,
+                    'primaryGuestName' => $primaryGuestLabel,
                     'details' => $itemDetail,
                 ];
                 continue;
@@ -4152,6 +4175,8 @@ if ($pdo !== null) {
                 'departure' => $itemDepartureDate,
                 'quantity' => $itemQuantity,
                 'guestCount' => $itemGuestCount,
+                'occupancy' => $itemGuestCount,
+                'primaryGuestName' => $primaryGuestLabel,
                 'details' => $itemDetail,
             ];
         }
@@ -4723,15 +4748,36 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                     $existingTotalPrice += $totalPriceValue;
                 }
 
+                $primaryGuestIdForForm = isset($item['primary_guest_id']) ? (int) $item['primary_guest_id'] : 0;
+                $primaryGuestLabelForForm = isset($item['primary_guest_label']) && $item['primary_guest_label'] !== null
+                    ? (string) $item['primary_guest_label']
+                    : '';
+
+                if ($primaryGuestLabelForForm === '' && $primaryGuestIdForForm > 0) {
+                    if (isset($guestLookup[$primaryGuestIdForForm])) {
+                        $primaryGuestLabelForForm = $buildGuestReservationLabel($guestLookup[$primaryGuestIdForForm]);
+                    } else {
+                        $primaryGuestLabelForForm = $buildGuestReservationLabel([
+                            'id' => $primaryGuestIdForForm,
+                            'first_name' => $item['primary_guest_first_name'] ?? '',
+                            'last_name' => $item['primary_guest_last_name'] ?? '',
+                            'company_name' => $item['primary_guest_company_name'] ?? '',
+                        ]);
+                    }
+                }
+
                 $normalizedItems[] = [
                     'category_id' => isset($item['category_id']) && $item['category_id'] !== null ? (string) $item['category_id'] : '',
                     'room_quantity' => isset($item['room_quantity']) && (int) $item['room_quantity'] > 0 ? (string) $item['room_quantity'] : '1',
+                    'occupancy' => isset($item['occupancy']) && (int) $item['occupancy'] > 0 ? (string) $item['occupancy'] : '1',
                     'room_id' => isset($item['room_id']) && $item['room_id'] !== null ? (string) $item['room_id'] : '',
                     'arrival_date' => isset($item['arrival_date']) && $item['arrival_date'] !== null ? (string) $item['arrival_date'] : ($reservationToEdit['arrival_date'] ?? ''),
                     'departure_date' => isset($item['departure_date']) && $item['departure_date'] !== null ? (string) $item['departure_date'] : ($reservationToEdit['departure_date'] ?? ''),
                     'rate_id' => isset($item['rate_id']) && $item['rate_id'] !== null ? (string) $item['rate_id'] : '',
                     'price_per_night' => $pricePerNightFormatted,
                     'total_price' => $totalPriceValue !== null ? number_format($totalPriceValue, 2, ',', '.') : '',
+                    'primary_guest_id' => isset($item['primary_guest_id']) && $item['primary_guest_id'] !== null ? (string) $item['primary_guest_id'] : '',
+                    'primary_guest_query' => isset($item['primary_guest_label']) && $item['primary_guest_label'] !== null ? (string) $item['primary_guest_label'] : '',
                 ];
             }
 
@@ -5540,6 +5586,8 @@ if ($activeSection === 'reservations') {
                                 $reservationCategoryDetails[] = [
                                     'name' => $itemCategoryName !== '' ? $itemCategoryName : 'Kategorie unbekannt',
                                     'quantity' => $itemQuantityLabel,
+                                    'occupancy' => $itemGuestCount !== null ? (string) $itemGuestCount : '',
+                                    'primary_guest' => $primaryGuestLabel,
                                     'assignment' => $assignmentText,
                                     'assignment_class' => $assignmentClass,
                                     'stay' => $stayLabel,
@@ -5648,6 +5696,12 @@ if ($activeSection === 'reservations') {
                               <?php foreach ($reservationCategoryDetails as $detailIndex => $detail): ?>
                                 <div class="fw-semibold"><?= htmlspecialchars($detail['name']) ?></div>
                                 <div class="small text-muted">Zimmerbedarf: <?= htmlspecialchars($detail['quantity']) ?></div>
+                                <?php if (!empty($detail['occupancy'])): ?>
+                                  <div class="small text-muted">Personen: <?= htmlspecialchars($detail['occupancy']) ?></div>
+                                <?php endif; ?>
+                                <?php if (!empty($detail['primary_guest'])): ?>
+                                  <div class="small text-muted">Meldeschein: <?= htmlspecialchars($detail['primary_guest']) ?></div>
+                                <?php endif; ?>
                                 <?php if (!empty($detail['stay'])): ?>
                                   <div class="small text-muted">Zeitraum: <?= htmlspecialchars($detail['stay']) ?></div>
                                 <?php endif; ?>
@@ -7599,6 +7653,28 @@ if ($activeSection === 'reservations') {
                       $quantityValue = isset($categoryItem['room_quantity']) && $categoryItem['room_quantity'] !== ''
                           ? (string) $categoryItem['room_quantity']
                           : '1';
+                      $occupancyValue = isset($categoryItem['occupancy']) && $categoryItem['occupancy'] !== ''
+                          ? (string) $categoryItem['occupancy']
+                          : $quantityValue;
+                      $primaryGuestIdValue = isset($categoryItem['primary_guest_id']) && $categoryItem['primary_guest_id'] !== ''
+                          ? (string) $categoryItem['primary_guest_id']
+                          : ($reservationFormData['guest_id'] !== '' ? (string) $reservationFormData['guest_id'] : '');
+                      $primaryGuestQueryValue = isset($categoryItem['primary_guest_query']) && $categoryItem['primary_guest_query'] !== ''
+                          ? (string) $categoryItem['primary_guest_query']
+                          : '';
+                      if ($primaryGuestQueryValue === '' && $primaryGuestIdValue !== '') {
+                          $primaryGuestLookupId = (int) $primaryGuestIdValue;
+                          if ($primaryGuestLookupId > 0) {
+                              if (isset($guestLookup[$primaryGuestLookupId])) {
+                                  $primaryGuestQueryValue = $buildGuestReservationLabel($guestLookup[$primaryGuestLookupId]);
+                              } elseif ($guestManager instanceof GuestManager) {
+                                  $primaryGuestRecord = $guestManager->find($primaryGuestLookupId);
+                                  if ($primaryGuestRecord !== null) {
+                                      $primaryGuestQueryValue = $buildGuestReservationLabel($primaryGuestRecord);
+                                  }
+                              }
+                          }
+                      }
                       $selectedRoomId = isset($categoryItem['room_id']) && $categoryItem['room_id'] !== ''
                           ? (int) $categoryItem['room_id']
                           : null;
@@ -7643,7 +7719,7 @@ if ($activeSection === 'reservations') {
                     ?>
                     <div class="reservation-category-item card card-body border p-3 mb-2" data-index="<?= $categoryIndex ?>">
                       <div class="row g-2 align-items-end">
-                        <div class="col-12 col-lg-5">
+                        <div class="col-12 col-lg-4">
                           <label class="form-label">Kategorie</label>
                           <select class="form-select" name="reservation_categories[<?= $categoryIndex ?>][category_id]" <?= $pdo === null ? 'disabled' : 'required' ?>>
                             <option value="">Bitte auswählen</option>
@@ -7662,10 +7738,15 @@ if ($activeSection === 'reservations') {
                             <?php endif; ?>
                           </select>
                         </div>
-                        <div class="col-6 col-lg-4">
+                        <div class="col-6 col-lg-2">
                           <label class="form-label">Zimmeranzahl</label>
                           <input type="number" class="form-control" name="reservation_categories[<?= $categoryIndex ?>][room_quantity]" min="1" value="<?= htmlspecialchars($quantityValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
                           <div class="form-text">Automatisch 1 bei Zimmerauswahl.</div>
+                        </div>
+                        <div class="col-6 col-lg-3 mt-2 mt-lg-0">
+                          <label class="form-label">Personen im Zimmer *</label>
+                          <input type="number" class="form-control" name="reservation_categories[<?= $categoryIndex ?>][occupancy]" min="1" value="<?= htmlspecialchars($occupancyValue) ?>" <?= $pdo === null ? 'disabled' : 'required' ?>>
+                          <div class="form-text">Gäste für dieses Zimmer.</div>
                         </div>
                         <div class="col-12 col-lg-4 mt-2">
                           <label class="form-label">Zimmer-Anreise</label>
@@ -7690,6 +7771,24 @@ if ($activeSection === 'reservations') {
                             </select>
                             <div class="form-text">Legt die Basispreise für diese Kategorie fest.</div>
                           <?php endif; ?>
+                        </div>
+                        <div class="col-12 col-xl-6 mt-2">
+                          <label class="form-label">Meldeschein-Hauptgast *</label>
+                          <div class="typeahead position-relative" data-typeahead="guest-item" data-endpoint="index.php?ajax=guest_search">
+                            <input type="hidden" name="reservation_categories[<?= $categoryIndex ?>][primary_guest_id]" value="<?= htmlspecialchars($primaryGuestIdValue) ?>">
+                            <input
+                              type="search"
+                              class="form-control typeahead-input"
+                              name="reservation_categories[<?= $categoryIndex ?>][primary_guest_query]"
+                              placeholder="Gast auswählen"
+                              value="<?= htmlspecialchars($primaryGuestQueryValue) ?>"
+                              autocomplete="off"
+                              data-minlength="2"
+                              <?= $pdo === null ? 'disabled' : 'required' ?>
+                            >
+                            <div class="typeahead-dropdown list-group shadow-sm" role="listbox" aria-label="Gastvorschläge"></div>
+                          </div>
+                          <div class="form-text">Wird auf dem Meldeschein geführt.</div>
                         </div>
                         <div class="col-6 col-xl-4 mt-2">
                           <label class="form-label">Preis pro Nacht (EUR)</label>
@@ -7720,7 +7819,7 @@ if ($activeSection === 'reservations') {
               <template id="reservation-category-template">
                 <div class="reservation-category-item card card-body border p-3 mb-2" data-index="__INDEX__">
                   <div class="row g-2 align-items-end">
-                    <div class="col-12 col-lg-5">
+                    <div class="col-12 col-lg-4">
                       <label class="form-label">Kategorie</label>
                       <select class="form-select" name="reservation_categories[__INDEX__][category_id]" <?= $pdo === null ? 'disabled' : 'required' ?>>
                         <?= $reservationCategoryOptionsHtml ?>
@@ -7732,10 +7831,15 @@ if ($activeSection === 'reservations') {
                         <option value="">Kein konkretes Zimmer – Überbuchung</option>
                       </select>
                     </div>
-                    <div class="col-6 col-lg-4">
+                    <div class="col-6 col-lg-2">
                       <label class="form-label">Zimmeranzahl</label>
                       <input type="number" class="form-control" name="reservation_categories[__INDEX__][room_quantity]" min="1" value="1" <?= $pdo === null ? 'disabled' : '' ?>>
                       <div class="form-text">Automatisch 1 bei Zimmerauswahl.</div>
+                    </div>
+                    <div class="col-6 col-lg-3 mt-2 mt-lg-0">
+                      <label class="form-label">Personen im Zimmer *</label>
+                      <input type="number" class="form-control" name="reservation_categories[__INDEX__][occupancy]" min="1" value="1" <?= $pdo === null ? 'disabled' : 'required' ?>>
+                      <div class="form-text">Gäste für dieses Zimmer.</div>
                     </div>
                     <div class="col-12 col-lg-4 mt-2">
                       <label class="form-label">Zimmer-Anreise</label>
@@ -7760,6 +7864,24 @@ if ($activeSection === 'reservations') {
                         </select>
                         <div class="form-text">Legt die Basispreise für diese Kategorie fest.</div>
                       <?php endif; ?>
+                    </div>
+                    <div class="col-12 col-xl-6 mt-2">
+                      <label class="form-label">Meldeschein-Hauptgast *</label>
+                      <div class="typeahead position-relative" data-typeahead="guest-item" data-endpoint="index.php?ajax=guest_search">
+                        <input type="hidden" name="reservation_categories[__INDEX__][primary_guest_id]" value="<?= htmlspecialchars((string) $reservationFormData['guest_id']) ?>">
+                        <input
+                          type="search"
+                          class="form-control typeahead-input"
+                          name="reservation_categories[__INDEX__][primary_guest_query]"
+                          placeholder="Gast auswählen"
+                          value="<?= htmlspecialchars((string) $reservationFormData['guest_query']) ?>"
+                          autocomplete="off"
+                          data-minlength="2"
+                          <?= $pdo === null ? 'disabled' : 'required' ?>
+                        >
+                        <div class="typeahead-dropdown list-group shadow-sm" role="listbox" aria-label="Gastvorschläge"></div>
+                      </div>
+                      <div class="form-text">Wird auf dem Meldeschein geführt.</div>
                     </div>
                     <div class="col-6 col-xl-4 mt-2">
                       <label class="form-label">Preis pro Nacht (EUR)</label>
@@ -7847,6 +7969,10 @@ if ($activeSection === 'reservations') {
               <dd class="col-sm-8" data-detail="room"></dd>
               <dt class="col-sm-4">Zimmeranzahl</dt>
               <dd class="col-sm-8" data-detail="quantity"></dd>
+              <dt class="col-sm-4">Personen</dt>
+              <dd class="col-sm-8" data-detail="occupancy"></dd>
+              <dt class="col-sm-4">Meldeschein</dt>
+              <dd class="col-sm-8" data-detail="primary-guest"></dd>
               <dt class="col-sm-4">Rate</dt>
               <dd class="col-sm-8" data-detail="rate"></dd>
               <dt class="col-sm-4">Preis pro Nacht</dt>
@@ -8002,6 +8128,31 @@ if ($activeSection === 'reservations') {
           });
         }
 
+        var reservationItemGuestTypeaheads = [];
+
+        function initializeItemGuestTypeahead(item) {
+          if (!item) {
+            return;
+          }
+
+          var container = item.querySelector('[data-typeahead="guest-item"]');
+          if (!container || container.getAttribute('data-typeahead-initialized') === '1') {
+            return;
+          }
+
+          var instance = setupTypeahead(container, {});
+          if (instance) {
+            container.setAttribute('data-typeahead-initialized', '1');
+            reservationItemGuestTypeaheads.push({ container: container, instance: instance });
+          }
+        }
+
+        function cleanupItemGuestTypeaheads() {
+          reservationItemGuestTypeaheads = reservationItemGuestTypeaheads.filter(function (entry) {
+            return entry && entry.container && entry.container.isConnected;
+          });
+        }
+
         function setupReservationCategoryRepeater() {
           var container = document.getElementById('reservation-category-list');
           var template = document.getElementById('reservation-category-template');
@@ -8018,6 +8169,10 @@ if ($activeSection === 'reservations') {
 
           var reservationIdField = document.querySelector('#reservation-form input[name="id"]');
           var reservationIdValue = reservationIdField ? parseInt(reservationIdField.value || '0', 10) : 0;
+
+          container.querySelectorAll('.reservation-category-item').forEach(function (item) {
+            initializeItemGuestTypeahead(item);
+          });
 
           function updateRemoveButtons() {
             var items = container.querySelectorAll('.reservation-category-item');
@@ -8274,6 +8429,8 @@ if ($activeSection === 'reservations') {
             }
 
             container.appendChild(newItem);
+            initializeItemGuestTypeahead(newItem);
+            cleanupItemGuestTypeaheads();
             bindRoomQuantityBehaviour(newItem);
             bindItemDateBehaviour(newItem);
             var categorySelect = newItem.querySelector('select[name$="[category_id]"]');
@@ -8303,6 +8460,7 @@ if ($activeSection === 'reservations') {
             }
 
             container.removeChild(item);
+            cleanupItemGuestTypeaheads();
             updateRemoveButtons();
             document.dispatchEvent(new CustomEvent('reservation:categories-changed'));
           });
@@ -8569,6 +8727,8 @@ if ($activeSection === 'reservations') {
             stay: modalElement.querySelector('[data-detail="stay"]'),
             room: modalElement.querySelector('[data-detail="room"]'),
             quantity: modalElement.querySelector('[data-detail="quantity"]'),
+            occupancy: modalElement.querySelector('[data-detail="occupancy"]'),
+            primaryGuest: modalElement.querySelector('[data-detail="primary-guest"]'),
             rate: modalElement.querySelector('[data-detail="rate"]'),
             pricePerNight: modalElement.querySelector('[data-detail="price-per-night"]'),
             totalPrice: modalElement.querySelector('[data-detail="total-price"]'),
@@ -8634,6 +8794,12 @@ if ($activeSection === 'reservations') {
             }
             if (detailElements.quantity) {
               detailElements.quantity.textContent = '';
+            }
+            if (detailElements.occupancy) {
+              detailElements.occupancy.textContent = '';
+            }
+            if (detailElements.primaryGuest) {
+              detailElements.primaryGuest.textContent = '';
             }
             if (detailElements.rate) {
               detailElements.rate.textContent = '';
@@ -8796,6 +8962,20 @@ if ($activeSection === 'reservations') {
 
             if (detailElements.quantity) {
               detailElements.quantity.textContent = data.roomQuantity ? String(data.roomQuantity) : '–';
+            }
+
+            if (detailElements.occupancy) {
+              var occupancyLabel = '';
+              if (typeof data.occupancy === 'number' && !Number.isNaN(data.occupancy)) {
+                occupancyLabel = String(data.occupancy);
+              } else if (typeof data.guestCount === 'number' && !Number.isNaN(data.guestCount)) {
+                occupancyLabel = String(data.guestCount);
+              }
+              detailElements.occupancy.textContent = occupancyLabel !== '' ? occupancyLabel : '–';
+            }
+
+            if (detailElements.primaryGuest) {
+              detailElements.primaryGuest.textContent = data.primaryGuestName || '–';
             }
 
             if (detailElements.rate) {
@@ -9255,6 +9435,21 @@ if ($activeSection === 'reservations') {
             if (item && item.company && companyTypeahead) {
               companyTypeahead.setValue(item.company.label || '', item.company.id || '', item.company.address || '');
             }
+
+            cleanupItemGuestTypeaheads();
+            reservationItemGuestTypeaheads.forEach(function (entry) {
+              if (!entry || !entry.container || !entry.instance) {
+                return;
+              }
+
+              var hidden = entry.container.querySelector('input[type="hidden"]');
+              var input = entry.container.querySelector('.typeahead-input');
+              if (hidden && (!hidden.value || hidden.value === '' || hidden.value === '0')) {
+                entry.instance.setValue(item.label || '', item.id || '', item.address || '');
+              } else if (hidden && item && String(item.id || '') === hidden.value && input && (!input.value || input.value === '')) {
+                entry.instance.setValue(item.label || '', item.id || '', item.address || '');
+              }
+            });
           },
           onClear: function () {
             if (!companyContainer || !companyTypeahead) {
