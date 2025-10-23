@@ -3672,7 +3672,9 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             if ($validCategoryItems === []) {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Bitte geben Sie mindestens eine gültige Kategorie mit Zimmer- und Ratenangaben an.',
+                    'message' => $categoryValidationErrors
+                        ? 'Bitte prüfen Sie die ausgewählten Kategorien, Raten, Daten und Zimmerzuweisungen.'
+                        : 'Bitte geben Sie mindestens eine gültige Kategorie mit Zimmer- und Ratenangaben an.',
                 ];
                 break;
             }
@@ -3724,6 +3726,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
                 if ($pricePerNightValue === null && $calculated !== null && isset($calculated['price_per_night'])) {
                     $pricePerNightValue = (float) $calculated['price_per_night'];
+                }
+
+                if ($totalPriceValue === null && $pricePerNightValue !== null) {
+                    $roomCountForItem = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
+                    if ($roomCountForItem <= 0) {
+                        $roomCountForItem = 1;
+                    }
+
+                    $totalPriceValue = round($pricePerNightValue * $item['night_count'] * $roomCountForItem, 2);
                 }
 
                 if ($totalPriceValue === null) {
@@ -3885,6 +3896,46 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             $_SESSION['redirect_reservation'] = $reservationId;
+            header('Location: index.php?section=reservations');
+            exit;
+
+        case 'reservation_delete':
+            $activeSection = 'reservations';
+
+            if ($reservationManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Reservierungsverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $reservationId = (int) ($_POST['id'] ?? 0);
+
+            if ($reservationId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Reservierung konnte nicht gelöscht werden, da keine gültige ID übermittelt wurde.',
+                ];
+                break;
+            }
+
+            $reservation = $reservationManager->find($reservationId);
+            if ($reservation === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Reservierung wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $reservationManager->delete($reservationId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Reservierung wurde gelöscht.',
+            ];
+
             header('Location: index.php?section=reservations');
             exit;
 
