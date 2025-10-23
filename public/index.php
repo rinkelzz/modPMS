@@ -3070,6 +3070,12 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
                 $arrivalDateObj = new DateTimeImmutable($normalizedArrival);
                 $departureDateObj = new DateTimeImmutable($normalizedDeparture);
+                $today = new DateTimeImmutable('today');
+
+                if ($arrivalDateObj < $today) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
 
                 if ($departureDateObj <= $arrivalDateObj) {
                     $categoryValidationErrors = true;
