@@ -6,6 +6,8 @@ use DateTimeImmutable;
 use PDO;
 use PDOException;
 
+use ModPMS\ArticleManager;
+
 class ReservationManager
 {
     /**
@@ -674,6 +676,11 @@ class ReservationManager
             . ' VALUES (:reservation_id, :category_id, :room_id, :rate_id, :room_quantity, :occupancy, :primary_guest_id, :arrival_date, :departure_date, :price_per_night, :total_price, NOW(), NOW())'
         );
 
+        $articleInsert = $this->pdo->prepare(
+            'INSERT INTO reservation_item_articles (reservation_item_id, article_id, article_name, pricing_type, vat_category_id, vat_rate, quantity, unit_price, total_price, created_at, updated_at) '
+            . 'VALUES (:reservation_item_id, :article_id, :article_name, :pricing_type, :vat_category_id, :vat_rate, :quantity, :unit_price, :total_price, NOW(), NOW())'
+        );
+
         foreach ($items as $item) {
             $categoryId = isset($item['category_id']) ? (int) $item['category_id'] : null;
             if ($categoryId !== null && $categoryId <= 0) {
@@ -744,6 +751,48 @@ class ReservationManager
                 'price_per_night' => $pricePerNight,
                 'total_price' => $totalPrice,
             ]);
+
+            $itemId = (int) $this->pdo->lastInsertId();
+            if ($itemId <= 0 || $articleInsert === false) {
+                continue;
+            }
+
+            if (isset($item['articles']) && is_array($item['articles'])) {
+                foreach ($item['articles'] as $articleEntry) {
+                    if (!is_array($articleEntry)) {
+                        continue;
+                    }
+
+                    $articleId = isset($articleEntry['article_id']) ? (int) $articleEntry['article_id'] : 0;
+                    $articleName = isset($articleEntry['article_name']) ? (string) $articleEntry['article_name'] : null;
+                    $pricingType = isset($articleEntry['pricing_type']) ? (string) $articleEntry['pricing_type'] : ArticleManager::PRICING_PER_DAY;
+                    $vatCategoryId = isset($articleEntry['vat_category_id']) ? (int) $articleEntry['vat_category_id'] : null;
+                    if ($vatCategoryId !== null && $vatCategoryId <= 0) {
+                        $vatCategoryId = null;
+                    }
+
+                    $vatRate = isset($articleEntry['vat_rate']) ? number_format((float) $articleEntry['vat_rate'], 2, '.', '') : '0.00';
+                    $quantityValue = isset($articleEntry['quantity']) ? (int) $articleEntry['quantity'] : 1;
+                    if ($quantityValue <= 0) {
+                        $quantityValue = 1;
+                    }
+
+                    $unitPrice = isset($articleEntry['unit_price']) ? number_format((float) $articleEntry['unit_price'], 2, '.', '') : '0.00';
+                    $totalPriceValue = isset($articleEntry['total_price']) ? number_format((float) $articleEntry['total_price'], 2, '.', '') : '0.00';
+
+                    $articleInsert->execute([
+                        'reservation_item_id' => $itemId,
+                        'article_id' => $articleId > 0 ? $articleId : null,
+                        'article_name' => $articleName,
+                        'pricing_type' => $pricingType,
+                        'vat_category_id' => $vatCategoryId,
+                        'vat_rate' => $vatRate,
+                        'quantity' => $quantityValue,
+                        'unit_price' => $unitPrice,
+                        'total_price' => $totalPriceValue,
+                    ]);
+                }
+            }
         }
     }
 
@@ -899,6 +948,41 @@ class ReservationManager
             return [];
         }
 
+        $itemIds = [];
+        foreach ($items as $item) {
+            if (isset($item['id'])) {
+                $itemIds[] = (int) $item['id'];
+            }
+        }
+
+        $articleMap = [];
+        if ($itemIds !== []) {
+            $articlePlaceholders = implode(', ', array_fill(0, count($itemIds), '?'));
+            $articleStmt = $this->pdo->prepare(
+                'SELECT ria.id, ria.reservation_item_id, ria.article_id, ria.article_name, ria.pricing_type, '
+                . 'ria.vat_category_id, ria.vat_rate, ria.quantity, ria.unit_price, ria.total_price, ria.created_at, ria.updated_at '
+                . 'FROM reservation_item_articles ria '
+                . 'WHERE ria.reservation_item_id IN (' . $articlePlaceholders . ') '
+                . 'ORDER BY ria.id ASC'
+            );
+            $articleStmt->execute($itemIds);
+            $articleRows = $articleStmt->fetchAll();
+            if (is_array($articleRows)) {
+                foreach ($articleRows as $articleRow) {
+                    if (!isset($articleRow['reservation_item_id'])) {
+                        continue;
+                    }
+
+                    $reservationItemId = (int) $articleRow['reservation_item_id'];
+                    if (!isset($articleMap[$reservationItemId])) {
+                        $articleMap[$reservationItemId] = [];
+                    }
+
+                    $articleMap[$reservationItemId][] = $articleRow;
+                }
+            }
+        }
+
         $result = [];
         foreach ($items as $item) {
             if (!isset($item['reservation_id'])) {
@@ -909,6 +993,9 @@ class ReservationManager
             if (!isset($result[$reservationId])) {
                 $result[$reservationId] = [];
             }
+
+            $itemId = isset($item['id']) ? (int) $item['id'] : 0;
+            $item['articles'] = $articleMap[$itemId] ?? [];
 
             $result[$reservationId][] = $item;
         }

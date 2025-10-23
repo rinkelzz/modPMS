@@ -1,5 +1,6 @@
 <?php
 
+use ModPMS\ArticleManager;
 use ModPMS\BackupManager;
 use ModPMS\Calendar;
 use ModPMS\CompanyManager;
@@ -7,6 +8,7 @@ use ModPMS\Database;
 use ModPMS\GuestManager;
 use ModPMS\RateManager;
 use ModPMS\ReservationManager;
+use ModPMS\TaxCategoryManager;
 use ModPMS\SettingManager;
 use ModPMS\RoomCategoryManager;
 use ModPMS\RoomManager;
@@ -25,6 +27,8 @@ require_once __DIR__ . '/../src/GuestManager.php';
 require_once __DIR__ . '/../src/ReservationManager.php';
 require_once __DIR__ . '/../src/SettingManager.php';
 require_once __DIR__ . '/../src/RateManager.php';
+require_once __DIR__ . '/../src/TaxCategoryManager.php';
+require_once __DIR__ . '/../src/ArticleManager.php';
 
 session_start();
 
@@ -122,8 +126,24 @@ $reservationFormData = [
             'total_price' => '',
             'primary_guest_id' => '',
             'primary_guest_query' => '',
+            'articles' => [],
         ],
     ],
+];
+
+$articleFormData = [
+    'id' => null,
+    'name' => '',
+    'description' => '',
+    'price' => '',
+    'pricing_type' => ArticleManager::PRICING_PER_DAY,
+    'tax_category_id' => '',
+];
+
+$taxCategoryFormData = [
+    'id' => null,
+    'name' => '',
+    'rate' => '',
 ];
 $reservationFormDefaults = $reservationFormData;
 $reservationFormMode = 'create';
@@ -221,6 +241,7 @@ $navItems = [
     'dashboard' => 'Dashboard',
     'reservations' => 'Reservierungen',
     'rates' => 'Raten',
+    'articles' => 'Artikel',
     'categories' => 'Kategorien',
     'rooms' => 'Zimmer',
     'guests' => 'Gäste',
@@ -248,6 +269,8 @@ if (isset($_GET['editCategory'])) {
     $activeSection = 'reservations';
 } elseif (isset($_GET['editRate']) || isset($_GET['editRatePeriod']) || isset($_GET['editRateEvent'])) {
     $activeSection = 'rates';
+} elseif (isset($_GET['editArticle'])) {
+    $activeSection = 'articles';
 }
 
 $calendarPastDays = 2;
@@ -290,6 +313,11 @@ $rateEvents = [];
 $activeRate = null;
 $activeRateId = null;
 $activeRateCategoryId = null;
+$articles = [];
+$articlePricingTypes = ArticleManager::pricingTypes();
+$taxCategories = [];
+$taxCategoryLookup = [];
+$articleLookup = [];
 $users = [];
 $reservations = [];
 $roomLookup = [];
@@ -307,7 +335,12 @@ $userManager = null;
 $reservationManager = null;
 $rateManager = null;
 $backupManager = null;
+$articleManager = null;
+$taxCategoryManager = null;
 $reservationCategoryOptionsHtml = '<option value="">Bitte auswählen</option>';
+$articleTaxCategoryOptionsHtml = '<option value="">Bitte auswählen</option>';
+$articleSelectOptionsHtml = '<option value="">Artikel wählen</option>';
+$buildArticleSelectOptions = null;
 $buildRoomSelectOptions = null;
 $buildRateSelectOptions = null;
 $reservationSearchTerm = isset($_GET['reservation_search']) ? trim((string) $_GET['reservation_search']) : '';
@@ -478,6 +511,8 @@ try {
     $settingsManager = new SettingManager($pdo);
     $backupManager = new BackupManager($pdo);
     $rateManager = new RateManager($pdo);
+    $taxCategoryManager = new TaxCategoryManager($pdo);
+    $articleManager = new ArticleManager($pdo);
 } catch (Throwable $exception) {
     $dbError = $exception->getMessage();
 }
@@ -2275,6 +2310,285 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             header('Location: index.php?' . http_build_query($redirectParams) . '#rate-events');
             exit;
 
+        case 'tax_category_create':
+        case 'tax_category_update':
+            $activeSection = 'articles';
+
+            if ($taxCategoryManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Mehrwertsteuer-Kategorien können aktuell nicht verwaltet werden.',
+                ];
+                break;
+            }
+
+            $name = trim((string) ($_POST['name'] ?? ''));
+            $rateInput = trim((string) ($_POST['rate'] ?? ''));
+            $rateValue = $normalizeMoneyInput($rateInput);
+
+            $taxCategoryFormData = [
+                'id' => $form === 'tax_category_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'name' => $name,
+                'rate' => $rateInput,
+            ];
+
+            if ($name === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen Namen für die Mehrwertsteuer-Kategorie an.',
+                ];
+                break;
+            }
+
+            if ($rateValue === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen gültigen Prozentsatz an.',
+                ];
+                break;
+            }
+
+            if ($rateValue > 100) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Mehrwertsteuersatz darf 100 % nicht überschreiten.',
+                ];
+                break;
+            }
+
+            $payload = [
+                'name' => $name,
+                'rate' => $rateValue,
+            ];
+
+            if ($form === 'tax_category_create') {
+                $taxCategoryManager->create($payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Mehrwertsteuer-Kategorie "%s" wurde angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=articles#tax-category-management');
+                exit;
+            }
+
+            $categoryId = (int) ($_POST['id'] ?? 0);
+            if ($categoryId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Kategorie konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $existingCategory = $taxCategoryManager->find($categoryId);
+            if ($existingCategory === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Mehrwertsteuer-Kategorie wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $taxCategoryManager->update($categoryId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Mehrwertsteuer-Kategorie "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=articles#tax-category-management');
+            exit;
+
+        case 'tax_category_delete':
+            $activeSection = 'articles';
+
+            if ($taxCategoryManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Mehrwertsteuer-Kategorien können aktuell nicht verwaltet werden.',
+                ];
+                break;
+            }
+
+            $categoryId = (int) ($_POST['id'] ?? 0);
+            if ($categoryId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Kategorie konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $existingCategory = $taxCategoryManager->find($categoryId);
+            if ($existingCategory === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Mehrwertsteuer-Kategorie wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $taxCategoryManager->delete($categoryId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Mehrwertsteuer-Kategorie "%s" wurde gelöscht.', htmlspecialchars((string) $existingCategory['name'], ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=articles#tax-category-management');
+            exit;
+
+        case 'article_create':
+        case 'article_update':
+            $activeSection = 'articles';
+
+            if ($articleManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Artikelverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $name = trim((string) ($_POST['name'] ?? ''));
+            $description = trim((string) ($_POST['description'] ?? ''));
+            $priceInput = trim((string) ($_POST['price'] ?? ''));
+            $pricingType = (string) ($_POST['pricing_type'] ?? ArticleManager::PRICING_PER_DAY);
+            $taxCategoryIdInput = trim((string) ($_POST['tax_category_id'] ?? ''));
+
+            $priceValue = $normalizeMoneyInput($priceInput);
+
+            $articleFormData = [
+                'id' => $form === 'article_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'name' => $name,
+                'description' => $description,
+                'price' => $priceInput,
+                'pricing_type' => $pricingType,
+                'tax_category_id' => $taxCategoryIdInput,
+            ];
+
+            if ($name === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen Artikelnamen an.',
+                ];
+                break;
+            }
+
+            if ($priceValue === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie einen gültigen Bruttopreis an.',
+                ];
+                break;
+            }
+
+            if (!array_key_exists($pricingType, $articlePricingTypes)) {
+                $pricingType = ArticleManager::PRICING_PER_DAY;
+            }
+
+            $taxCategoryId = $taxCategoryIdInput !== '' ? (int) $taxCategoryIdInput : null;
+            if ($taxCategoryId !== null && $taxCategoryId <= 0) {
+                $taxCategoryId = null;
+            }
+
+            if ($taxCategoryId !== null && !isset($taxCategoryLookup[$taxCategoryId])) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Mehrwertsteuer-Kategorie wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $payload = [
+                'name' => $name,
+                'description' => $description !== '' ? $description : null,
+                'price' => $priceValue,
+                'pricing_type' => $pricingType,
+                'tax_category_id' => $taxCategoryId,
+            ];
+
+            if ($form === 'article_create') {
+                $articleManager->create($payload);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Artikel "%s" wurde angelegt.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=articles');
+                exit;
+            }
+
+            $articleId = (int) ($_POST['id'] ?? 0);
+            if ($articleId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Artikel konnte nicht aktualisiert werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $existingArticle = $articleManager->find($articleId);
+            if ($existingArticle === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Artikel wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $articleManager->update($articleId, $payload);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Artikel "%s" wurde aktualisiert.', htmlspecialchars($name, ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=articles');
+            exit;
+
+        case 'article_delete':
+            $activeSection = 'articles';
+
+            if ($articleManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Artikelverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $articleId = (int) ($_POST['id'] ?? 0);
+            if ($articleId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Artikel konnte nicht gelöscht werden, da keine gültige ID übergeben wurde.',
+                ];
+                break;
+            }
+
+            $existingArticle = $articleManager->find($articleId);
+            if ($existingArticle === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Artikel wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $articleManager->delete($articleId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => sprintf('Artikel "%s" wurde gelöscht.', htmlspecialchars((string) $existingArticle['name'], ENT_QUOTES, 'UTF-8')),
+            ];
+
+            header('Location: index.php?section=articles');
+            exit;
+
         case 'category_move':
             $activeSection = 'categories';
 
@@ -2955,6 +3269,29 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         continue;
                     }
 
+                    $itemArticlesForForm = [];
+                    if (isset($item['articles']) && is_array($item['articles'])) {
+                        foreach ($item['articles'] as $articleRow) {
+                            if (!is_array($articleRow)) {
+                                continue;
+                            }
+
+                            $itemArticlesForForm[] = [
+                                'article_id' => trim((string) ($articleRow['article_id'] ?? '')),
+                                'quantity' => trim((string) ($articleRow['quantity'] ?? '1')),
+                                'total_price' => trim((string) ($articleRow['total_price'] ?? '')),
+                            ];
+                        }
+                    }
+
+                    if ($itemArticlesForForm === []) {
+                        $itemArticlesForForm[] = [
+                            'article_id' => '',
+                            'quantity' => '1',
+                            'total_price' => '',
+                        ];
+                    }
+
                     $categoryItemsForForm[$categoryIndex] = [
                         'category_id' => trim((string) ($item['category_id'] ?? '')),
                         'room_quantity' => trim((string) ($item['room_quantity'] ?? '1')),
@@ -2967,6 +3304,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         'total_price' => trim((string) ($item['total_price'] ?? '')),
                         'primary_guest_id' => trim((string) ($item['primary_guest_id'] ?? '')),
                         'primary_guest_query' => trim((string) ($item['primary_guest_query'] ?? '')),
+                        'articles' => $itemArticlesForForm,
                     ];
                 }
             }
@@ -2984,6 +3322,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     'total_price' => '',
                     'primary_guest_id' => '',
                     'primary_guest_query' => '',
+                    'articles' => [],
                 ];
             }
 
@@ -3125,6 +3464,16 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $categoryItemsForForm[$categoryIndex]['occupancy'] = (string) $occupancyValue;
                     $categoryItemsForForm[$categoryIndex]['primary_guest_id'] = (string) $primaryGuestIdValue;
                     $categoryItemsForForm[$categoryIndex]['primary_guest_query'] = $primaryGuestLabel;
+
+                    if (!isset($categoryItemsForForm[$categoryIndex]['articles']) || !is_array($categoryItemsForForm[$categoryIndex]['articles'])) {
+                        $categoryItemsForForm[$categoryIndex]['articles'] = [
+                            [
+                                'article_id' => '',
+                                'quantity' => '1',
+                                'total_price' => '',
+                            ],
+                        ];
+                    }
                 }
 
                 $roomIdNormalized = null;
@@ -3165,6 +3514,122 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     continue;
                 }
 
+                $nightCount = (int) $arrivalDateObj->diff($departureDateObj)->format('%a');
+                if ($nightCount <= 0) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                $roomCountForItem = $roomIdNormalized !== null ? 1 : $quantityValue;
+                if ($roomCountForItem <= 0) {
+                    $roomCountForItem = 1;
+                }
+
+                $normalizedArticles = [];
+                $articleTotalForItem = 0.0;
+                $articleProcessingError = false;
+
+                if (isset($categoryItemsForForm[$categoryIndex]['articles']) && is_array($categoryItemsForForm[$categoryIndex]['articles'])) {
+                    foreach ($categoryItemsForForm[$categoryIndex]['articles'] as $articleRowIndex => &$articleRowData) {
+                        $articleIdInput = trim((string) ($articleRowData['article_id'] ?? ''));
+                        $articleQuantityInput = trim((string) ($articleRowData['quantity'] ?? '1'));
+
+                        if ($articleIdInput === '') {
+                            $articleRowData['article_id'] = '';
+                            $articleRowData['quantity'] = $articleQuantityInput !== '' ? $articleQuantityInput : '1';
+                            $articleRowData['total_price'] = '';
+                            continue;
+                        }
+
+                        $articleId = (int) $articleIdInput;
+                        if ($articleId <= 0 || !isset($articleLookup[$articleId])) {
+                            $articleProcessingError = true;
+                            $articleRowData['article_id'] = '';
+                            $articleRowData['total_price'] = '';
+                            continue;
+                        }
+
+                        $articleQuantity = (int) $articleQuantityInput;
+                        if ($articleQuantity <= 0) {
+                            $articleProcessingError = true;
+                            $articleRowData['quantity'] = '1';
+                            $articleRowData['total_price'] = '';
+                            continue;
+                        }
+
+                        $articleDefinition = $articleLookup[$articleId];
+                        $unitPrice = isset($articleDefinition['price']) ? (float) $articleDefinition['price'] : 0.0;
+                        $pricingType = (string) ($articleDefinition['pricing_type'] ?? ArticleManager::PRICING_PER_DAY);
+                        if (!isset($articlePricingTypes[$pricingType])) {
+                            $pricingType = ArticleManager::PRICING_PER_DAY;
+                        }
+
+                        $taxCategoryId = isset($articleDefinition['tax_category_id']) && $articleDefinition['tax_category_id'] !== null
+                            ? (int) $articleDefinition['tax_category_id']
+                            : null;
+
+                        $taxRate = 0.0;
+                        if (isset($articleDefinition['tax_category_rate'])) {
+                            $taxRate = (float) $articleDefinition['tax_category_rate'];
+                        } elseif ($taxCategoryId !== null && isset($taxCategoryLookup[$taxCategoryId]['rate'])) {
+                            $taxRate = (float) $taxCategoryLookup[$taxCategoryId]['rate'];
+                        }
+
+                        $peopleFactor = max(1, $occupancyValue) * $roomCountForItem;
+                        $basePerDayQuantity = $pricingType === ArticleManager::PRICING_PER_PERSON_PER_DAY
+                            ? $peopleFactor
+                            : $roomCountForItem;
+
+                        $effectiveQuantity = $basePerDayQuantity * $nightCount * $articleQuantity;
+                        if ($effectiveQuantity <= 0) {
+                            $articleProcessingError = true;
+                            $articleRowData['total_price'] = '';
+                            continue;
+                        }
+
+                        $articleTotal = round($unitPrice * $effectiveQuantity, 2);
+
+                        $articleRowData['article_id'] = (string) $articleId;
+                        $articleRowData['quantity'] = (string) $articleQuantity;
+                        $articleRowData['total_price'] = number_format($articleTotal, 2, ',', '.');
+
+                        $normalizedArticles[] = [
+                            'article_id' => $articleId,
+                            'article_name' => (string) ($articleDefinition['name'] ?? ('Artikel #' . $articleId)),
+                            'pricing_type' => $pricingType,
+                            'quantity' => $articleQuantity,
+                            'effective_quantity' => $effectiveQuantity,
+                            'unit_price' => $unitPrice,
+                            'total_price' => $articleTotal,
+                            'vat_rate' => $taxRate,
+                            'vat_category_id' => $taxCategoryId,
+                            'nights' => $nightCount,
+                        ];
+
+                        $articleTotalForItem += $articleTotal;
+                    }
+                    unset($articleRowData);
+                } else {
+                    $categoryItemsForForm[$categoryIndex]['articles'] = [
+                        [
+                            'article_id' => '',
+                            'quantity' => '1',
+                            'total_price' => '',
+                        ],
+                    ];
+                }
+
+                if ($articleProcessingError) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                if (isset($categoryItemsForForm[$categoryIndex])) {
+                    $categoryItemsForForm[$categoryIndex]['articles_total'] = $articleTotalForItem > 0
+                        ? number_format($articleTotalForItem, 2, ',', '.')
+                        : '';
+                }
+
                 if ($earliestArrival === null || $arrivalDateObj < $earliestArrival) {
                     $earliestArrival = $arrivalDateObj;
                 }
@@ -3186,6 +3651,9 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     'rate_id' => $rateIdValue,
                     'price_per_night' => $pricePerNightValue,
                     'total_price' => $totalPriceValue,
+                    'article_total' => $articleTotalForItem,
+                    'articles' => $normalizedArticles,
+                    'night_count' => $nightCount,
                 ];
             }
 
@@ -3236,6 +3704,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
                 $pricePerNightValue = $item['price_per_night'];
                 $totalPriceValue = $item['total_price'];
+                $articleTotalValue = isset($item['article_total']) ? (float) $item['article_total'] : 0.0;
 
                 if ($totalPriceValue === null && $calculated !== null && isset($calculated['total_price'])) {
                     $totalPriceValue = (float) $calculated['total_price'];
@@ -3250,15 +3719,20 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     break;
                 }
 
-                $overallTotal += $totalPriceValue;
+                $overallTotal += $totalPriceValue + $articleTotalValue;
                 $validCategoryItems[$index]['price_per_night'] = $pricePerNightValue;
-                $validCategoryItems[$index]['total_price'] = $totalPriceValue;
+                $validCategoryItems[$index]['room_total_price'] = $totalPriceValue;
+                $validCategoryItems[$index]['article_total'] = $articleTotalValue;
+                $validCategoryItems[$index]['total_price'] = $totalPriceValue + $articleTotalValue;
 
                 if (isset($categoryItemsForForm[$itemIndex])) {
                     $categoryItemsForForm[$itemIndex]['price_per_night'] = $pricePerNightValue !== null
                         ? number_format($pricePerNightValue, 2, ',', '.')
                         : '';
-                    $categoryItemsForForm[$itemIndex]['total_price'] = number_format($totalPriceValue, 2, ',', '.');
+                    $categoryItemsForForm[$itemIndex]['total_price'] = number_format($totalPriceValue + $articleTotalValue, 2, ',', '.');
+                    $categoryItemsForForm[$itemIndex]['articles_total'] = $articleTotalValue > 0
+                        ? number_format($articleTotalValue, 2, ',', '.')
+                        : '';
                     $categoryItemsForForm[$itemIndex]['occupancy'] = (string) $item['occupancy'];
                     $categoryItemsForForm[$itemIndex]['primary_guest_id'] = (string) $item['primary_guest_id'];
                     $categoryItemsForForm[$itemIndex]['primary_guest_query'] = $item['primary_guest_label'];
@@ -3580,6 +4054,73 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 if ($pdo !== null) {
     if ($categoryManager instanceof RoomCategoryManager) {
         $categories = $categoryManager->all();
+    }
+
+    if ($taxCategoryManager instanceof TaxCategoryManager) {
+        $taxCategories = $taxCategoryManager->all();
+
+        $taxOptions = ['<option value="">Bitte auswählen</option>'];
+        foreach ($taxCategories as $taxCategory) {
+            if (!isset($taxCategory['id'])) {
+                continue;
+            }
+
+            $taxCategoryLookup[(int) $taxCategory['id']] = $taxCategory;
+
+            $taxOptions[] = sprintf(
+                '<option value="%d">%s (%s)</option>',
+                (int) $taxCategory['id'],
+                htmlspecialchars((string) ($taxCategory['name'] ?? ''), ENT_QUOTES, 'UTF-8'),
+                isset($taxCategory['rate']) ? htmlspecialchars(number_format((float) $taxCategory['rate'], 2, ',', '.') . ' %', ENT_QUOTES, 'UTF-8') : '0,00 %'
+            );
+        }
+
+        $articleTaxCategoryOptionsHtml = implode('', $taxOptions);
+    }
+
+    if ($articleManager instanceof ArticleManager) {
+        $articles = $articleManager->all();
+        $articleSelectRecords = [];
+
+        foreach ($articles as $article) {
+            if (!isset($article['id'])) {
+                continue;
+            }
+
+            $articleId = (int) $article['id'];
+            $articleLookup[$articleId] = $article;
+
+            $articleName = isset($article['name']) ? (string) $article['name'] : ('Artikel #' . $articleId);
+            $articlePrice = isset($article['price']) ? (float) $article['price'] : 0.0;
+            $articlePricingType = isset($article['pricing_type']) ? (string) $article['pricing_type'] : ArticleManager::PRICING_PER_DAY;
+
+            $articleSelectRecords[] = [
+                'id' => $articleId,
+                'name' => $articleName,
+                'price' => $articlePrice,
+                'pricing' => $articlePricingType,
+            ];
+        }
+
+        $buildArticleSelectOptions = static function (?int $selectedId) use ($articleSelectRecords): string {
+            $options = ['<option value="">Artikel wählen</option>'];
+
+            foreach ($articleSelectRecords as $record) {
+                $options[] = sprintf(
+                    '<option value="%d" data-price="%s" data-pricing="%s"%s>%s (€ %s)</option>',
+                    $record['id'],
+                    htmlspecialchars(number_format($record['price'], 2, '.', ''), ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($record['pricing'], ENT_QUOTES, 'UTF-8'),
+                    $selectedId !== null && $selectedId === $record['id'] ? ' selected' : '',
+                    htmlspecialchars($record['name'], ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars(number_format($record['price'], 2, ',', '.'), ENT_QUOTES, 'UTF-8')
+                );
+            }
+
+            return implode('', $options);
+        };
+
+        $articleSelectOptionsHtml = $buildArticleSelectOptions(null);
     }
 
     if ($rateManager instanceof RateManager) {
@@ -4142,6 +4683,84 @@ if ($pdo !== null) {
                 }
             }
 
+            $itemArticlesRaw = isset($item['articles']) && is_array($item['articles']) ? $item['articles'] : [];
+            $itemArticlesSummary = [];
+            $itemArticlesTotal = 0.0;
+
+            foreach ($itemArticlesRaw as $articleEntry) {
+                if (!is_array($articleEntry)) {
+                    continue;
+                }
+
+                $articleId = isset($articleEntry['article_id']) ? (int) $articleEntry['article_id'] : 0;
+                $articleName = isset($articleEntry['article_name']) ? trim((string) $articleEntry['article_name']) : '';
+                if ($articleName === '' && $articleId > 0 && isset($articleLookup[$articleId]['name'])) {
+                    $articleName = trim((string) $articleLookup[$articleId]['name']);
+                }
+                if ($articleName === '') {
+                    $articleName = $articleId > 0 ? 'Artikel #' . $articleId : 'Artikel';
+                }
+
+                $articleQuantity = null;
+                if (isset($articleEntry['quantity']) && $articleEntry['quantity'] !== null && $articleEntry['quantity'] !== '') {
+                    $articleQuantity = (int) $articleEntry['quantity'];
+                    if ($articleQuantity <= 0) {
+                        $articleQuantity = null;
+                    }
+                }
+
+                $pricingTypeKey = isset($articleEntry['pricing_type']) ? (string) $articleEntry['pricing_type'] : ArticleManager::PRICING_PER_DAY;
+                if (!isset($articlePricingTypes[$pricingTypeKey])) {
+                    $pricingTypeKey = ArticleManager::PRICING_PER_DAY;
+                }
+                $pricingLabel = $articlePricingTypes[$pricingTypeKey] ?? '';
+
+                $unitPriceValue = isset($articleEntry['unit_price']) && $articleEntry['unit_price'] !== null && $articleEntry['unit_price'] !== ''
+                    ? (float) $articleEntry['unit_price']
+                    : 0.0;
+                $totalPriceValue = isset($articleEntry['total_price']) && $articleEntry['total_price'] !== null && $articleEntry['total_price'] !== ''
+                    ? (float) $articleEntry['total_price']
+                    : 0.0;
+                $itemArticlesTotal += $totalPriceValue;
+
+                $unitPriceFormatted = $unitPriceValue > 0 ? $formatCurrency($unitPriceValue) : null;
+                $totalPriceFormatted = $totalPriceValue > 0 ? $formatCurrency($totalPriceValue) : null;
+
+                $vatRateValue = null;
+                if (isset($articleEntry['vat_rate']) && $articleEntry['vat_rate'] !== null && $articleEntry['vat_rate'] !== '') {
+                    $vatRateValue = (float) $articleEntry['vat_rate'];
+                }
+                if ($vatRateValue !== null && $vatRateValue < 0) {
+                    $vatRateValue = null;
+                }
+                $vatRateFormatted = $vatRateValue !== null ? $formatPercent($vatRateValue) : null;
+
+                $itemArticlesSummary[] = [
+                    'id' => $articleId > 0 ? $articleId : null,
+                    'name' => $articleName,
+                    'quantity' => $articleQuantity,
+                    'pricing_type' => $pricingTypeKey,
+                    'pricing_label' => $pricingLabel,
+                    'unit_price' => $unitPriceValue,
+                    'unit_price_formatted' => $unitPriceFormatted,
+                    'total_price' => $totalPriceValue,
+                    'total_price_formatted' => $totalPriceFormatted,
+                    'vat_rate' => $vatRateValue,
+                    'vat_rate_formatted' => $vatRateFormatted,
+                ];
+            }
+
+            $articleTotalLabel = '';
+            if ($itemArticlesSummary !== []) {
+                $itemDetail['articles'] = $itemArticlesSummary;
+                $itemDetail['articlesTotal'] = $itemArticlesTotal;
+                $articlesFormattedTotal = $itemArticlesTotal > 0 ? $formatCurrency($itemArticlesTotal) : null;
+                if ($articlesFormattedTotal !== null) {
+                    $itemDetail['articlesTotalFormatted'] = $articlesFormattedTotal;
+                    $articleTotalLabel = $articlesFormattedTotal;
+                }
+            }
+
             if ($itemRoomId > 0) {
                 $roomStays[$itemRoomId][] = [
                     'label' => $itemLabel,
@@ -4431,6 +5050,66 @@ if ($pdo !== null && isset($_GET['editCategory']) && $categoryFormData['id'] ===
         ];
     }
 }
+
+if ($pdo !== null && isset($_GET['editArticle']) && $articleFormData['id'] === null) {
+    if ($articleManager === null) {
+        if ($alert === null) {
+            $alert = [
+                'type' => 'danger',
+                'message' => 'Artikel können derzeit nicht bearbeitet werden.',
+            ];
+        }
+    } else {
+        $articleToEdit = $articleManager->find((int) $_GET['editArticle']);
+
+        if ($articleToEdit) {
+            $articleFormData = [
+                'id' => (int) $articleToEdit['id'],
+                'name' => (string) ($articleToEdit['name'] ?? ''),
+                'description' => (string) ($articleToEdit['description'] ?? ''),
+                'price' => isset($articleToEdit['price']) ? number_format((float) $articleToEdit['price'], 2, ',', '.') : '',
+                'pricing_type' => (string) ($articleToEdit['pricing_type'] ?? ArticleManager::PRICING_PER_DAY),
+                'tax_category_id' => isset($articleToEdit['tax_category_id']) && $articleToEdit['tax_category_id'] !== null
+                    ? (string) (int) $articleToEdit['tax_category_id']
+                    : '',
+            ];
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Der ausgewählte Artikel wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editTaxCategory']) && $taxCategoryFormData['id'] === null) {
+    if ($taxCategoryManager === null) {
+        if ($alert === null) {
+            $alert = [
+                'type' => 'danger',
+                'message' => 'Mehrwertsteuer-Kategorien können derzeit nicht bearbeitet werden.',
+            ];
+        }
+    } else {
+        $taxCategoryToEdit = $taxCategoryManager->find((int) $_GET['editTaxCategory']);
+
+        if ($taxCategoryToEdit) {
+            $taxCategoryFormData = [
+                'id' => (int) $taxCategoryToEdit['id'],
+                'name' => (string) ($taxCategoryToEdit['name'] ?? ''),
+                'rate' => isset($taxCategoryToEdit['rate']) ? number_format((float) $taxCategoryToEdit['rate'], 2, ',', '.') : '',
+            ];
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die ausgewählte Mehrwertsteuer-Kategorie wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+$articleFormMode = $articleFormData['id'] !== null ? 'update' : 'create';
+$taxCategoryFormMode = $taxCategoryFormData['id'] !== null ? 'update' : 'create';
 
 if ($pdo !== null && isset($_GET['editRate']) && $rateFormData['id'] === null) {
     if ($rateManager === null) {
@@ -5591,6 +6270,8 @@ if ($activeSection === 'reservations') {
                                     'assignment' => $assignmentText,
                                     'assignment_class' => $assignmentClass,
                                     'stay' => $stayLabel,
+                                    'articles' => $itemArticlesSummary,
+                                    'articles_total' => $articleTotalLabel,
                                 ];
                             }
 
@@ -5706,6 +6387,41 @@ if ($activeSection === 'reservations') {
                                   <div class="small text-muted">Zeitraum: <?= htmlspecialchars($detail['stay']) ?></div>
                                 <?php endif; ?>
                                 <div class="small <?= htmlspecialchars($detail['assignment_class']) ?>"><?= htmlspecialchars($detail['assignment']) ?></div>
+                                <?php
+                                  $detailArticles = isset($detail['articles']) && is_array($detail['articles']) ? $detail['articles'] : [];
+                                  $detailArticlesTotal = isset($detail['articles_total']) ? (string) $detail['articles_total'] : '';
+                                ?>
+                                <?php if ($detailArticles !== []): ?>
+                                  <div class="small text-muted mt-1">Artikel:</div>
+                                  <ul class="list-unstyled small text-muted mb-1 ps-3">
+                                    <?php foreach ($detailArticles as $articleDetail): ?>
+                                      <?php
+                                        if (!is_array($articleDetail)) {
+                                            continue;
+                                        }
+                                        $articleName = isset($articleDetail['name']) ? (string) $articleDetail['name'] : 'Artikel';
+                                        $articleMetaParts = [];
+                                        if (isset($articleDetail['quantity']) && $articleDetail['quantity'] !== null && $articleDetail['quantity'] !== '') {
+                                            $articleMetaParts[] = 'Menge: ' . htmlspecialchars((string) $articleDetail['quantity']);
+                                        }
+                                        if (!empty($articleDetail['pricing_label'])) {
+                                            $articleMetaParts[] = htmlspecialchars((string) $articleDetail['pricing_label']);
+                                        }
+                                        if (!empty($articleDetail['total_price_formatted'])) {
+                                            $articleMetaParts[] = 'Gesamt: ' . htmlspecialchars((string) $articleDetail['total_price_formatted']);
+                                        }
+                                        $articleText = htmlspecialchars($articleName);
+                                        if ($articleMetaParts !== []) {
+                                            $articleText .= ' (' . implode(' • ', $articleMetaParts) . ')';
+                                        }
+                                      ?>
+                                      <li><?= $articleText ?></li>
+                                    <?php endforeach; ?>
+                                  </ul>
+                                  <?php if ($detailArticlesTotal !== ''): ?>
+                                    <div class="small text-muted">Artikel gesamt: <?= htmlspecialchars($detailArticlesTotal) ?></div>
+                                  <?php endif; ?>
+                                <?php endif; ?>
                                 <?php if ($detailIndex < count($reservationCategoryDetails) - 1): ?>
                                   <hr class="my-2">
                                 <?php endif; ?>
@@ -6450,6 +7166,222 @@ if ($activeSection === 'reservations') {
             </div>
           </div>
         </div>
+      </section>
+      <?php elseif ($activeSection === 'articles'): ?>
+      <section id="articles" class="app-section active">
+        <?php if ($pdo === null): ?>
+          <p class="text-muted mb-0">Die Artikelverwaltung steht nach dem Herstellen einer Datenbankverbindung zur Verfügung.</p>
+        <?php else: ?>
+          <div class="row g-4">
+            <div class="col-12 col-xl-5">
+              <div class="card module-card">
+                <div class="card-header bg-transparent border-0">
+                  <h2 class="h5 mb-1">Artikel <?= $articleFormMode === 'update' ? 'bearbeiten' : 'anlegen' ?></h2>
+                  <p class="text-muted mb-0">Zusatzleistungen mit Bruttopreisen und Mehrwertsteuer-Zuordnung.</p>
+                </div>
+                <div class="card-body">
+                  <form method="post" class="row g-3">
+                    <input type="hidden" name="form" value="<?= $articleFormMode === 'update' ? 'article_update' : 'article_create' ?>">
+                    <?php if ($articleFormMode === 'update'): ?>
+                      <input type="hidden" name="id" value="<?= (int) $articleFormData['id'] ?>">
+                    <?php endif; ?>
+                    <div class="col-12">
+                      <label for="article-name" class="form-label">Bezeichnung</label>
+                      <input type="text" class="form-control" id="article-name" name="name" value="<?= htmlspecialchars((string) $articleFormData['name']) ?>" required>
+                    </div>
+                    <div class="col-12">
+                      <label for="article-description" class="form-label">Beschreibung (optional)</label>
+                      <textarea class="form-control" id="article-description" name="description" rows="3"><?= htmlspecialchars((string) $articleFormData['description']) ?></textarea>
+                    </div>
+                    <div class="col-12 col-sm-6">
+                      <label for="article-price" class="form-label">Bruttopreis</label>
+                      <div class="input-group">
+                        <input type="text" class="form-control" id="article-price" name="price" value="<?= htmlspecialchars((string) $articleFormData['price']) ?>" placeholder="z.&nbsp;B. 12,50" required>
+                        <span class="input-group-text">€</span>
+                      </div>
+                    </div>
+                    <div class="col-12 col-sm-6">
+                      <label for="article-pricing-type" class="form-label">Abrechnung</label>
+                      <select class="form-select" id="article-pricing-type" name="pricing_type" required>
+                        <?php foreach ($articlePricingTypes as $pricingTypeKey => $pricingTypeLabel): ?>
+                          <option value="<?= htmlspecialchars($pricingTypeKey) ?>" <?= $articleFormData['pricing_type'] === $pricingTypeKey ? 'selected' : '' ?>><?= htmlspecialchars($pricingTypeLabel) ?></option>
+                        <?php endforeach; ?>
+                      </select>
+                    </div>
+                    <div class="col-12">
+                      <label for="article-tax-category" class="form-label">Mehrwertsteuer-Kategorie</label>
+                      <?php
+                        $articleTaxOptions = $articleTaxCategoryOptionsHtml;
+                        if ($articleFormData['tax_category_id'] !== '' && (int) $articleFormData['tax_category_id'] > 0) {
+                            $articleTaxOptions = str_replace(
+                                sprintf('value="%d"', (int) $articleFormData['tax_category_id']),
+                                sprintf('value="%d" selected', (int) $articleFormData['tax_category_id']),
+                                $articleTaxCategoryOptionsHtml
+                            );
+                        }
+                      ?>
+                      <select class="form-select" id="article-tax-category" name="tax_category_id">
+                        <?= $articleTaxOptions ?>
+                      </select>
+                      <div class="form-text">Verwalten Sie weitere Kategorien im Bereich „Steuerkategorien“ unten.</div>
+                    </div>
+                    <div class="col-12 d-flex gap-2">
+                      <button type="submit" class="btn btn-primary">Speichern</button>
+                      <?php if ($articleFormMode === 'update'): ?>
+                        <a class="btn btn-outline-secondary" href="index.php?section=articles">Abbrechen</a>
+                      <?php endif; ?>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+            <div class="col-12 col-xl-7">
+              <div class="card module-card" id="article-list">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                  <div>
+                    <h2 class="h5 mb-1">Verfügbare Artikel</h2>
+                    <p class="text-muted mb-0">Aktive Zusatzleistungen für Reservierungen.</p>
+                  </div>
+                  <span class="badge text-bg-info align-self-center"><?= count($articles) ?> Einträge</span>
+                </div>
+                <div class="card-body">
+                  <?php if ($articles === []): ?>
+                    <p class="text-muted mb-0">Noch keine Artikel hinterlegt.</p>
+                  <?php else: ?>
+                    <div class="table-responsive">
+                      <table class="table align-middle">
+                        <thead>
+                          <tr>
+                            <th>Bezeichnung</th>
+                            <th>Preis</th>
+                            <th>Abrechnung</th>
+                            <th>Mehrwertsteuer</th>
+                            <th class="text-end">Aktionen</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <?php foreach ($articles as $article): ?>
+                            <?php
+                              if (!isset($article['id'])) { continue; }
+                              $articleId = (int) $article['id'];
+                              $pricingTypeKey = (string) ($article['pricing_type'] ?? ArticleManager::PRICING_PER_DAY);
+                              $pricingTypeLabel = $articlePricingTypes[$pricingTypeKey] ?? $pricingTypeKey;
+                              $taxLabel = 'Keine';
+                              if (isset($article['tax_category_name'])) {
+                                  $rateValue = isset($article['tax_category_rate']) ? number_format((float) $article['tax_category_rate'], 2, ',', '.') : '0,00';
+                                  $taxLabel = sprintf('%s (%s %%)', (string) $article['tax_category_name'], $rateValue);
+                              }
+                            ?>
+                            <tr>
+                              <td>
+                                <strong><?= htmlspecialchars((string) ($article['name'] ?? '')) ?></strong>
+                                <?php if (!empty($article['description'])): ?>
+                                  <div class="text-muted small"><?= nl2br(htmlspecialchars((string) $article['description'])) ?></div>
+                                <?php endif; ?>
+                              </td>
+                              <td>€ <?= number_format((float) ($article['price'] ?? 0), 2, ',', '.') ?></td>
+                              <td><?= htmlspecialchars($pricingTypeLabel) ?></td>
+                              <td><?= htmlspecialchars($taxLabel) ?></td>
+                              <td class="text-end">
+                                <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                  <a class="btn btn-outline-secondary btn-sm" href="index.php?section=articles&amp;editArticle=<?= $articleId ?>">Bearbeiten</a>
+                                  <form method="post" class="d-inline" onsubmit="return confirm('Artikel wirklich löschen?');">
+                                    <input type="hidden" name="form" value="article_delete">
+                                    <input type="hidden" name="id" value="<?= $articleId ?>">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                                  </form>
+                                </div>
+                              </td>
+                            </tr>
+                          <?php endforeach; ?>
+                        </tbody>
+                      </table>
+                    </div>
+                  <?php endif; ?>
+                </div>
+              </div>
+            </div>
+            <div class="col-12">
+              <div class="card module-card" id="tax-category-management">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                  <div>
+                    <h2 class="h5 mb-1">Steuerkategorien</h2>
+                    <p class="text-muted mb-0">Mehrwertsteuer-Sätze für Artikel und spätere Rechnungen.</p>
+                  </div>
+                  <span class="badge text-bg-secondary align-self-center"><?= count($taxCategories) ?> Kategorien</span>
+                </div>
+                <div class="card-body">
+                  <div class="row g-4">
+                    <div class="col-12 col-lg-5">
+                      <form method="post" class="row g-3">
+                        <input type="hidden" name="form" value="<?= $taxCategoryFormMode === 'update' ? 'tax_category_update' : 'tax_category_create' ?>">
+                        <?php if ($taxCategoryFormMode === 'update'): ?>
+                          <input type="hidden" name="id" value="<?= (int) $taxCategoryFormData['id'] ?>">
+                        <?php endif; ?>
+                        <div class="col-12">
+                          <label for="tax-category-name" class="form-label">Name</label>
+                          <input type="text" class="form-control" id="tax-category-name" name="name" value="<?= htmlspecialchars((string) $taxCategoryFormData['name']) ?>" required>
+                        </div>
+                        <div class="col-12">
+                          <label for="tax-category-rate" class="form-label">Steuersatz in&nbsp;%</label>
+                          <div class="input-group">
+                            <input type="text" class="form-control" id="tax-category-rate" name="rate" value="<?= htmlspecialchars((string) $taxCategoryFormData['rate']) ?>" placeholder="z.&nbsp;B. 7,00" required>
+                            <span class="input-group-text">%</span>
+                          </div>
+                        </div>
+                        <div class="col-12 d-flex gap-2">
+                          <button type="submit" class="btn btn-outline-primary">Speichern</button>
+                          <?php if ($taxCategoryFormMode === 'update'): ?>
+                            <a class="btn btn-outline-secondary" href="index.php?section=articles#tax-category-management">Abbrechen</a>
+                          <?php endif; ?>
+                        </div>
+                      </form>
+                    </div>
+                    <div class="col-12 col-lg-7">
+                      <?php if ($taxCategories === []): ?>
+                        <p class="text-muted mb-0">Noch keine Mehrwertsteuer-Kategorien hinterlegt.</p>
+                      <?php else: ?>
+                        <div class="table-responsive">
+                          <table class="table align-middle">
+                            <thead>
+                              <tr>
+                                <th>Name</th>
+                                <th>Satz</th>
+                                <th class="text-end">Aktionen</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <?php foreach ($taxCategories as $taxCategory): ?>
+                                <?php if (!isset($taxCategory['id'])) { continue; }
+                                  $taxId = (int) $taxCategory['id'];
+                                  $rateValue = isset($taxCategory['rate']) ? number_format((float) $taxCategory['rate'], 2, ',', '.') : '0,00';
+                                ?>
+                                <tr>
+                                  <td><?= htmlspecialchars((string) ($taxCategory['name'] ?? '')) ?></td>
+                                  <td><?= $rateValue ?> %</td>
+                                  <td class="text-end">
+                                    <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                      <a class="btn btn-outline-secondary btn-sm" href="index.php?section=articles&amp;editTaxCategory=<?= $taxId ?>#tax-category-management">Bearbeiten</a>
+                                      <form method="post" class="d-inline" onsubmit="return confirm('Kategorie wirklich löschen?');">
+                                        <input type="hidden" name="form" value="tax_category_delete">
+                                        <input type="hidden" name="id" value="<?= $taxId ?>">
+                                        <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                                      </form>
+                                    </div>
+                                  </td>
+                                </tr>
+                              <?php endforeach; ?>
+                            </tbody>
+                          </table>
+                        </div>
+                      <?php endif; ?>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        <?php endif; ?>
       </section>
       <?php elseif ($activeSection === 'categories'): ?>
       <section id="categories" class="app-section active">
@@ -7706,6 +8638,10 @@ if ($activeSection === 'reservations') {
                       $itemRateOptionsHtml = $buildRateSelectOptions !== null
                           ? $buildRateSelectOptions($selectedRateIdForItem)
                           : $reservationRateOptionsHtml;
+                      $itemArticles = isset($categoryItem['articles']) && is_array($categoryItem['articles'])
+                          ? array_values($categoryItem['articles'])
+                          : [['article_id' => '', 'quantity' => '1', 'total_price' => '']];
+                      $articleSummaryValue = isset($categoryItem['articles_total']) ? (string) $categoryItem['articles_total'] : '';
                       $selectedRoomLabel = '';
                       if ($selectedRoomId !== null) {
                           if (isset($roomLookup[$selectedRoomId]['room_number'])) {
@@ -7771,6 +8707,52 @@ if ($activeSection === 'reservations') {
                             </select>
                             <div class="form-text">Legt die Basispreise für diese Kategorie fest.</div>
                           <?php endif; ?>
+                        </div>
+                        <div class="col-12 mt-3">
+                          <div class="reservation-articles border rounded p-3" data-article-section>
+                            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                              <div>
+                                <h3 class="h6 mb-0">Artikel</h3>
+                                <div class="text-muted small">Zusatzleistungen werden automatisch in die Gesamtsumme einberechnet.</div>
+                              </div>
+                              <button type="button" class="btn btn-outline-secondary btn-sm reservation-article-add" data-article-add <?= $pdo === null ? 'disabled' : '' ?>>Artikel hinzufügen</button>
+                            </div>
+                            <div class="reservation-article-list" data-article-list>
+                              <?php foreach ($itemArticles as $articleIndex => $articleRow): ?>
+                                <?php
+                                  $articleIdValue = isset($articleRow['article_id']) ? (string) $articleRow['article_id'] : '';
+                                  $articleQuantityValue = isset($articleRow['quantity']) ? (string) $articleRow['quantity'] : '1';
+                                  $articleTotalValue = isset($articleRow['total_price']) ? (string) $articleRow['total_price'] : '';
+                                  $selectedArticleId = $articleIdValue !== '' ? (int) $articleIdValue : null;
+                                  $articleOptions = $buildArticleSelectOptions !== null
+                                      ? $buildArticleSelectOptions($selectedArticleId)
+                                      : $articleSelectOptionsHtml;
+                                ?>
+                                <div class="reservation-article-row row g-2 align-items-end mb-2" data-article-row>
+                                  <div class="col-md-6">
+                                    <label class="form-label">Artikel</label>
+                                    <select class="form-select reservation-article-select" name="reservation_categories[<?= $categoryIndex ?>][articles][<?= $articleIndex ?>][article_id]" data-article-select <?= $pdo === null ? 'disabled' : '' ?>>
+                                      <?= $articleOptions ?>
+                                    </select>
+                                  </div>
+                                  <div class="col-6 col-md-3">
+                                    <label class="form-label">Menge</label>
+                                    <input type="number" class="form-control reservation-article-quantity" name="reservation_categories[<?= $categoryIndex ?>][articles][<?= $articleIndex ?>][quantity]" min="1" value="<?= htmlspecialchars($articleQuantityValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                                  </div>
+                                  <div class="col-6 col-md-3">
+                                    <label class="form-label">Summe (EUR)</label>
+                                    <input type="text" class="form-control reservation-article-total" name="reservation_categories[<?= $categoryIndex ?>][articles][<?= $articleIndex ?>][total_price]" value="<?= htmlspecialchars($articleTotalValue) ?>" readonly>
+                                  </div>
+                                  <div class="col-12 text-end">
+                                    <button type="button" class="btn btn-outline-danger btn-sm reservation-article-remove" data-article-remove <?= $pdo === null ? 'disabled' : '' ?>>Entfernen</button>
+                                  </div>
+                                </div>
+                              <?php endforeach; ?>
+                            </div>
+                            <div class="text-end small <?= $articleSummaryValue === '' ? 'text-muted' : 'fw-semibold' ?>" data-article-summary>
+                              <?= $articleSummaryValue !== '' ? 'Artikel gesamt: € ' . htmlspecialchars($articleSummaryValue) : 'Noch keine Artikel ausgewählt.' ?>
+                            </div>
+                          </div>
                         </div>
                         <div class="col-12 col-xl-6 mt-2">
                           <label class="form-label">Meldeschein-Hauptgast *</label>
@@ -7865,6 +8847,39 @@ if ($activeSection === 'reservations') {
                         <div class="form-text">Legt die Basispreise für diese Kategorie fest.</div>
                       <?php endif; ?>
                     </div>
+                    <div class="col-12 mt-3">
+                      <div class="reservation-articles border rounded p-3" data-article-section>
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                          <div>
+                            <h3 class="h6 mb-0">Artikel</h3>
+                            <div class="text-muted small">Zusatzleistungen werden automatisch in die Gesamtsumme einberechnet.</div>
+                          </div>
+                          <button type="button" class="btn btn-outline-secondary btn-sm reservation-article-add" data-article-add <?= $pdo === null ? 'disabled' : '' ?>>Artikel hinzufügen</button>
+                        </div>
+                        <div class="reservation-article-list" data-article-list>
+                          <div class="reservation-article-row row g-2 align-items-end mb-2" data-article-row>
+                            <div class="col-md-6">
+                              <label class="form-label">Artikel</label>
+                              <select class="form-select reservation-article-select" name="reservation_categories[__INDEX__][articles][0][article_id]" data-article-select <?= $pdo === null ? 'disabled' : '' ?>>
+                                <?= $buildArticleSelectOptions !== null ? $buildArticleSelectOptions(null) : $articleSelectOptionsHtml ?>
+                              </select>
+                            </div>
+                            <div class="col-6 col-md-3">
+                              <label class="form-label">Menge</label>
+                              <input type="number" class="form-control reservation-article-quantity" name="reservation_categories[__INDEX__][articles][0][quantity]" min="1" value="1" <?= $pdo === null ? 'disabled' : '' ?>>
+                            </div>
+                            <div class="col-6 col-md-3">
+                              <label class="form-label">Summe (EUR)</label>
+                              <input type="text" class="form-control reservation-article-total" name="reservation_categories[__INDEX__][articles][0][total_price]" value="" readonly>
+                            </div>
+                            <div class="col-12 text-end">
+                              <button type="button" class="btn btn-outline-danger btn-sm reservation-article-remove" data-article-remove <?= $pdo === null ? 'disabled' : '' ?>>Entfernen</button>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="text-end small text-muted" data-article-summary>Noch keine Artikel ausgewählt.</div>
+                      </div>
+                    </div>
                     <div class="col-12 col-xl-6 mt-2">
                       <label class="form-label">Meldeschein-Hauptgast *</label>
                       <div class="typeahead position-relative" data-typeahead="guest-item" data-endpoint="index.php?ajax=guest_search">
@@ -7900,6 +8915,27 @@ if ($activeSection === 'reservations') {
                   </div>
                   <div class="d-flex justify-content-end">
                     <button type="button" class="btn btn-outline-danger btn-sm" data-remove-category>Entfernen</button>
+                  </div>
+                </div>
+              </template>
+              <template id="reservation-article-template">
+                <div class="reservation-article-row row g-2 align-items-end mb-2" data-article-row>
+                  <div class="col-md-6">
+                    <label class="form-label">Artikel</label>
+                    <select class="form-select reservation-article-select" name="reservation_categories[__INDEX__][articles][__ARTICLE_INDEX__][article_id]" data-article-select <?= $pdo === null ? 'disabled' : '' ?>>
+                      <?= $buildArticleSelectOptions !== null ? $buildArticleSelectOptions(null) : $articleSelectOptionsHtml ?>
+                    </select>
+                  </div>
+                  <div class="col-6 col-md-3">
+                    <label class="form-label">Menge</label>
+                    <input type="number" class="form-control reservation-article-quantity" name="reservation_categories[__INDEX__][articles][__ARTICLE_INDEX__][quantity]" min="1" value="1" <?= $pdo === null ? 'disabled' : '' ?>>
+                  </div>
+                  <div class="col-6 col-md-3">
+                    <label class="form-label">Summe (EUR)</label>
+                    <input type="text" class="form-control reservation-article-total" name="reservation_categories[__INDEX__][articles][__ARTICLE_INDEX__][total_price]" value="" readonly>
+                  </div>
+                  <div class="col-12 text-end">
+                    <button type="button" class="btn btn-outline-danger btn-sm reservation-article-remove" data-article-remove <?= $pdo === null ? 'disabled' : '' ?>>Entfernen</button>
                   </div>
                 </div>
               </template>
@@ -7979,6 +9015,10 @@ if ($activeSection === 'reservations') {
               <dd class="col-sm-8" data-detail="price-per-night"></dd>
               <dt class="col-sm-4">Gesamtpreis</dt>
               <dd class="col-sm-8" data-detail="total-price"></dd>
+              <dt class="col-sm-4 d-none" data-detail="articles-label">Artikel</dt>
+              <dd class="col-sm-8 d-none" data-detail="articles"></dd>
+              <dt class="col-sm-4 d-none" data-detail="articles-total-label">Artikel gesamt</dt>
+              <dd class="col-sm-8 d-none" data-detail="articles-total"></dd>
               <dt class="col-sm-4">Übernachtungen</dt>
               <dd class="col-sm-8" data-detail="nights"></dd>
               <dt class="col-sm-4">MwSt.</dt>
@@ -8156,6 +9196,7 @@ if ($activeSection === 'reservations') {
         function setupReservationCategoryRepeater() {
           var container = document.getElementById('reservation-category-list');
           var template = document.getElementById('reservation-category-template');
+          var articleTemplate = document.getElementById('reservation-article-template');
           var addButton = document.getElementById('add-reservation-category');
 
           if (!container || !template || !addButton) {
@@ -8172,6 +9213,18 @@ if ($activeSection === 'reservations') {
 
           container.querySelectorAll('.reservation-category-item').forEach(function (item) {
             initializeItemGuestTypeahead(item);
+          });
+
+          container.addEventListener('input', function (event) {
+            var target = event.target;
+            if (!(target instanceof Element)) {
+              return;
+            }
+
+            if (target.matches('input[name$="[occupancy]"]')) {
+              var item = target.closest('.reservation-category-item');
+              recalculateArticlesForItem(item);
+            }
           });
 
           function updateRemoveButtons() {
@@ -8390,6 +9443,7 @@ if ($activeSection === 'reservations') {
             function sync() {
               updateItemDateLimits(item);
               updateRoomOptions(item);
+              recalculateArticlesForItem(item);
             }
 
             if (arrivalField) {
@@ -8413,6 +9467,255 @@ if ($activeSection === 'reservations') {
             sync();
           }
 
+          function getItemNights(item) {
+            var arrivalField = item.querySelector('.reservation-item-arrival');
+            var departureField = item.querySelector('.reservation-item-departure');
+            var arrival = arrivalField && arrivalField.value ? parseISODate(arrivalField.value) : null;
+            var departure = departureField && departureField.value ? parseISODate(departureField.value) : null;
+
+            if (!(arrival instanceof Date) || !(departure instanceof Date)) {
+              return 0;
+            }
+
+            var diff = departure.getTime() - arrival.getTime();
+            var nights = Math.round(diff / (1000 * 60 * 60 * 24));
+            return nights > 0 ? nights : 0;
+          }
+
+          function getItemRoomCount(item) {
+            var roomSelect = item.querySelector('.reservation-room-select');
+            var quantityInput = item.querySelector('input[name$="[room_quantity]"]');
+            if (roomSelect && roomSelect.value !== '') {
+              return 1;
+            }
+
+            var quantity = quantityInput ? parseInt(quantityInput.value || '1', 10) : 1;
+            if (Number.isNaN(quantity) || quantity <= 0) {
+              quantity = 1;
+            }
+
+            return quantity;
+          }
+
+          function getItemOccupancy(item) {
+            var occupancyInput = item.querySelector('input[name$="[occupancy]"]');
+            var value = occupancyInput ? parseInt(occupancyInput.value || '1', 10) : 1;
+            if (Number.isNaN(value) || value <= 0) {
+              value = 1;
+            }
+
+            return value;
+          }
+
+          function recalculateArticleRow(item, row) {
+            if (!row) {
+              return 0;
+            }
+
+            var select = row.querySelector('.reservation-article-select');
+            var quantityInput = row.querySelector('.reservation-article-quantity');
+            var totalInput = row.querySelector('.reservation-article-total');
+
+            if (!select || !quantityInput || !totalInput) {
+              return 0;
+            }
+
+            var selectedOption = select.options[select.selectedIndex];
+            if (!selectedOption || !selectedOption.value) {
+              totalInput.value = '';
+              return 0;
+            }
+
+            var unitPrice = parseFloat(selectedOption.getAttribute('data-price') || '0');
+            if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+              totalInput.value = '';
+              return 0;
+            }
+
+            var pricingType = selectedOption.getAttribute('data-pricing') || 'per_day';
+            var quantity = parseInt(quantityInput.value || '1', 10);
+            if (Number.isNaN(quantity) || quantity <= 0) {
+              quantity = 1;
+              quantityInput.value = '1';
+            }
+
+            var nights = getItemNights(item);
+            if (nights <= 0) {
+              totalInput.value = '';
+              return 0;
+            }
+
+            var roomCount = getItemRoomCount(item);
+            var occupancy = getItemOccupancy(item);
+
+            var effectiveUnits = 0;
+            if (pricingType === 'per_person_per_day') {
+              effectiveUnits = nights * roomCount * occupancy * quantity;
+            } else {
+              effectiveUnits = nights * roomCount * quantity;
+            }
+
+            if (!Number.isFinite(effectiveUnits) || effectiveUnits <= 0) {
+              totalInput.value = '';
+              return 0;
+            }
+
+            var total = unitPrice * effectiveUnits;
+            if (!Number.isFinite(total) || total <= 0) {
+              totalInput.value = '';
+              return 0;
+            }
+
+            totalInput.value = formatMoney(total);
+            return total;
+          }
+
+          function recalculateArticlesForItem(item) {
+            if (!item) {
+              return;
+            }
+
+            var section = item.querySelector('[data-article-section]');
+            if (!section) {
+              return;
+            }
+
+            var total = 0;
+            section.querySelectorAll('[data-article-row]').forEach(function (row) {
+              total += recalculateArticleRow(item, row);
+            });
+
+            var summary = section.querySelector('[data-article-summary]');
+            if (summary) {
+              if (total > 0) {
+                summary.textContent = 'Artikel gesamt: € ' + formatMoney(total);
+                summary.classList.remove('text-muted');
+                summary.classList.add('fw-semibold');
+              } else {
+                summary.textContent = 'Noch keine Artikel ausgewählt.';
+                summary.classList.add('text-muted');
+                summary.classList.remove('fw-semibold');
+              }
+            }
+
+            updateGrandTotal();
+          }
+
+          function bindArticleSection(item) {
+            if (!item) {
+              return;
+            }
+
+            var section = item.querySelector('[data-article-section]');
+            if (!section) {
+              return;
+            }
+
+            if (!section.hasAttribute('data-next-article-index')) {
+              var existing = section.querySelectorAll('[data-article-row]').length;
+              section.setAttribute('data-next-article-index', String(existing));
+            }
+
+            section.addEventListener('click', function (event) {
+              var target = event.target;
+              if (!(target instanceof Element)) {
+                return;
+              }
+
+              if (target.matches('[data-article-add]')) {
+                event.preventDefault();
+                if (!articleTemplate) {
+                  return;
+                }
+
+                var index = item.getAttribute('data-index') || '0';
+                var nextArticleIndex = parseInt(section.getAttribute('data-next-article-index') || '0', 10);
+                if (Number.isNaN(nextArticleIndex) || nextArticleIndex < 0) {
+                  nextArticleIndex = section.querySelectorAll('[data-article-row]').length;
+                }
+
+                var html = articleTemplate.innerHTML
+                  .replace(/__INDEX__/g, String(index))
+                  .replace(/__ARTICLE_INDEX__/g, String(nextArticleIndex));
+
+                section.setAttribute('data-next-article-index', String(nextArticleIndex + 1));
+
+                var wrapper = document.createElement('div');
+                wrapper.innerHTML = html.trim();
+                var row = wrapper.firstElementChild;
+                if (row) {
+                  section.querySelector('[data-article-list]').appendChild(row);
+                  recalculateArticleRow(item, row);
+                  updateGrandTotal();
+                }
+                return;
+              }
+
+              if (target.matches('[data-article-remove]')) {
+                event.preventDefault();
+                var row = target.closest('[data-article-row]');
+                if (!row) {
+                  return;
+                }
+
+                var list = section.querySelector('[data-article-list]');
+                if (!list) {
+                  return;
+                }
+
+                list.removeChild(row);
+
+                if (list.querySelectorAll('[data-article-row]').length === 0) {
+                  if (articleTemplate) {
+                    var index = item.getAttribute('data-index') || '0';
+                    var html = articleTemplate.innerHTML
+                      .replace(/__INDEX__/g, String(index))
+                      .replace(/__ARTICLE_INDEX__/g, '0');
+                    var wrapper = document.createElement('div');
+                    wrapper.innerHTML = html.trim();
+                    var newRow = wrapper.firstElementChild;
+                    if (newRow) {
+                      list.appendChild(newRow);
+                    }
+                  }
+                }
+
+                section.setAttribute('data-next-article-index', String(list.querySelectorAll('[data-article-row]').length));
+
+                recalculateArticlesForItem(item);
+                return;
+              }
+            });
+
+            section.addEventListener('change', function (event) {
+              var target = event.target;
+              if (!(target instanceof Element)) {
+                return;
+              }
+
+              if (target.matches('.reservation-article-select')) {
+                var row = target.closest('[data-article-row]');
+                recalculateArticleRow(item, row);
+                recalculateArticlesForItem(item);
+              }
+            });
+
+            section.addEventListener('input', function (event) {
+              var target = event.target;
+              if (!(target instanceof Element)) {
+                return;
+              }
+
+              if (target.matches('.reservation-article-quantity')) {
+                var row = target.closest('[data-article-row]');
+                recalculateArticleRow(item, row);
+                recalculateArticlesForItem(item);
+              }
+            });
+
+            recalculateArticlesForItem(item);
+          }
+
           function createItem() {
             var html = template.innerHTML.replace(/__INDEX__/g, String(nextIndex));
             nextIndex += 1;
@@ -8433,6 +9736,7 @@ if ($activeSection === 'reservations') {
             cleanupItemGuestTypeaheads();
             bindRoomQuantityBehaviour(newItem);
             bindItemDateBehaviour(newItem);
+            bindArticleSection(newItem);
             var categorySelect = newItem.querySelector('select[name$="[category_id]"]');
             if (categorySelect) {
               categorySelect.addEventListener('change', function () {
@@ -8465,23 +9769,31 @@ if ($activeSection === 'reservations') {
             document.dispatchEvent(new CustomEvent('reservation:categories-changed'));
           });
 
-          container.querySelectorAll('.reservation-category-item').forEach(function (item) {
-            bindRoomQuantityBehaviour(item);
-            bindItemDateBehaviour(item);
-            var categorySelect = item.querySelector('select[name$="[category_id]"]');
-            if (categorySelect) {
-              categorySelect.addEventListener('change', function () {
-                updateRoomOptions(item);
-              });
-            }
-            updateRoomOptions(item);
-          });
+            container.querySelectorAll('.reservation-category-item').forEach(function (item) {
+              bindRoomQuantityBehaviour(item);
+              bindItemDateBehaviour(item);
+              var categorySelect = item.querySelector('select[name$="[category_id]"]');
+              if (categorySelect) {
+                categorySelect.addEventListener('change', function () {
+                  updateRoomOptions(item);
+                });
+              }
+              updateRoomOptions(item);
+              bindArticleSection(item);
+            });
           updateRemoveButtons();
 
           document.addEventListener('reservation:master-dates-changed', function () {
             container.querySelectorAll('.reservation-category-item').forEach(function (item) {
               updateItemDateLimits(item);
               updateRoomOptions(item);
+              recalculateArticlesForItem(item);
+            });
+          });
+
+          document.addEventListener('reservation:categories-changed', function () {
+            container.querySelectorAll('.reservation-category-item').forEach(function (item) {
+              recalculateArticlesForItem(item);
             });
           });
         }
@@ -8523,6 +9835,13 @@ if ($activeSection === 'reservations') {
 
             var sum = 0;
             container.querySelectorAll('.reservation-item-price-total').forEach(function (input) {
+              var value = parseMoney(input.value || '');
+              if (value !== null) {
+                sum += value;
+              }
+            });
+
+            container.querySelectorAll('.reservation-article-total').forEach(function (input) {
               var value = parseMoney(input.value || '');
               if (value !== null) {
                 sum += value;
@@ -8732,6 +10051,10 @@ if ($activeSection === 'reservations') {
             rate: modalElement.querySelector('[data-detail="rate"]'),
             pricePerNight: modalElement.querySelector('[data-detail="price-per-night"]'),
             totalPrice: modalElement.querySelector('[data-detail="total-price"]'),
+            articlesLabel: modalElement.querySelector('[data-detail="articles-label"]'),
+            articles: modalElement.querySelector('[data-detail="articles"]'),
+            articlesTotalLabel: modalElement.querySelector('[data-detail="articles-total-label"]'),
+            articlesTotal: modalElement.querySelector('[data-detail="articles-total"]'),
             nights: modalElement.querySelector('[data-detail="nights"]'),
             vat: modalElement.querySelector('[data-detail="vat"]'),
             notesWrapper: modalElement.querySelector('[data-detail="notes-wrapper"]'),
@@ -8809,6 +10132,20 @@ if ($activeSection === 'reservations') {
             }
             if (detailElements.totalPrice) {
               detailElements.totalPrice.textContent = '';
+            }
+            if (detailElements.articlesLabel) {
+              detailElements.articlesLabel.classList.add('d-none');
+            }
+            if (detailElements.articles) {
+              detailElements.articles.classList.add('d-none');
+              detailElements.articles.innerHTML = '';
+            }
+            if (detailElements.articlesTotalLabel) {
+              detailElements.articlesTotalLabel.classList.add('d-none');
+            }
+            if (detailElements.articlesTotal) {
+              detailElements.articlesTotal.classList.add('d-none');
+              detailElements.articlesTotal.textContent = '';
             }
             if (detailElements.nights) {
               detailElements.nights.textContent = '';
@@ -9000,6 +10337,81 @@ if ($activeSection === 'reservations') {
                 totalPriceLabel = formatMoney(data.totalPrice);
               }
               detailElements.totalPrice.textContent = totalPriceLabel || '–';
+            }
+
+            if (detailElements.articles) {
+              detailElements.articles.innerHTML = '';
+              detailElements.articles.classList.add('d-none');
+            }
+            if (detailElements.articlesLabel) {
+              detailElements.articlesLabel.classList.add('d-none');
+            }
+            if (Array.isArray(data.articles) && data.articles.length && detailElements.articles) {
+              var articleList = document.createElement('ul');
+              articleList.className = 'list-unstyled mb-0';
+
+              data.articles.forEach(function (article) {
+                if (!article) {
+                  return;
+                }
+
+                var name = article.name || 'Artikel';
+                var metaParts = [];
+
+                if (article.quantity != null && article.quantity !== '') {
+                  metaParts.push('Menge: ' + article.quantity);
+                }
+                if (article.pricing_label) {
+                  metaParts.push(article.pricing_label);
+                }
+                var articleTotalDisplay = '';
+                if (typeof article.total_price_formatted === 'string' && article.total_price_formatted !== '') {
+                  articleTotalDisplay = article.total_price_formatted;
+                } else if (typeof article.total_price === 'number') {
+                  articleTotalDisplay = formatMoney(article.total_price);
+                }
+                if (articleTotalDisplay) {
+                  metaParts.push(articleTotalDisplay);
+                }
+
+                var item = document.createElement('li');
+                item.textContent = metaParts.length ? name + ' (' + metaParts.join(' • ') + ')' : name;
+                articleList.appendChild(item);
+              });
+
+              if (articleList.childElementCount) {
+                detailElements.articles.innerHTML = '';
+                detailElements.articles.appendChild(articleList);
+                detailElements.articles.classList.remove('d-none');
+                if (detailElements.articlesLabel) {
+                  detailElements.articlesLabel.classList.remove('d-none');
+                }
+              }
+            }
+
+            if (detailElements.articlesTotal) {
+              var articleTotalLabel = '';
+              if (typeof data.articlesTotalFormatted === 'string' && data.articlesTotalFormatted !== '') {
+                articleTotalLabel = data.articlesTotalFormatted;
+              } else if (typeof data.articlesTotal === 'number') {
+                articleTotalLabel = formatMoney(data.articlesTotal);
+              }
+
+              if (articleTotalLabel) {
+                detailElements.articlesTotal.textContent = articleTotalLabel;
+                detailElements.articlesTotal.classList.remove('d-none');
+                if (detailElements.articlesTotalLabel) {
+                  detailElements.articlesTotalLabel.classList.remove('d-none');
+                }
+              } else {
+                detailElements.articlesTotal.textContent = '';
+                detailElements.articlesTotal.classList.add('d-none');
+                if (detailElements.articlesTotalLabel) {
+                  detailElements.articlesTotalLabel.classList.add('d-none');
+                }
+              }
+            } else if (detailElements.articlesTotalLabel) {
+              detailElements.articlesTotalLabel.classList.add('d-none');
             }
 
             if (detailElements.nights) {
