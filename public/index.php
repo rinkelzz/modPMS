@@ -1098,8 +1098,21 @@ if ($pdo !== null && isset($_GET['ajax'])) {
     exit;
 }
 
+$isAdminUser = isset($_SESSION['user_role']) && $_SESSION['user_role'] === 'admin';
+$adminPermissionDeniedMessage = 'Sie besitzen nicht die erforderlichen Rechte, um diese Aktion auszuführen.';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form']) && $_POST['form'] === 'settings_clear_cache') {
     $activeSection = 'settings';
+
+    if (!$isAdminUser) {
+        $_SESSION['alert'] = [
+            'type' => 'danger',
+            'message' => $adminPermissionDeniedMessage,
+        ];
+
+        header('Location: index.php?section=settings#cache-tools');
+        exit;
+    }
 
     header('Clear-Site-Data: "cache"');
 
@@ -1118,6 +1131,16 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
     switch ($form) {
         case 'settings_schema_refresh':
             $activeSection = 'settings';
+
+            if (!$isAdminUser) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => $adminPermissionDeniedMessage,
+                ];
+
+                header('Location: index.php?section=settings#database-maintenance');
+                exit;
+            }
 
             if ($pdo === null) {
                 $alert = [
@@ -1182,6 +1205,16 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'settings_vat':
             $activeSection = 'settings';
 
+            if (!$isAdminUser) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => $adminPermissionDeniedMessage,
+                ];
+
+                header('Location: index.php?section=settings#vat-settings');
+                exit;
+            }
+
             if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
                 $alert = [
                     'type' => 'danger',
@@ -1225,6 +1258,16 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'settings_status_colors':
             $activeSection = 'settings';
+
+            if (!$isAdminUser) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => $adminPermissionDeniedMessage,
+                ];
+
+                header('Location: index.php?section=settings');
+                exit;
+            }
 
             if (!$settingsAvailable) {
                 $alert = [
@@ -1285,6 +1328,16 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'settings_backup_export':
             $activeSection = 'settings';
 
+            if (!$isAdminUser) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => $adminPermissionDeniedMessage,
+                ];
+
+                header('Location: index.php?section=settings#database-backups');
+                exit;
+            }
+
             if ($pdo === null || !$backupManager instanceof BackupManager) {
                 $alert = [
                     'type' => 'danger',
@@ -1314,6 +1367,16 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'settings_backup_import':
             $activeSection = 'settings';
+
+            if (!$isAdminUser) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => $adminPermissionDeniedMessage,
+                ];
+
+                header('Location: index.php?section=settings#database-backups');
+                exit;
+            }
 
             if ($pdo === null || !$backupManager instanceof BackupManager) {
                 $alert = [
@@ -3354,6 +3417,16 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
+
+            if (!$isAdminUser) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => $adminPermissionDeniedMessage,
+                ];
+
+                header('Location: index.php?section=users');
+                exit;
+            }
             $name = trim($_POST['name'] ?? '');
             $email = trim($_POST['email'] ?? '');
             $roleInput = $_POST['role'] ?? 'mitarbeiter';
@@ -3482,6 +3555,16 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
         case 'user_delete':
             $activeSection = 'users';
+
+            if (!$isAdminUser) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => $adminPermissionDeniedMessage,
+                ];
+
+                header('Location: index.php?section=users');
+                exit;
+            }
             $userId = (int) ($_POST['id'] ?? 0);
 
             if ($userId <= 0) {
