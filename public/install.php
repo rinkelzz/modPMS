@@ -174,6 +174,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_guests_room (room_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rates (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(190) NOT NULL,
+                    category_id INT UNSIGNED NULL,
+                    base_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    description TEXT NULL,
+                    created_by INT UNSIGNED NULL,
+                    updated_by INT UNSIGNED NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rates_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_rates_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_rates_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+                    INDEX idx_install_rates_category (category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS reservations (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     reservation_number VARCHAR(32) NOT NULL,
@@ -233,22 +249,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_install_reservation_items_reservation (reservation_id),
                     INDEX idx_install_reservation_items_category (category_id),
                     INDEX idx_install_reservation_items_room (room_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
-
-                $pdo->exec('CREATE TABLE IF NOT EXISTS rates (
-                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                    name VARCHAR(190) NOT NULL,
-                    category_id INT UNSIGNED NULL,
-                    base_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-                    description TEXT NULL,
-                    created_by INT UNSIGNED NULL,
-                    updated_by INT UNSIGNED NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    CONSTRAINT fk_install_rates_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE SET NULL,
-                    CONSTRAINT fk_install_rates_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
-                    CONSTRAINT fk_install_rates_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
-                    INDEX idx_install_rates_category (category_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
                 $pdo->exec('CREATE TABLE IF NOT EXISTS rate_category_prices (
