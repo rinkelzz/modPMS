@@ -402,7 +402,7 @@ class ReservationManager
     /**
      * @return array<int, array<string, mixed>>
      */
-    public function all(?string $search = null, bool $includeArchived = false): array
+    public function all(?string $search = null, bool $includeArchived = false, bool $archivedOnly = false): array
     {
         $sql = 'SELECT r.id, r.reservation_number, r.rate_id, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, '
             . 'r.price_per_night, r.total_price, r.vat_rate, r.notes, '
@@ -426,7 +426,9 @@ class ReservationManager
         $params = [];
         $conditions = [];
 
-        if (!$includeArchived) {
+        if ($archivedOnly) {
+            $conditions[] = 'r.archived_at IS NOT NULL';
+        } elseif (!$includeArchived) {
             $conditions[] = 'r.archived_at IS NULL';
         }
 
@@ -434,7 +436,8 @@ class ReservationManager
             $conditions[] = '(g.last_name LIKE :search '
                 . 'OR g.first_name LIKE :search '
                 . 'OR CONCAT_WS(" ", g.first_name, g.last_name) LIKE :search '
-                . 'OR c.name LIKE :search)';
+                . 'OR c.name LIKE :search '
+                . 'OR r.reservation_number LIKE :search)';
             $params['search'] = '%' . $search . '%';
         }
 
