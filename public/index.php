@@ -3414,8 +3414,53 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $arrivalValue = isset($item['arrival_date']) ? trim((string) $item['arrival_date']) : '';
                 $departureValue = isset($item['departure_date']) ? trim((string) $item['departure_date']) : '';
 
+                $pricePerNightInput = isset($item['price_per_night']) ? trim((string) $item['price_per_night']) : '';
+                $totalPriceInput = isset($item['total_price']) ? trim((string) $item['total_price']) : '';
+                $primaryGuestIdRaw = isset($item['primary_guest_id']) ? (int) $item['primary_guest_id'] : 0;
+                $primaryGuestQueryInput = isset($item['primary_guest_query'])
+                    ? trim((string) $item['primary_guest_query'])
+                    : '';
+
+                $hasArticleSelection = false;
+                if (isset($categoryItemsForForm[$categoryIndex]['articles'])
+                    && is_array($categoryItemsForForm[$categoryIndex]['articles'])
+                ) {
+                    foreach ($categoryItemsForForm[$categoryIndex]['articles'] as $articleCandidate) {
+                        if (!is_array($articleCandidate)) {
+                            continue;
+                        }
+
+                        $articleIdCandidate = trim((string) ($articleCandidate['article_id'] ?? ''));
+                        $articleTotalCandidate = trim((string) ($articleCandidate['total_price'] ?? ''));
+
+                        if ($articleIdCandidate !== '' || $articleTotalCandidate !== '') {
+                            $hasArticleSelection = true;
+                            break;
+                        }
+                    }
+                }
+
                 $normalizedArrival = $normalizeDateInput($arrivalValue);
                 $normalizedDeparture = $normalizeDateInput($departureValue);
+
+                $isCategoryRowEmpty = $categoryIdValue <= 0
+                    && $roomIdValue <= 0
+                    && $rateIdValue <= 0
+                    && $arrivalValue === ''
+                    && $departureValue === ''
+                    && $pricePerNightInput === ''
+                    && $totalPriceInput === ''
+                    && $primaryGuestIdRaw <= 0
+                    && $primaryGuestQueryInput === ''
+                    && !$hasArticleSelection;
+
+                if ($isCategoryRowEmpty) {
+                    if (isset($categoryItemsForForm[$categoryIndex])) {
+                        $categoryItemsForForm[$categoryIndex]['articles_total'] = '';
+                    }
+
+                    continue;
+                }
 
                 if ($categoryIdValue <= 0 || !isset($categoryLookupForValidation[$categoryIdValue])) {
                     $categoryValidationErrors = true;
@@ -3446,7 +3491,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     continue;
                 }
 
-                $primaryGuestIdValue = isset($item['primary_guest_id']) ? (int) $item['primary_guest_id'] : 0;
+                $primaryGuestIdValue = $primaryGuestIdRaw;
                 if ($primaryGuestIdValue <= 0 && $guestId > 0) {
                     $primaryGuestIdValue = $guestId;
                 }
@@ -3507,9 +3552,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $categoryValidationErrors = true;
                     continue;
                 }
-
-                $pricePerNightInput = isset($item['price_per_night']) ? trim((string) $item['price_per_night']) : '';
-                $totalPriceInput = isset($item['total_price']) ? trim((string) $item['total_price']) : '';
 
                 $pricePerNightValue = $pricePerNightInput !== '' ? $normalizeMoneyInput($pricePerNightInput) : null;
                 $totalPriceValue = $totalPriceInput !== '' ? $normalizeMoneyInput($totalPriceInput) : null;
