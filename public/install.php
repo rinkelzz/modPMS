@@ -423,6 +423,142 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute(['Standard 19%', '19.00']);
                 }
 
+                $taxCategoryRows = $pdo->query('SELECT id, name, rate FROM tax_categories ORDER BY id ASC')->fetchAll(PDO::FETCH_ASSOC);
+                $reducedTaxId = null;
+                $reducedTaxRate = null;
+                $fullTaxId = null;
+                $fullTaxRate = null;
+
+                if (is_array($taxCategoryRows)) {
+                    foreach ($taxCategoryRows as $taxCategoryRow) {
+                        if (!isset($taxCategoryRow['id'])) {
+                            continue;
+                        }
+
+                        $taxId = (int) $taxCategoryRow['id'];
+                        $taxRate = isset($taxCategoryRow['rate']) ? (float) $taxCategoryRow['rate'] : 0.0;
+                        $taxName = isset($taxCategoryRow['name']) ? (string) $taxCategoryRow['name'] : '';
+
+                        if ($reducedTaxId === null && (stripos($taxName, 'übernachtung') !== false || abs($taxRate - 7.0) < 0.01)) {
+                            $reducedTaxId = $taxId;
+                            $reducedTaxRate = $taxRate;
+                        }
+
+                        if ($fullTaxId === null && (stripos($taxName, '19') !== false || abs($taxRate - 19.0) < 0.01)) {
+                            $fullTaxId = $taxId;
+                            $fullTaxRate = $taxRate;
+                        }
+                    }
+                }
+
+                if ($taxCategoryRows && $reducedTaxId === null) {
+                    $first = $taxCategoryRows[0];
+                    $reducedTaxId = isset($first['id']) ? (int) $first['id'] : null;
+                    $reducedTaxRate = isset($first['rate']) ? (float) $first['rate'] : null;
+                }
+
+                if ($taxCategoryRows && $fullTaxId === null) {
+                    $first = $taxCategoryRows[0];
+                    $fullTaxId = isset($first['id']) ? (int) $first['id'] : null;
+                    $fullTaxRate = isset($first['rate']) ? (float) $first['rate'] : null;
+                }
+
+                if ($fullTaxId === null) {
+                    $fullTaxId = $reducedTaxId;
+                    $fullTaxRate = $reducedTaxRate;
+                }
+
+                $sampleArticlesForReservation = [];
+
+                $articleCount = $pdo->query('SELECT COUNT(*) FROM articles')->fetchColumn();
+                if ((int) $articleCount === 0) {
+                    $articleStmt = $pdo->prepare('INSERT INTO articles (name, description, price, pricing_type, tax_category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())');
+
+                    $articleStmt->execute([
+                        'Frühstücksbuffet',
+                        'Reichhaltiges Frühstück mit regionalen Produkten.',
+                        '14.90',
+                        'per_person_per_day',
+                        $reducedTaxId,
+                    ]);
+                    $breakfastArticleId = (int) $pdo->lastInsertId();
+                    if ($breakfastArticleId > 0) {
+                        $sampleArticlesForReservation[] = [
+                            'id' => $breakfastArticleId,
+                            'name' => 'Frühstücksbuffet',
+                            'price' => 14.90,
+                            'pricing_type' => 'per_person_per_day',
+                            'tax_category_id' => $reducedTaxId,
+                            'tax_rate' => $reducedTaxRate ?? 0.0,
+                        ];
+                    }
+
+                    $articleStmt->execute([
+                        'Tiefgaragenstellplatz',
+                        'Reservierter Parkplatz pro Nacht.',
+                        '9.50',
+                        'per_day',
+                        $fullTaxId,
+                    ]);
+                    $parkingArticleId = (int) $pdo->lastInsertId();
+                    if ($parkingArticleId > 0) {
+                        $sampleArticlesForReservation[] = [
+                            'id' => $parkingArticleId,
+                            'name' => 'Tiefgaragenstellplatz',
+                            'price' => 9.50,
+                            'pricing_type' => 'per_day',
+                            'tax_category_id' => $fullTaxId,
+                            'tax_rate' => $fullTaxRate ?? 0.0,
+                        ];
+                    }
+
+                    $articleStmt->execute([
+                        'Late Check-out',
+                        'Später Check-out bis 14:00 Uhr.',
+                        '25.00',
+                        'one_time',
+                        $fullTaxId,
+                    ]);
+                    $lateCheckoutArticleId = (int) $pdo->lastInsertId();
+                    if ($lateCheckoutArticleId > 0) {
+                        $sampleArticlesForReservation[] = [
+                            'id' => $lateCheckoutArticleId,
+                            'name' => 'Late Check-out',
+                            'price' => 25.00,
+                            'pricing_type' => 'one_time',
+                            'tax_category_id' => $fullTaxId,
+                            'tax_rate' => $fullTaxRate ?? 0.0,
+                        ];
+                    }
+                }
+
+                if ($sampleArticlesForReservation === []) {
+                    $articleRows = $pdo->query(
+                        'SELECT a.id, a.name, a.price, a.pricing_type, a.tax_category_id, COALESCE(tc.rate, 0) AS tax_rate
+                         FROM articles a
+                         LEFT JOIN tax_categories tc ON tc.id = a.tax_category_id
+                         ORDER BY a.id ASC
+                         LIMIT 3'
+                    )->fetchAll(PDO::FETCH_ASSOC);
+
+                    if (is_array($articleRows)) {
+                        foreach ($articleRows as $articleRow) {
+                            if (!isset($articleRow['id'])) {
+                                continue;
+                            }
+
+                            $sampleArticlesForReservation[] = [
+                                'id' => (int) $articleRow['id'],
+                                'name' => isset($articleRow['name']) ? (string) $articleRow['name'] : 'Artikel',
+                                'price' => isset($articleRow['price']) ? (float) $articleRow['price'] : 0.0,
+                                'pricing_type' => isset($articleRow['pricing_type']) ? (string) $articleRow['pricing_type'] : 'per_day',
+                                'tax_category_id' => isset($articleRow['tax_category_id']) ? (int) $articleRow['tax_category_id'] : null,
+                                'tax_rate' => isset($articleRow['tax_rate']) ? (float) $articleRow['tax_rate'] : 0.0,
+                            ];
+                        }
+                    }
+                }
+
                 $sampleRoomId = null;
                 $sampleCategoryId = null;
                 $existingOccupiedRoom = $pdo->query('SELECT id, category_id FROM rooms WHERE status = "belegt" ORDER BY id ASC LIMIT 1')->fetch(PDO::FETCH_ASSOC);
@@ -571,6 +707,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $samplePricePerNight = 129.00;
                 $sampleItemTotal = $samplePricePerNight * $sampleNights;
+                $sampleOccupancy = 2;
 
                 $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, occupancy, primary_guest_id, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
                 $itemInsert->execute([
@@ -579,13 +716,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $sampleRoomId,
                     null,
                     1,
-                    1,
+                    $sampleOccupancy,
                     $sampleGuestId,
                     $arrival,
                     $departure,
                     $samplePricePerNight,
                     $sampleItemTotal,
                 ]);
+
+                $reservationItemId = (int) $pdo->lastInsertId();
+
+                if ($reservationItemId > 0 && $sampleArticlesForReservation !== []) {
+                    $roomQuantityForSeed = 1;
+                    $itemArticleStmt = $pdo->prepare(
+                        'INSERT INTO reservation_item_articles (reservation_item_id, article_id, article_name, pricing_type, tax_category_id, tax_rate, quantity, unit_price, total_price, created_at, updated_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())'
+                    );
+
+                    $articleTotalForSeed = 0.0;
+                    foreach (array_slice($sampleArticlesForReservation, 0, 2) as $articleSample) {
+                        $articleId = isset($articleSample['id']) ? (int) $articleSample['id'] : null;
+                        $articleName = isset($articleSample['name']) ? (string) $articleSample['name'] : 'Artikel';
+                        $pricingType = isset($articleSample['pricing_type']) ? (string) $articleSample['pricing_type'] : 'per_day';
+                        $unitPrice = isset($articleSample['price']) ? (float) $articleSample['price'] : 0.0;
+
+                        if ($unitPrice <= 0.0) {
+                            continue;
+                        }
+
+                        $articleQuantity = 1;
+                        $effectiveQuantity = $articleQuantity;
+                        if ($pricingType === 'per_person_per_day') {
+                            $effectiveQuantity = max(1, $sampleOccupancy) * max(1, $sampleNights) * $articleQuantity;
+                        } elseif ($pricingType === 'per_day') {
+                            $effectiveQuantity = max(1, $roomQuantityForSeed) * max(1, $sampleNights) * $articleQuantity;
+                        }
+
+                        if ($effectiveQuantity <= 0) {
+                            continue;
+                        }
+
+                        $articleTotal = round($unitPrice * $effectiveQuantity, 2);
+                        if ($articleTotal <= 0.0) {
+                            continue;
+                        }
+
+                        $itemArticleStmt->execute([
+                            $reservationItemId,
+                            $articleId > 0 ? $articleId : null,
+                            $articleName,
+                            $pricingType,
+                            isset($articleSample['tax_category_id']) && $articleSample['tax_category_id'] !== null
+                                ? (int) $articleSample['tax_category_id']
+                                : null,
+                            isset($articleSample['tax_rate'])
+                                ? number_format((float) $articleSample['tax_rate'], 2, '.', '')
+                                : '0.00',
+                            $articleQuantity,
+                            number_format($unitPrice, 2, '.', ''),
+                            number_format($articleTotal, 2, '.', ''),
+                        ]);
+
+                        $articleTotalForSeed += $articleTotal;
+                    }
+
+                    if ($articleTotalForSeed > 0.0) {
+                        $updatedTotal = round($sampleItemTotal + $articleTotalForSeed, 2);
+
+                        $updateItemStmt = $pdo->prepare('UPDATE reservation_items SET total_price = ?, updated_at = NOW() WHERE id = ?');
+                        $updateItemStmt->execute([
+                            number_format($updatedTotal, 2, '.', ''),
+                            $reservationItemId,
+                        ]);
+
+                        $updateReservationStmt = $pdo->prepare('UPDATE reservations SET total_price = ?, updated_at = NOW() WHERE id = ?');
+                        $updateReservationStmt->execute([
+                            number_format($updatedTotal, 2, '.', ''),
+                            $reservationId,
+                        ]);
+                    }
+                }
             }
 
             $guestUpdate = $pdo->prepare('UPDATE guests SET arrival_date = ?, departure_date = ?, room_id = ?, updated_at = NOW() WHERE id = ?');

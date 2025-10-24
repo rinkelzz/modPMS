@@ -3588,6 +3588,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     foreach ($categoryItemsForForm[$categoryIndex]['articles'] as $articleRowIndex => &$articleRowData) {
                         $articleIdInput = trim((string) ($articleRowData['article_id'] ?? ''));
                         $articleQuantityInput = trim((string) ($articleRowData['quantity'] ?? '1'));
+                        if ($articleQuantityInput === '') {
+                            $articleQuantityInput = '1';
+                            $articleRowData['quantity'] = '1';
+                        }
 
                         if ($articleIdInput === '') {
                             $articleRowData['article_id'] = '';
@@ -3606,10 +3610,8 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
                         $articleQuantity = (int) $articleQuantityInput;
                         if ($articleQuantity <= 0) {
-                            $articleProcessingError = true;
+                            $articleQuantity = 1;
                             $articleRowData['quantity'] = '1';
-                            $articleRowData['total_price'] = '';
-                            continue;
                         }
 
                         $articleDefinition = $articleLookup[$articleId];
