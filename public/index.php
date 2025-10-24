@@ -108,6 +108,7 @@ $reservationFormData = [
     'room_id' => '',
     'arrival_date' => '',
     'departure_date' => '',
+    'night_count' => '',
     'status' => 'geplant',
     'notes' => '',
     'reservation_number' => '',
@@ -2495,11 +2496,21 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             if ($taxCategoryId !== null && !isset($taxCategoryLookup[$taxCategoryId])) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die ausgewählte Mehrwertsteuer-Kategorie wurde nicht gefunden.',
-                ];
-                break;
+                $taxCategoryRecord = null;
+                if ($taxCategoryManager instanceof TaxCategoryManager) {
+                    $taxCategoryRecord = $taxCategoryManager->find($taxCategoryId);
+                    if ($taxCategoryRecord !== null) {
+                        $taxCategoryLookup[$taxCategoryId] = $taxCategoryRecord;
+                    }
+                }
+
+                if ($taxCategoryRecord === null) {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Mehrwertsteuer-Kategorie wurde nicht gefunden.',
+                    ];
+                    break;
+                }
             }
 
             $payload = [
@@ -3400,12 +3411,80 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $quantityValue = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
                 $roomIdValue = isset($item['room_id']) ? (int) $item['room_id'] : 0;
                 $rateIdValue = isset($item['rate_id']) ? (int) $item['rate_id'] : 0;
+                $missingRateWasCleared = false;
+                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue]) && $rateManager instanceof RateManager) {
+                    try {
+                        $rateRecord = $rateManager->find($rateIdValue);
+                    } catch (Throwable $exception) {
+                        $rateRecord = null;
+                    }
+
+                    if ($rateRecord !== null) {
+                        $rateLookup[$rateIdValue] = $rateRecord;
+                    }
+                }
+
+                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue])) {
+                    $missingRateWasCleared = true;
+                    $rateIdValue = 0;
+
+                    if (isset($categoryItemsForForm[$categoryIndex])) {
+                        $categoryItemsForForm[$categoryIndex]['rate_id'] = '';
+                    }
+                }
 
                 $arrivalValue = isset($item['arrival_date']) ? trim((string) $item['arrival_date']) : '';
                 $departureValue = isset($item['departure_date']) ? trim((string) $item['departure_date']) : '';
 
+                $pricePerNightInput = isset($item['price_per_night']) ? trim((string) $item['price_per_night']) : '';
+                $totalPriceInput = isset($item['total_price']) ? trim((string) $item['total_price']) : '';
+                $primaryGuestIdRaw = isset($item['primary_guest_id']) ? (int) $item['primary_guest_id'] : 0;
+                $primaryGuestQueryInput = isset($item['primary_guest_query'])
+                    ? trim((string) $item['primary_guest_query'])
+                    : '';
+
+                $hasArticleSelection = false;
+                if (isset($categoryItemsForForm[$categoryIndex]['articles'])
+                    && is_array($categoryItemsForForm[$categoryIndex]['articles'])
+                ) {
+                    foreach ($categoryItemsForForm[$categoryIndex]['articles'] as $articleCandidate) {
+                        if (!is_array($articleCandidate)) {
+                            continue;
+                        }
+
+                        $articleIdCandidate = trim((string) ($articleCandidate['article_id'] ?? ''));
+                        $articleTotalCandidate = trim((string) ($articleCandidate['total_price'] ?? ''));
+
+                        if ($articleIdCandidate !== '' || $articleTotalCandidate !== '') {
+                            $hasArticleSelection = true;
+                            break;
+                        }
+                    }
+                }
+
                 $normalizedArrival = $normalizeDateInput($arrivalValue);
                 $normalizedDeparture = $normalizeDateInput($departureValue);
+
+                $hasCoreSelection = $categoryIdValue > 0
+                    || $roomIdValue > 0
+                    || $rateIdValue > 0
+                    || $arrivalValue !== ''
+                    || $departureValue !== ''
+                    || $pricePerNightInput !== ''
+                    || $totalPriceInput !== ''
+                    || $hasArticleSelection;
+
+                if (!$hasCoreSelection) {
+                    if (isset($categoryItemsForForm[$categoryIndex])) {
+                        $categoryItemsForForm[$categoryIndex]['articles_total'] = '';
+                        $categoryItemsForForm[$categoryIndex]['price_per_night'] = '';
+                        $categoryItemsForForm[$categoryIndex]['total_price'] = '';
+                        $categoryItemsForForm[$categoryIndex]['primary_guest_id'] = '';
+                        $categoryItemsForForm[$categoryIndex]['primary_guest_query'] = '';
+                    }
+
+                    continue;
+                }
 
                 if ($categoryIdValue <= 0 || !isset($categoryLookupForValidation[$categoryIdValue])) {
                     $categoryValidationErrors = true;
@@ -3436,7 +3515,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     continue;
                 }
 
-                $primaryGuestIdValue = isset($item['primary_guest_id']) ? (int) $item['primary_guest_id'] : 0;
+                $primaryGuestIdValue = $primaryGuestIdRaw;
                 if ($primaryGuestIdValue <= 0 && $guestId > 0) {
                     $primaryGuestIdValue = $guestId;
                 }
@@ -3454,8 +3533,19 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 }
 
                 if ($primaryGuestRecord === null) {
-                    $categoryValidationErrors = true;
-                    continue;
+                    if ($guest !== null && isset($guest['id'])) {
+                        $fallbackGuestId = (int) $guest['id'];
+                        if ($fallbackGuestId > 0) {
+                            $primaryGuestIdValue = $fallbackGuestId;
+                            $primaryGuestRecord = $guest;
+                            $guestLookup[$fallbackGuestId] = $guest;
+                        }
+                    }
+
+                    if ($primaryGuestRecord === null) {
+                        $categoryValidationErrors = true;
+                        continue;
+                    }
                 }
 
                 $primaryGuestLabel = $buildGuestReservationLabel($primaryGuestRecord);
@@ -3493,13 +3583,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $quantityValue = 1;
                 }
 
-                if ($rateIdValue <= 0 || !isset($rateLookup[$rateIdValue])) {
+                if ($rateIdValue <= 0 && !$missingRateWasCleared) {
                     $categoryValidationErrors = true;
                     continue;
                 }
 
-                $pricePerNightInput = isset($item['price_per_night']) ? trim((string) $item['price_per_night']) : '';
-                $totalPriceInput = isset($item['total_price']) ? trim((string) $item['total_price']) : '';
+                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue])) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
 
                 $pricePerNightValue = $pricePerNightInput !== '' ? $normalizeMoneyInput($pricePerNightInput) : null;
                 $totalPriceValue = $totalPriceInput !== '' ? $normalizeMoneyInput($totalPriceInput) : null;
@@ -3576,11 +3668,13 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         }
 
                         $peopleFactor = max(1, $occupancyValue) * $roomCountForItem;
-                        $basePerDayQuantity = $pricingType === ArticleManager::PRICING_PER_PERSON_PER_DAY
-                            ? $peopleFactor
-                            : $roomCountForItem;
-
-                        $effectiveQuantity = $basePerDayQuantity * $nightCount * $articleQuantity;
+                        if ($pricingType === ArticleManager::PRICING_PER_PERSON_PER_DAY) {
+                            $effectiveQuantity = $peopleFactor * $nightCount * $articleQuantity;
+                        } elseif ($pricingType === ArticleManager::PRICING_ONE_TIME) {
+                            $effectiveQuantity = $articleQuantity;
+                        } else {
+                            $effectiveQuantity = $roomCountForItem * $nightCount * $articleQuantity;
+                        }
                         if ($effectiveQuantity <= 0) {
                             $articleProcessingError = true;
                             $articleRowData['total_price'] = '';
@@ -3660,7 +3754,9 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             if ($validCategoryItems === []) {
                 $alert = [
                     'type' => 'danger',
-                    'message' => 'Bitte geben Sie mindestens eine gültige Kategorie mit Zimmer- und Ratenangaben an.',
+                    'message' => $categoryValidationErrors
+                        ? 'Bitte prüfen Sie die ausgewählten Kategorien, Raten, Daten und Zimmerzuweisungen.'
+                        : 'Bitte geben Sie mindestens eine gültige Kategorie mit Zimmer- und Ratenangaben an.',
                 ];
                 break;
             }
@@ -3706,12 +3802,45 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $totalPriceValue = $item['total_price'];
                 $articleTotalValue = isset($item['article_total']) ? (float) $item['article_total'] : 0.0;
 
+                $nightCountForItem = null;
+                if (isset($item['night_count'])) {
+                    $nightCountForItem = (int) $item['night_count'];
+                }
+
+                if (($nightCountForItem === null || $nightCountForItem <= 0)
+                    && isset($item['arrival_date'], $item['departure_date'])
+                ) {
+                    try {
+                        $itemArrival = new DateTimeImmutable((string) $item['arrival_date']);
+                        $itemDeparture = new DateTimeImmutable((string) $item['departure_date']);
+                        $interval = $itemArrival->diff($itemDeparture);
+                        if ($interval->invert !== 1) {
+                            $nightCountForItem = max(1, (int) $interval->days);
+                        }
+                    } catch (Throwable $exception) {
+                        // ignore invalid dates from legacy data
+                    }
+                }
+
+                if ($nightCountForItem === null || $nightCountForItem <= 0) {
+                    $nightCountForItem = 1;
+                }
+
                 if ($totalPriceValue === null && $calculated !== null && isset($calculated['total_price'])) {
                     $totalPriceValue = (float) $calculated['total_price'];
                 }
 
                 if ($pricePerNightValue === null && $calculated !== null && isset($calculated['price_per_night'])) {
                     $pricePerNightValue = (float) $calculated['price_per_night'];
+                }
+
+                if ($totalPriceValue === null && $pricePerNightValue !== null) {
+                    $roomCountForItem = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
+                    if ($roomCountForItem <= 0) {
+                        $roomCountForItem = 1;
+                    }
+
+                    $totalPriceValue = round($pricePerNightValue * $nightCountForItem * $roomCountForItem, 2);
                 }
 
                 if ($totalPriceValue === null) {
@@ -3802,6 +3931,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $reservationFormData['status'] = $reservationStatus;
             $reservationFormData['notes'] = $notes;
             $reservationFormData['reservation_number'] = $existingReservationForUpdate['reservation_number'] ?? '';
+            $reservationFormData['night_count'] = (string) $nightCount;
 
             $createPayload = [
                 'guest_id' => $guestId,
@@ -3873,6 +4003,46 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             $_SESSION['redirect_reservation'] = $reservationId;
+            header('Location: index.php?section=reservations');
+            exit;
+
+        case 'reservation_delete':
+            $activeSection = 'reservations';
+
+            if ($reservationManager === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Reservierungsverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $reservationId = (int) ($_POST['id'] ?? 0);
+
+            if ($reservationId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Reservierung konnte nicht gelöscht werden, da keine gültige ID übermittelt wurde.',
+                ];
+                break;
+            }
+
+            $reservation = $reservationManager->find($reservationId);
+            if ($reservation === null) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Reservierung wurde nicht gefunden.',
+                ];
+                break;
+            }
+
+            $reservationManager->delete($reservationId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Reservierung wurde gelöscht.',
+            ];
+
             header('Location: index.php?section=reservations');
             exit;
 
@@ -4370,6 +4540,10 @@ if ($pdo !== null) {
 
     if ($reservationFormData['vat_rate'] === '') {
         $reservationFormData['vat_rate'] = $overnightVatRateValue;
+    }
+
+    if (!array_key_exists('night_count', $reservationFormData)) {
+        $reservationFormData['night_count'] = '';
     }
 
     if (
@@ -5464,6 +5638,20 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                 ? number_format((float) $reservationToEdit['vat_rate'], 2, '.', '')
                 : $overnightVatRateValue;
 
+            $nightCountForForm = '';
+            if (!empty($reservationToEdit['arrival_date']) && !empty($reservationToEdit['departure_date'])) {
+                try {
+                    $arrivalDate = new DateTimeImmutable($reservationToEdit['arrival_date']);
+                    $departureDate = new DateTimeImmutable($reservationToEdit['departure_date']);
+                    $interval = $arrivalDate->diff($departureDate);
+                    if ($interval->invert !== 1) {
+                        $nightCountForForm = (string) max(1, (int) $interval->days);
+                    }
+                } catch (Throwable $exception) {
+                    // ignore invalid dates from legacy data
+                }
+            }
+
             $reservationFormData = [
                 'id' => (int) $reservationToEdit['id'],
                 'guest_id' => (string) $reservationToEdit['guest_id'],
@@ -5481,6 +5669,7 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                 'room_id' => isset($reservationToEdit['room_id']) && $reservationToEdit['room_id'] !== null ? (string) $reservationToEdit['room_id'] : '',
                 'arrival_date' => $reservationToEdit['arrival_date'],
                 'departure_date' => $reservationToEdit['departure_date'],
+                'night_count' => $nightCountForForm,
                 'status' => $reservationToEdit['status'],
                 'notes' => $reservationToEdit['notes'] ?? '',
                 'reservation_number' => isset($reservationToEdit['reservation_number']) ? (string) $reservationToEdit['reservation_number'] : '',
@@ -9211,6 +9400,18 @@ if ($activeSection === 'reservations') {
           var reservationIdField = document.querySelector('#reservation-form input[name="id"]');
           var reservationIdValue = reservationIdField ? parseInt(reservationIdField.value || '0', 10) : 0;
 
+          function formatMoney(value) {
+            if (typeof value !== 'number' || Number.isNaN(value)) {
+              return '';
+            }
+
+            return value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          }
+
+          function triggerGrandTotalUpdate() {
+            document.dispatchEvent(new CustomEvent('reservation:grand-total-recalculate'));
+          }
+
           container.querySelectorAll('.reservation-category-item').forEach(function (item) {
             initializeItemGuestTypeahead(item);
           });
@@ -9539,19 +9740,24 @@ if ($activeSection === 'reservations') {
               quantityInput.value = '1';
             }
 
-            var nights = getItemNights(item);
-            if (nights <= 0) {
-              totalInput.value = '';
-              return 0;
-            }
-
             var roomCount = getItemRoomCount(item);
             var occupancy = getItemOccupancy(item);
+            var nights = getItemNights(item);
 
             var effectiveUnits = 0;
             if (pricingType === 'per_person_per_day') {
+              if (nights <= 0) {
+                totalInput.value = '';
+                return 0;
+              }
               effectiveUnits = nights * roomCount * occupancy * quantity;
+            } else if (pricingType === 'one_time') {
+              effectiveUnits = quantity;
             } else {
+              if (nights <= 0) {
+                totalInput.value = '';
+                return 0;
+              }
               effectiveUnits = nights * roomCount * quantity;
             }
 
@@ -9598,7 +9804,7 @@ if ($activeSection === 'reservations') {
               }
             }
 
-            updateGrandTotal();
+            triggerGrandTotalUpdate();
           }
 
           function bindArticleSection(item) {
@@ -9646,7 +9852,8 @@ if ($activeSection === 'reservations') {
                 if (row) {
                   section.querySelector('[data-article-list]').appendChild(row);
                   recalculateArticleRow(item, row);
-                  updateGrandTotal();
+                  recalculateArticlesForItem(item);
+                  triggerGrandTotalUpdate();
                 }
                 return;
               }
@@ -9683,6 +9890,7 @@ if ($activeSection === 'reservations') {
                 section.setAttribute('data-next-article-index', String(list.querySelectorAll('[data-article-row]').length));
 
                 recalculateArticlesForItem(item);
+                triggerGrandTotalUpdate();
                 return;
               }
             });
@@ -9697,6 +9905,7 @@ if ($activeSection === 'reservations') {
                 var row = target.closest('[data-article-row]');
                 recalculateArticleRow(item, row);
                 recalculateArticlesForItem(item);
+                triggerGrandTotalUpdate();
               }
             });
 
@@ -9710,10 +9919,12 @@ if ($activeSection === 'reservations') {
                 var row = target.closest('[data-article-row]');
                 recalculateArticleRow(item, row);
                 recalculateArticlesForItem(item);
+                triggerGrandTotalUpdate();
               }
             });
 
             recalculateArticlesForItem(item);
+            triggerGrandTotalUpdate();
           }
 
           function createItem() {
@@ -9850,6 +10061,8 @@ if ($activeSection === 'reservations') {
 
             totalField.value = sum > 0 ? formatMoney(sum) : '';
           }
+
+          document.addEventListener('reservation:grand-total-recalculate', updateGrandTotal);
 
           function setItemFeedback(item, message, type) {
             var feedback = item.querySelector('[data-calc-feedback]');

@@ -9,6 +9,7 @@ class ArticleManager
 {
     public const PRICING_PER_DAY = 'per_day';
     public const PRICING_PER_PERSON_PER_DAY = 'per_person_per_day';
+    public const PRICING_ONE_TIME = 'one_time';
 
     private PDO $pdo;
 
@@ -23,6 +24,7 @@ class ArticleManager
         return [
             self::PRICING_PER_DAY => 'Pro Tag',
             self::PRICING_PER_PERSON_PER_DAY => 'Pro Person und Tag',
+            self::PRICING_ONE_TIME => 'Einmalig',
         ];
     }
 
