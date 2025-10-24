@@ -5589,6 +5589,9 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                 'room_id' => isset($reservationToEdit['room_id']) && $reservationToEdit['room_id'] !== null ? (string) $reservationToEdit['room_id'] : '',
                 'arrival_date' => $reservationToEdit['arrival_date'],
                 'departure_date' => $reservationToEdit['departure_date'],
+                'night_count' => isset($reservationToEdit['night_count']) && $reservationToEdit['night_count'] !== null
+                    ? (string) $reservationToEdit['night_count']
+                    : '',
                 'status' => $reservationToEdit['status'],
                 'notes' => $reservationToEdit['notes'] ?? '',
                 'reservation_number' => isset($reservationToEdit['reservation_number']) ? (string) $reservationToEdit['reservation_number'] : '',
