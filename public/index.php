@@ -3802,6 +3802,30 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $totalPriceValue = $item['total_price'];
                 $articleTotalValue = isset($item['article_total']) ? (float) $item['article_total'] : 0.0;
 
+                $nightCountForItem = null;
+                if (isset($item['night_count'])) {
+                    $nightCountForItem = (int) $item['night_count'];
+                }
+
+                if (($nightCountForItem === null || $nightCountForItem <= 0)
+                    && isset($item['arrival_date'], $item['departure_date'])
+                ) {
+                    try {
+                        $itemArrival = new DateTimeImmutable((string) $item['arrival_date']);
+                        $itemDeparture = new DateTimeImmutable((string) $item['departure_date']);
+                        $interval = $itemArrival->diff($itemDeparture);
+                        if ($interval->invert !== 1) {
+                            $nightCountForItem = max(1, (int) $interval->days);
+                        }
+                    } catch (Throwable $exception) {
+                        // ignore invalid dates from legacy data
+                    }
+                }
+
+                if ($nightCountForItem === null || $nightCountForItem <= 0) {
+                    $nightCountForItem = 1;
+                }
+
                 if ($totalPriceValue === null && $calculated !== null && isset($calculated['total_price'])) {
                     $totalPriceValue = (float) $calculated['total_price'];
                 }
@@ -3816,7 +3840,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         $roomCountForItem = 1;
                     }
 
-                    $totalPriceValue = round($pricePerNightValue * $item['night_count'] * $roomCountForItem, 2);
+                    $totalPriceValue = round($pricePerNightValue * $nightCountForItem * $roomCountForItem, 2);
                 }
 
                 if ($totalPriceValue === null) {
