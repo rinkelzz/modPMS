@@ -4518,6 +4518,10 @@ if ($pdo !== null) {
         $reservationFormData['vat_rate'] = $overnightVatRateValue;
     }
 
+    if (!array_key_exists('night_count', $reservationFormData)) {
+        $reservationFormData['night_count'] = '';
+    }
+
     if (
         $reservationFormData['night_count'] === ''
         && $reservationFormData['arrival_date'] !== ''
