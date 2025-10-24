@@ -108,6 +108,7 @@ $reservationFormData = [
     'room_id' => '',
     'arrival_date' => '',
     'departure_date' => '',
+    'night_count' => '',
     'status' => 'geplant',
     'notes' => '',
     'reservation_number' => '',
