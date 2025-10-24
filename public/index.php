@@ -108,6 +108,7 @@ $reservationFormData = [
     'room_id' => '',
     'arrival_date' => '',
     'departure_date' => '',
+    'night_count' => '',
     'status' => 'geplant',
     'notes' => '',
     'reservation_number' => '',
@@ -3906,6 +3907,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $reservationFormData['status'] = $reservationStatus;
             $reservationFormData['notes'] = $notes;
             $reservationFormData['reservation_number'] = $existingReservationForUpdate['reservation_number'] ?? '';
+            $reservationFormData['night_count'] = (string) $nightCount;
 
             $createPayload = [
                 'guest_id' => $guestId,
@@ -5608,6 +5610,20 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                 ? number_format((float) $reservationToEdit['vat_rate'], 2, '.', '')
                 : $overnightVatRateValue;
 
+            $nightCountForForm = '';
+            if (!empty($reservationToEdit['arrival_date']) && !empty($reservationToEdit['departure_date'])) {
+                try {
+                    $arrivalDate = new DateTimeImmutable($reservationToEdit['arrival_date']);
+                    $departureDate = new DateTimeImmutable($reservationToEdit['departure_date']);
+                    $interval = $arrivalDate->diff($departureDate);
+                    if ($interval->invert !== 1) {
+                        $nightCountForForm = (string) max(1, (int) $interval->days);
+                    }
+                } catch (Throwable $exception) {
+                    // ignore invalid dates from legacy data
+                }
+            }
+
             $reservationFormData = [
                 'id' => (int) $reservationToEdit['id'],
                 'guest_id' => (string) $reservationToEdit['guest_id'],
@@ -5625,6 +5641,7 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                 'room_id' => isset($reservationToEdit['room_id']) && $reservationToEdit['room_id'] !== null ? (string) $reservationToEdit['room_id'] : '',
                 'arrival_date' => $reservationToEdit['arrival_date'],
                 'departure_date' => $reservationToEdit['departure_date'],
+                'night_count' => $nightCountForForm,
                 'status' => $reservationToEdit['status'],
                 'notes' => $reservationToEdit['notes'] ?? '',
                 'reservation_number' => isset($reservationToEdit['reservation_number']) ? (string) $reservationToEdit['reservation_number'] : '',
