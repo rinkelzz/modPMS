@@ -108,6 +108,7 @@ $reservationFormData = [
     'room_id' => '',
     'arrival_date' => '',
     'departure_date' => '',
+    'night_count' => '',
     'status' => 'geplant',
     'notes' => '',
     'reservation_number' => '',
@@ -3410,6 +3411,27 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $quantityValue = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
                 $roomIdValue = isset($item['room_id']) ? (int) $item['room_id'] : 0;
                 $rateIdValue = isset($item['rate_id']) ? (int) $item['rate_id'] : 0;
+                $missingRateWasCleared = false;
+                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue]) && $rateManager instanceof RateManager) {
+                    try {
+                        $rateRecord = $rateManager->find($rateIdValue);
+                    } catch (Throwable $exception) {
+                        $rateRecord = null;
+                    }
+
+                    if ($rateRecord !== null) {
+                        $rateLookup[$rateIdValue] = $rateRecord;
+                    }
+                }
+
+                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue])) {
+                    $missingRateWasCleared = true;
+                    $rateIdValue = 0;
+
+                    if (isset($categoryItemsForForm[$categoryIndex])) {
+                        $categoryItemsForForm[$categoryIndex]['rate_id'] = '';
+                    }
+                }
 
                 $arrivalValue = isset($item['arrival_date']) ? trim((string) $item['arrival_date']) : '';
                 $departureValue = isset($item['departure_date']) ? trim((string) $item['departure_date']) : '';
@@ -3511,8 +3533,19 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 }
 
                 if ($primaryGuestRecord === null) {
-                    $categoryValidationErrors = true;
-                    continue;
+                    if ($guest !== null && isset($guest['id'])) {
+                        $fallbackGuestId = (int) $guest['id'];
+                        if ($fallbackGuestId > 0) {
+                            $primaryGuestIdValue = $fallbackGuestId;
+                            $primaryGuestRecord = $guest;
+                            $guestLookup[$fallbackGuestId] = $guest;
+                        }
+                    }
+
+                    if ($primaryGuestRecord === null) {
+                        $categoryValidationErrors = true;
+                        continue;
+                    }
                 }
 
                 $primaryGuestLabel = $buildGuestReservationLabel($primaryGuestRecord);
@@ -3550,7 +3583,12 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $quantityValue = 1;
                 }
 
-                if ($rateIdValue <= 0 || !isset($rateLookup[$rateIdValue])) {
+                if ($rateIdValue <= 0 && !$missingRateWasCleared) {
+                    $categoryValidationErrors = true;
+                    continue;
+                }
+
+                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue])) {
                     $categoryValidationErrors = true;
                     continue;
                 }
@@ -3764,6 +3802,30 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $totalPriceValue = $item['total_price'];
                 $articleTotalValue = isset($item['article_total']) ? (float) $item['article_total'] : 0.0;
 
+                $nightCountForItem = null;
+                if (isset($item['night_count'])) {
+                    $nightCountForItem = (int) $item['night_count'];
+                }
+
+                if (($nightCountForItem === null || $nightCountForItem <= 0)
+                    && isset($item['arrival_date'], $item['departure_date'])
+                ) {
+                    try {
+                        $itemArrival = new DateTimeImmutable((string) $item['arrival_date']);
+                        $itemDeparture = new DateTimeImmutable((string) $item['departure_date']);
+                        $interval = $itemArrival->diff($itemDeparture);
+                        if ($interval->invert !== 1) {
+                            $nightCountForItem = max(1, (int) $interval->days);
+                        }
+                    } catch (Throwable $exception) {
+                        // ignore invalid dates from legacy data
+                    }
+                }
+
+                if ($nightCountForItem === null || $nightCountForItem <= 0) {
+                    $nightCountForItem = 1;
+                }
+
                 if ($totalPriceValue === null && $calculated !== null && isset($calculated['total_price'])) {
                     $totalPriceValue = (float) $calculated['total_price'];
                 }
@@ -3778,7 +3840,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         $roomCountForItem = 1;
                     }
 
-                    $totalPriceValue = round($pricePerNightValue * $item['night_count'] * $roomCountForItem, 2);
+                    $totalPriceValue = round($pricePerNightValue * $nightCountForItem * $roomCountForItem, 2);
                 }
 
                 if ($totalPriceValue === null) {
@@ -3869,6 +3931,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $reservationFormData['status'] = $reservationStatus;
             $reservationFormData['notes'] = $notes;
             $reservationFormData['reservation_number'] = $existingReservationForUpdate['reservation_number'] ?? '';
+            $reservationFormData['night_count'] = (string) $nightCount;
 
             $createPayload = [
                 'guest_id' => $guestId,
@@ -4477,6 +4540,10 @@ if ($pdo !== null) {
 
     if ($reservationFormData['vat_rate'] === '') {
         $reservationFormData['vat_rate'] = $overnightVatRateValue;
+    }
+
+    if (!array_key_exists('night_count', $reservationFormData)) {
+        $reservationFormData['night_count'] = '';
     }
 
     if (
@@ -5571,6 +5638,20 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                 ? number_format((float) $reservationToEdit['vat_rate'], 2, '.', '')
                 : $overnightVatRateValue;
 
+            $nightCountForForm = '';
+            if (!empty($reservationToEdit['arrival_date']) && !empty($reservationToEdit['departure_date'])) {
+                try {
+                    $arrivalDate = new DateTimeImmutable($reservationToEdit['arrival_date']);
+                    $departureDate = new DateTimeImmutable($reservationToEdit['departure_date']);
+                    $interval = $arrivalDate->diff($departureDate);
+                    if ($interval->invert !== 1) {
+                        $nightCountForForm = (string) max(1, (int) $interval->days);
+                    }
+                } catch (Throwable $exception) {
+                    // ignore invalid dates from legacy data
+                }
+            }
+
             $reservationFormData = [
                 'id' => (int) $reservationToEdit['id'],
                 'guest_id' => (string) $reservationToEdit['guest_id'],
@@ -5588,6 +5669,7 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                 'room_id' => isset($reservationToEdit['room_id']) && $reservationToEdit['room_id'] !== null ? (string) $reservationToEdit['room_id'] : '',
                 'arrival_date' => $reservationToEdit['arrival_date'],
                 'departure_date' => $reservationToEdit['departure_date'],
+                'night_count' => $nightCountForForm,
                 'status' => $reservationToEdit['status'],
                 'notes' => $reservationToEdit['notes'] ?? '',
                 'reservation_number' => isset($reservationToEdit['reservation_number']) ? (string) $reservationToEdit['reservation_number'] : '',
