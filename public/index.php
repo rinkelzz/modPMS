@@ -3658,8 +3658,8 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                             'effective_quantity' => $effectiveQuantity,
                             'unit_price' => $unitPrice,
                             'total_price' => $articleTotal,
-                            'vat_rate' => $taxRate,
-                            'vat_category_id' => $taxCategoryId,
+                            'tax_rate' => $taxRate,
+                            'tax_category_id' => $taxCategoryId,
                             'nights' => $nightCount,
                         ];
 
@@ -4834,14 +4834,14 @@ if ($pdo !== null) {
                 $unitPriceFormatted = $unitPriceValue > 0 ? $formatCurrency($unitPriceValue) : null;
                 $totalPriceFormatted = $totalPriceValue > 0 ? $formatCurrency($totalPriceValue) : null;
 
-                $vatRateValue = null;
-                if (isset($articleEntry['vat_rate']) && $articleEntry['vat_rate'] !== null && $articleEntry['vat_rate'] !== '') {
-                    $vatRateValue = (float) $articleEntry['vat_rate'];
+                $taxRateValue = null;
+                if (isset($articleEntry['tax_rate']) && $articleEntry['tax_rate'] !== null && $articleEntry['tax_rate'] !== '') {
+                    $taxRateValue = (float) $articleEntry['tax_rate'];
                 }
-                if ($vatRateValue !== null && $vatRateValue < 0) {
-                    $vatRateValue = null;
+                if ($taxRateValue !== null && $taxRateValue < 0) {
+                    $taxRateValue = null;
                 }
-                $vatRateFormatted = $vatRateValue !== null ? $formatPercent($vatRateValue) : null;
+                $taxRateFormatted = $taxRateValue !== null ? $formatPercent($taxRateValue) : null;
 
                 $itemArticlesSummary[] = [
                     'id' => $articleId > 0 ? $articleId : null,
@@ -4853,8 +4853,8 @@ if ($pdo !== null) {
                     'unit_price_formatted' => $unitPriceFormatted,
                     'total_price' => $totalPriceValue,
                     'total_price_formatted' => $totalPriceFormatted,
-                    'vat_rate' => $vatRateValue,
-                    'vat_rate_formatted' => $vatRateFormatted,
+                    'tax_rate' => $taxRateValue,
+                    'tax_rate_formatted' => $taxRateFormatted,
                 ];
             }
 

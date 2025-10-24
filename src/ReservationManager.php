@@ -677,8 +677,8 @@ class ReservationManager
         );
 
         $articleInsert = $this->pdo->prepare(
-            'INSERT INTO reservation_item_articles (reservation_item_id, article_id, article_name, pricing_type, vat_category_id, vat_rate, quantity, unit_price, total_price, created_at, updated_at) '
-            . 'VALUES (:reservation_item_id, :article_id, :article_name, :pricing_type, :vat_category_id, :vat_rate, :quantity, :unit_price, :total_price, NOW(), NOW())'
+            'INSERT INTO reservation_item_articles (reservation_item_id, article_id, article_name, pricing_type, tax_category_id, tax_rate, quantity, unit_price, total_price, created_at, updated_at) '
+            . 'VALUES (:reservation_item_id, :article_id, :article_name, :pricing_type, :tax_category_id, :tax_rate, :quantity, :unit_price, :total_price, NOW(), NOW())'
         );
 
         foreach ($items as $item) {
@@ -766,12 +766,12 @@ class ReservationManager
                     $articleId = isset($articleEntry['article_id']) ? (int) $articleEntry['article_id'] : 0;
                     $articleName = isset($articleEntry['article_name']) ? (string) $articleEntry['article_name'] : null;
                     $pricingType = isset($articleEntry['pricing_type']) ? (string) $articleEntry['pricing_type'] : ArticleManager::PRICING_PER_DAY;
-                    $vatCategoryId = isset($articleEntry['vat_category_id']) ? (int) $articleEntry['vat_category_id'] : null;
-                    if ($vatCategoryId !== null && $vatCategoryId <= 0) {
-                        $vatCategoryId = null;
+                    $taxCategoryId = isset($articleEntry['tax_category_id']) ? (int) $articleEntry['tax_category_id'] : null;
+                    if ($taxCategoryId !== null && $taxCategoryId <= 0) {
+                        $taxCategoryId = null;
                     }
 
-                    $vatRate = isset($articleEntry['vat_rate']) ? number_format((float) $articleEntry['vat_rate'], 2, '.', '') : '0.00';
+                    $taxRate = isset($articleEntry['tax_rate']) ? number_format((float) $articleEntry['tax_rate'], 2, '.', '') : '0.00';
                     $quantityValue = isset($articleEntry['quantity']) ? (int) $articleEntry['quantity'] : 1;
                     if ($quantityValue <= 0) {
                         $quantityValue = 1;
@@ -788,8 +788,8 @@ class ReservationManager
                         'article_id' => $articleId > 0 ? $articleId : null,
                         'article_name' => $articleName,
                         'pricing_type' => $pricingType,
-                        'vat_category_id' => $vatCategoryId,
-                        'vat_rate' => $vatRate,
+                        'tax_category_id' => $taxCategoryId,
+                        'tax_rate' => $taxRate,
                         'quantity' => $quantityValue,
                         'unit_price' => $unitPrice,
                         'total_price' => $totalPriceValue,
@@ -963,7 +963,7 @@ class ReservationManager
             $articlePlaceholders = implode(', ', array_fill(0, count($itemIds), '?'));
             $articleStmt = $this->pdo->prepare(
                 'SELECT ria.id, ria.reservation_item_id, ria.article_id, ria.article_name, ria.pricing_type, '
-                . 'ria.vat_category_id, ria.vat_rate, ria.quantity, ria.unit_price, ria.total_price, ria.created_at, ria.updated_at '
+                . 'ria.tax_category_id, ria.tax_rate, ria.quantity, ria.unit_price, ria.total_price, ria.created_at, ria.updated_at '
                 . 'FROM reservation_item_articles ria '
                 . 'WHERE ria.reservation_item_id IN (' . $articlePlaceholders . ') '
                 . 'ORDER BY ria.id ASC'

@@ -127,6 +127,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS tax_categories (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(191) NOT NULL,
+                    rate DECIMAL(5,2) NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uniq_tax_categories_name (name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS articles (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(191) NOT NULL,
+                    description TEXT NULL,
+                    price DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    pricing_type VARCHAR(32) NOT NULL DEFAULT "per_day",
+                    tax_category_id INT UNSIGNED NULL,
+                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_articles_tax_category FOREIGN KEY (tax_category_id) REFERENCES tax_categories(id) ON DELETE SET NULL,
+                    INDEX idx_install_articles_tax_category (tax_category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS companies (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     name VARCHAR(190) NOT NULL,
@@ -233,6 +255,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_install_rate_period_prices_category (category_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_events (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    rate_id INT UNSIGNED NOT NULL,
+                    name VARCHAR(190) NOT NULL,
+                    start_date DATE NOT NULL,
+                    end_date DATE NOT NULL,
+                    default_price DECIMAL(10,2) NULL DEFAULT NULL,
+                    color VARCHAR(16) NULL,
+                    description TEXT NULL,
+                    created_by INT UNSIGNED NULL,
+                    updated_by INT UNSIGNED NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rate_events_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rate_events_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_rate_events_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+                    INDEX idx_install_rate_events_rate (rate_id),
+                    INDEX idx_install_rate_events_dates (start_date, end_date)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_event_prices (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    event_id INT UNSIGNED NOT NULL,
+                    category_id INT UNSIGNED NOT NULL,
+                    price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rate_event_prices_event FOREIGN KEY (event_id) REFERENCES rate_events(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rate_event_prices_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
+                    UNIQUE KEY uniq_install_rate_event_category (event_id, category_id),
+                    INDEX idx_install_rate_event_prices_category (category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS reservations (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     reservation_number VARCHAR(32) NOT NULL,
@@ -298,6 +353,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_install_reservation_items_primary_guest (primary_guest_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS reservation_item_articles (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    reservation_item_id INT UNSIGNED NOT NULL,
+                    article_id INT UNSIGNED NULL,
+                    article_name VARCHAR(191) NOT NULL,
+                    pricing_type VARCHAR(32) NOT NULL DEFAULT "per_day",
+                    tax_category_id INT UNSIGNED NULL,
+                    tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
+                    quantity INT UNSIGNED NOT NULL DEFAULT 1,
+                    unit_price DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    total_price DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_reservation_item_articles_item FOREIGN KEY (reservation_item_id) REFERENCES reservation_items(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_reservation_item_articles_article FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_reservation_item_articles_tax FOREIGN KEY (tax_category_id) REFERENCES tax_categories(id) ON DELETE SET NULL,
+                    INDEX idx_install_reservation_item_articles_item (reservation_item_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS settings (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     setting_key VARCHAR(191) NOT NULL UNIQUE,
@@ -340,6 +414,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute(['101', 1, 'frei', '1']);
                     $stmt->execute(['102', 1, 'belegt', '1']);
                     $stmt->execute(['201', 2, 'frei', '2']);
+                }
+
+                $taxCategoryCount = $pdo->query('SELECT COUNT(*) FROM tax_categories')->fetchColumn();
+                if ((int) $taxCategoryCount === 0) {
+                    $stmt = $pdo->prepare('INSERT INTO tax_categories (name, rate, created_at, updated_at) VALUES (?, ?, NOW(), NOW())');
+                    $stmt->execute(['Übernachtung reduziert', '7.00']);
+                    $stmt->execute(['Standard 19%', '19.00']);
                 }
 
                 $sampleRoomId = null;
