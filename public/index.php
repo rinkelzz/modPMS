@@ -6382,6 +6382,128 @@ if ($activeSection === 'reservations') {
                                 }
                                 $itemQuantityLabel = sprintf('%d Zimmer', $itemQuantity);
 
+                                $itemCategoryCapacity = null;
+                                if ($itemCategoryId > 0 && isset($categoryLookup[$itemCategoryId]['capacity'])) {
+                                    $itemCategoryCapacity = (int) $categoryLookup[$itemCategoryId]['capacity'];
+                                } elseif (isset($item['room_id']) && (int) $item['room_id'] > 0) {
+                                    $roomIdForCapacity = (int) $item['room_id'];
+                                    if (isset($roomLookup[$roomIdForCapacity]['category_id'])) {
+                                        $roomCategoryId = (int) $roomLookup[$roomIdForCapacity]['category_id'];
+                                        if ($roomCategoryId > 0 && isset($categoryLookup[$roomCategoryId]['capacity'])) {
+                                            $itemCategoryCapacity = (int) $categoryLookup[$roomCategoryId]['capacity'];
+                                        }
+                                    }
+                                }
+
+                                if ($itemCategoryCapacity !== null && $itemCategoryCapacity <= 0) {
+                                    $itemCategoryCapacity = null;
+                                }
+
+                                $primaryGuestId = isset($item['primary_guest_id']) ? (int) $item['primary_guest_id'] : 0;
+                                $primaryGuestLabel = '';
+                                if ($primaryGuestId > 0) {
+                                    if (isset($guestLookup[$primaryGuestId])) {
+                                        $primaryGuestLabel = $buildGuestReservationLabel($guestLookup[$primaryGuestId]);
+                                    } else {
+                                        $primaryGuestLabel = $buildGuestReservationLabel([
+                                            'id' => $primaryGuestId,
+                                            'first_name' => $item['primary_guest_first_name'] ?? '',
+                                            'last_name' => $item['primary_guest_last_name'] ?? '',
+                                            'company_name' => $item['primary_guest_company_name'] ?? '',
+                                        ]);
+                                    }
+                                }
+
+                                $itemGuestCount = null;
+                                if (isset($item['occupancy']) && $item['occupancy'] !== null) {
+                                    $itemGuestCount = (int) $item['occupancy'];
+                                    if ($itemGuestCount <= 0) {
+                                        $itemGuestCount = null;
+                                    }
+                                }
+
+                                if ($itemGuestCount === null) {
+                                    if ($itemCategoryCapacity !== null) {
+                                        $itemGuestCount = $itemCategoryCapacity * $itemQuantity;
+                                    } elseif ($itemQuantity > 0) {
+                                        $itemGuestCount = $itemQuantity;
+                                    }
+                                }
+
+                                $itemArticlesSummary = [];
+                                $itemArticlesTotal = 0.0;
+                                $articleTotalLabel = '';
+                                $articleEntries = isset($item['articles']) && is_array($item['articles']) ? $item['articles'] : [];
+                                foreach ($articleEntries as $articleEntry) {
+                                    if (!is_array($articleEntry)) {
+                                        continue;
+                                    }
+
+                                    $articleId = isset($articleEntry['article_id']) ? (int) $articleEntry['article_id'] : 0;
+                                    $articleName = isset($articleEntry['article_name']) ? trim((string) $articleEntry['article_name']) : '';
+                                    if ($articleName === '' && $articleId > 0 && isset($articleLookup[$articleId]['name'])) {
+                                        $articleName = trim((string) $articleLookup[$articleId]['name']);
+                                    }
+                                    if ($articleName === '') {
+                                        $articleName = $articleId > 0 ? 'Artikel #' . $articleId : 'Artikel';
+                                    }
+
+                                    $articleQuantity = null;
+                                    if (isset($articleEntry['quantity']) && $articleEntry['quantity'] !== null && $articleEntry['quantity'] !== '') {
+                                        $articleQuantity = (int) $articleEntry['quantity'];
+                                        if ($articleQuantity <= 0) {
+                                            $articleQuantity = null;
+                                        }
+                                    }
+
+                                    $pricingTypeKey = isset($articleEntry['pricing_type']) ? (string) $articleEntry['pricing_type'] : ArticleManager::PRICING_PER_DAY;
+                                    if (!isset($articlePricingTypes[$pricingTypeKey])) {
+                                        $pricingTypeKey = ArticleManager::PRICING_PER_DAY;
+                                    }
+                                    $pricingLabel = $articlePricingTypes[$pricingTypeKey] ?? '';
+
+                                    $unitPriceValue = isset($articleEntry['unit_price']) && $articleEntry['unit_price'] !== null && $articleEntry['unit_price'] !== ''
+                                        ? (float) $articleEntry['unit_price']
+                                        : 0.0;
+                                    $totalPriceValue = isset($articleEntry['total_price']) && $articleEntry['total_price'] !== null && $articleEntry['total_price'] !== ''
+                                        ? (float) $articleEntry['total_price']
+                                        : 0.0;
+                                    $itemArticlesTotal += $totalPriceValue;
+
+                                    $unitPriceFormatted = $unitPriceValue > 0 ? $formatCurrency($unitPriceValue) : null;
+                                    $totalPriceFormatted = $totalPriceValue > 0 ? $formatCurrency($totalPriceValue) : null;
+
+                                    $taxRateValue = null;
+                                    if (isset($articleEntry['tax_rate']) && $articleEntry['tax_rate'] !== null && $articleEntry['tax_rate'] !== '') {
+                                        $taxRateValue = (float) $articleEntry['tax_rate'];
+                                    }
+                                    if ($taxRateValue !== null && $taxRateValue < 0) {
+                                        $taxRateValue = null;
+                                    }
+                                    $taxRateFormatted = $taxRateValue !== null ? $formatPercent($taxRateValue) : null;
+
+                                    $itemArticlesSummary[] = [
+                                        'id' => $articleId > 0 ? $articleId : null,
+                                        'name' => $articleName,
+                                        'quantity' => $articleQuantity,
+                                        'pricing_type' => $pricingTypeKey,
+                                        'pricing_label' => $pricingLabel,
+                                        'unit_price' => $unitPriceValue,
+                                        'unit_price_formatted' => $unitPriceFormatted,
+                                        'total_price' => $totalPriceValue,
+                                        'total_price_formatted' => $totalPriceFormatted,
+                                        'tax_rate' => $taxRateValue,
+                                        'tax_rate_formatted' => $taxRateFormatted,
+                                    ];
+                                }
+
+                                if ($itemArticlesSummary !== []) {
+                                    $articlesFormattedTotal = $itemArticlesTotal > 0 ? $formatCurrency($itemArticlesTotal) : null;
+                                    if ($articlesFormattedTotal !== null) {
+                                        $articleTotalLabel = $articlesFormattedTotal;
+                                    }
+                                }
+
                                 $itemRoomId = isset($item['room_id']) ? (int) $item['room_id'] : 0;
                                 $assignmentText = 'Noch kein Zimmer zugewiesen';
                                 $assignmentClass = 'text-warning';
