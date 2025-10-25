@@ -57,8 +57,8 @@ class ArticleManager
                     article_id INT UNSIGNED NULL,
                     article_name VARCHAR(191) NOT NULL,
                     pricing_type VARCHAR(32) NOT NULL DEFAULT "per_day",
-                    vat_category_id INT UNSIGNED NULL,
-                    vat_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
+                    tax_category_id INT UNSIGNED NULL,
+                    tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
                     quantity INT UNSIGNED NOT NULL DEFAULT 1,
                     unit_price DECIMAL(10,2) NOT NULL DEFAULT 0,
                     total_price DECIMAL(10,2) NOT NULL DEFAULT 0,
@@ -66,12 +66,35 @@ class ArticleManager
                     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     CONSTRAINT fk_reservation_item_articles_item FOREIGN KEY (reservation_item_id) REFERENCES reservation_items(id) ON DELETE CASCADE,
                     CONSTRAINT fk_reservation_item_articles_article FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE SET NULL,
-                    CONSTRAINT fk_reservation_item_articles_tax_category FOREIGN KEY (vat_category_id) REFERENCES tax_categories(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_reservation_item_articles_tax_category FOREIGN KEY (tax_category_id) REFERENCES tax_categories(id) ON DELETE SET NULL,
                     INDEX idx_reservation_item_articles_item (reservation_item_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
             );
         } catch (PDOException $exception) {
             error_log('Reservation item article schema error: ' . $exception->getMessage());
+        }
+
+        $this->migrateVatColumnsToTax();
+    }
+
+    private function migrateVatColumnsToTax(): void
+    {
+        try {
+            $column = $this->pdo->query("SHOW COLUMNS FROM reservation_item_articles LIKE 'vat_category_id'");
+            if ($column !== false && $column->fetch(PDO::FETCH_ASSOC) !== false) {
+                $this->pdo->exec('ALTER TABLE reservation_item_articles CHANGE COLUMN vat_category_id tax_category_id INT UNSIGNED NULL');
+            }
+        } catch (PDOException $exception) {
+            // Column rename may fail on limited permissions – ignore to keep application working.
+        }
+
+        try {
+            $column = $this->pdo->query("SHOW COLUMNS FROM reservation_item_articles LIKE 'vat_rate'");
+            if ($column !== false && $column->fetch(PDO::FETCH_ASSOC) !== false) {
+                $this->pdo->exec('ALTER TABLE reservation_item_articles CHANGE COLUMN vat_rate tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0');
+            }
+        } catch (PDOException $exception) {
+            // Ignore rename failures – schema updates can be rerun once permissions allow it.
         }
     }
 

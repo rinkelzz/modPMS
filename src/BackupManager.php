@@ -18,6 +18,8 @@ class BackupManager
         'room_categories' => ['id', 'name', 'description', 'capacity', 'status', 'sort_order'],
         'rooms' => ['id', 'room_number', 'category_id', 'status', 'floor', 'notes'],
         'companies' => ['id', 'name', 'address_street', 'address_postal_code', 'address_city', 'address_country', 'email', 'phone', 'tax_id', 'notes', 'created_at', 'updated_at'],
+        'tax_categories' => ['id', 'name', 'rate', 'created_at', 'updated_at'],
+        'articles' => ['id', 'name', 'description', 'price', 'pricing_type', 'tax_category_id', 'created_at', 'updated_at'],
         'guests' => ['id', 'salutation', 'first_name', 'last_name', 'date_of_birth', 'nationality', 'document_type', 'document_number', 'address_street', 'address_postal_code', 'address_city', 'address_country', 'email', 'phone', 'arrival_date', 'departure_date', 'purpose_of_stay', 'notes', 'company_id', 'room_id', 'created_at', 'updated_at'],
         'rates' => ['id', 'name', 'category_id', 'base_price', 'description', 'created_by', 'updated_by', 'created_at', 'updated_at'],
         'rate_category_prices' => ['id', 'rate_id', 'category_id', 'base_price', 'created_at', 'updated_at'],
@@ -25,6 +27,7 @@ class BackupManager
         'rate_period_prices' => ['id', 'period_id', 'category_id', 'price', 'created_at', 'updated_at'],
         'rate_events' => ['id', 'rate_id', 'name', 'start_date', 'end_date', 'default_price', 'color', 'description', 'created_by', 'updated_by', 'created_at', 'updated_at'],
         'rate_event_prices' => ['id', 'event_id', 'category_id', 'price', 'created_at', 'updated_at'],
+        'reservation_item_articles' => ['id', 'reservation_item_id', 'article_id', 'article_name', 'pricing_type', 'tax_category_id', 'tax_rate', 'quantity', 'unit_price', 'total_price', 'created_at', 'updated_at'],
     ];
 
     public function __construct(PDO $pdo)

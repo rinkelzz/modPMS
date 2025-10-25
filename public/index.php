@@ -3411,27 +3411,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $quantityValue = isset($item['room_quantity']) ? (int) $item['room_quantity'] : 1;
                 $roomIdValue = isset($item['room_id']) ? (int) $item['room_id'] : 0;
                 $rateIdValue = isset($item['rate_id']) ? (int) $item['rate_id'] : 0;
-                $missingRateWasCleared = false;
-                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue]) && $rateManager instanceof RateManager) {
-                    try {
-                        $rateRecord = $rateManager->find($rateIdValue);
-                    } catch (Throwable $exception) {
-                        $rateRecord = null;
-                    }
-
-                    if ($rateRecord !== null) {
-                        $rateLookup[$rateIdValue] = $rateRecord;
-                    }
-                }
-
-                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue])) {
-                    $missingRateWasCleared = true;
-                    $rateIdValue = 0;
-
-                    if (isset($categoryItemsForForm[$categoryIndex])) {
-                        $categoryItemsForForm[$categoryIndex]['rate_id'] = '';
-                    }
-                }
 
                 $arrivalValue = isset($item['arrival_date']) ? trim((string) $item['arrival_date']) : '';
                 $departureValue = isset($item['departure_date']) ? trim((string) $item['departure_date']) : '';
@@ -3533,19 +3512,8 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 }
 
                 if ($primaryGuestRecord === null) {
-                    if ($guest !== null && isset($guest['id'])) {
-                        $fallbackGuestId = (int) $guest['id'];
-                        if ($fallbackGuestId > 0) {
-                            $primaryGuestIdValue = $fallbackGuestId;
-                            $primaryGuestRecord = $guest;
-                            $guestLookup[$fallbackGuestId] = $guest;
-                        }
-                    }
-
-                    if ($primaryGuestRecord === null) {
-                        $categoryValidationErrors = true;
-                        continue;
-                    }
+                    $categoryValidationErrors = true;
+                    continue;
                 }
 
                 $primaryGuestLabel = $buildGuestReservationLabel($primaryGuestRecord);
@@ -3583,12 +3551,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $quantityValue = 1;
                 }
 
-                if ($rateIdValue <= 0 && !$missingRateWasCleared) {
-                    $categoryValidationErrors = true;
-                    continue;
-                }
-
-                if ($rateIdValue > 0 && !isset($rateLookup[$rateIdValue])) {
+                if ($rateIdValue <= 0 || !isset($rateLookup[$rateIdValue])) {
                     $categoryValidationErrors = true;
                     continue;
                 }
@@ -3625,6 +3588,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     foreach ($categoryItemsForForm[$categoryIndex]['articles'] as $articleRowIndex => &$articleRowData) {
                         $articleIdInput = trim((string) ($articleRowData['article_id'] ?? ''));
                         $articleQuantityInput = trim((string) ($articleRowData['quantity'] ?? '1'));
+                        if ($articleQuantityInput === '') {
+                            $articleQuantityInput = '1';
+                            $articleRowData['quantity'] = '1';
+                        }
 
                         if ($articleIdInput === '') {
                             $articleRowData['article_id'] = '';
@@ -3643,10 +3610,8 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
                         $articleQuantity = (int) $articleQuantityInput;
                         if ($articleQuantity <= 0) {
-                            $articleProcessingError = true;
+                            $articleQuantity = 1;
                             $articleRowData['quantity'] = '1';
-                            $articleRowData['total_price'] = '';
-                            continue;
                         }
 
                         $articleDefinition = $articleLookup[$articleId];
@@ -3695,8 +3660,8 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                             'effective_quantity' => $effectiveQuantity,
                             'unit_price' => $unitPrice,
                             'total_price' => $articleTotal,
-                            'vat_rate' => $taxRate,
-                            'vat_category_id' => $taxCategoryId,
+                            'tax_rate' => $taxRate,
+                            'tax_category_id' => $taxCategoryId,
                             'nights' => $nightCount,
                         ];
 
@@ -3802,30 +3767,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $totalPriceValue = $item['total_price'];
                 $articleTotalValue = isset($item['article_total']) ? (float) $item['article_total'] : 0.0;
 
-                $nightCountForItem = null;
-                if (isset($item['night_count'])) {
-                    $nightCountForItem = (int) $item['night_count'];
-                }
-
-                if (($nightCountForItem === null || $nightCountForItem <= 0)
-                    && isset($item['arrival_date'], $item['departure_date'])
-                ) {
-                    try {
-                        $itemArrival = new DateTimeImmutable((string) $item['arrival_date']);
-                        $itemDeparture = new DateTimeImmutable((string) $item['departure_date']);
-                        $interval = $itemArrival->diff($itemDeparture);
-                        if ($interval->invert !== 1) {
-                            $nightCountForItem = max(1, (int) $interval->days);
-                        }
-                    } catch (Throwable $exception) {
-                        // ignore invalid dates from legacy data
-                    }
-                }
-
-                if ($nightCountForItem === null || $nightCountForItem <= 0) {
-                    $nightCountForItem = 1;
-                }
-
                 if ($totalPriceValue === null && $calculated !== null && isset($calculated['total_price'])) {
                     $totalPriceValue = (float) $calculated['total_price'];
                 }
@@ -3840,7 +3781,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         $roomCountForItem = 1;
                     }
 
-                    $totalPriceValue = round($pricePerNightValue * $nightCountForItem * $roomCountForItem, 2);
+                    $totalPriceValue = round($pricePerNightValue * $item['night_count'] * $roomCountForItem, 2);
                 }
 
                 if ($totalPriceValue === null) {
@@ -3931,7 +3872,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $reservationFormData['status'] = $reservationStatus;
             $reservationFormData['notes'] = $notes;
             $reservationFormData['reservation_number'] = $existingReservationForUpdate['reservation_number'] ?? '';
-            $reservationFormData['night_count'] = (string) $nightCount;
 
             $createPayload = [
                 'guest_id' => $guestId,
@@ -4542,10 +4482,6 @@ if ($pdo !== null) {
         $reservationFormData['vat_rate'] = $overnightVatRateValue;
     }
 
-    if (!array_key_exists('night_count', $reservationFormData)) {
-        $reservationFormData['night_count'] = '';
-    }
-
     if (
         $reservationFormData['night_count'] === ''
         && $reservationFormData['arrival_date'] !== ''
@@ -4900,14 +4836,14 @@ if ($pdo !== null) {
                 $unitPriceFormatted = $unitPriceValue > 0 ? $formatCurrency($unitPriceValue) : null;
                 $totalPriceFormatted = $totalPriceValue > 0 ? $formatCurrency($totalPriceValue) : null;
 
-                $vatRateValue = null;
-                if (isset($articleEntry['vat_rate']) && $articleEntry['vat_rate'] !== null && $articleEntry['vat_rate'] !== '') {
-                    $vatRateValue = (float) $articleEntry['vat_rate'];
+                $taxRateValue = null;
+                if (isset($articleEntry['tax_rate']) && $articleEntry['tax_rate'] !== null && $articleEntry['tax_rate'] !== '') {
+                    $taxRateValue = (float) $articleEntry['tax_rate'];
                 }
-                if ($vatRateValue !== null && $vatRateValue < 0) {
-                    $vatRateValue = null;
+                if ($taxRateValue !== null && $taxRateValue < 0) {
+                    $taxRateValue = null;
                 }
-                $vatRateFormatted = $vatRateValue !== null ? $formatPercent($vatRateValue) : null;
+                $taxRateFormatted = $taxRateValue !== null ? $formatPercent($taxRateValue) : null;
 
                 $itemArticlesSummary[] = [
                     'id' => $articleId > 0 ? $articleId : null,
@@ -4919,8 +4855,8 @@ if ($pdo !== null) {
                     'unit_price_formatted' => $unitPriceFormatted,
                     'total_price' => $totalPriceValue,
                     'total_price_formatted' => $totalPriceFormatted,
-                    'vat_rate' => $vatRateValue,
-                    'vat_rate_formatted' => $vatRateFormatted,
+                    'tax_rate' => $taxRateValue,
+                    'tax_rate_formatted' => $taxRateFormatted,
                 ];
             }
 
@@ -5638,20 +5574,6 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                 ? number_format((float) $reservationToEdit['vat_rate'], 2, '.', '')
                 : $overnightVatRateValue;
 
-            $nightCountForForm = '';
-            if (!empty($reservationToEdit['arrival_date']) && !empty($reservationToEdit['departure_date'])) {
-                try {
-                    $arrivalDate = new DateTimeImmutable($reservationToEdit['arrival_date']);
-                    $departureDate = new DateTimeImmutable($reservationToEdit['departure_date']);
-                    $interval = $arrivalDate->diff($departureDate);
-                    if ($interval->invert !== 1) {
-                        $nightCountForForm = (string) max(1, (int) $interval->days);
-                    }
-                } catch (Throwable $exception) {
-                    // ignore invalid dates from legacy data
-                }
-            }
-
             $reservationFormData = [
                 'id' => (int) $reservationToEdit['id'],
                 'guest_id' => (string) $reservationToEdit['guest_id'],
@@ -5669,7 +5591,9 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                 'room_id' => isset($reservationToEdit['room_id']) && $reservationToEdit['room_id'] !== null ? (string) $reservationToEdit['room_id'] : '',
                 'arrival_date' => $reservationToEdit['arrival_date'],
                 'departure_date' => $reservationToEdit['departure_date'],
-                'night_count' => $nightCountForForm,
+                'night_count' => isset($reservationToEdit['night_count']) && $reservationToEdit['night_count'] !== null
+                    ? (string) $reservationToEdit['night_count']
+                    : '',
                 'status' => $reservationToEdit['status'],
                 'notes' => $reservationToEdit['notes'] ?? '',
                 'reservation_number' => isset($reservationToEdit['reservation_number']) ? (string) $reservationToEdit['reservation_number'] : '',
@@ -8911,6 +8835,12 @@ if ($activeSection === 'reservations') {
                                 <?php
                                   $articleIdValue = isset($articleRow['article_id']) ? (string) $articleRow['article_id'] : '';
                                   $articleQuantityValue = isset($articleRow['quantity']) ? (string) $articleRow['quantity'] : '1';
+                                  $articlePricingTypeValue = isset($articleRow['pricing_type'])
+                                      ? (string) $articleRow['pricing_type']
+                                      : ArticleManager::PRICING_PER_DAY;
+                                  if ($articlePricingTypeValue === ArticleManager::PRICING_PER_PERSON_PER_DAY) {
+                                      $articleQuantityValue = '1';
+                                  }
                                   $articleTotalValue = isset($articleRow['total_price']) ? (string) $articleRow['total_price'] : '';
                                   $selectedArticleId = $articleIdValue !== '' ? (int) $articleIdValue : null;
                                   $articleOptions = $buildArticleSelectOptions !== null
@@ -8924,9 +8854,10 @@ if ($activeSection === 'reservations') {
                                       <?= $articleOptions ?>
                                     </select>
                                   </div>
-                                  <div class="col-6 col-md-3">
-                                    <label class="form-label">Menge</label>
+                                  <div class="col-6 col-md-3" data-article-quantity-column>
+                                    <label class="form-label" data-article-quantity-label>Menge</label>
                                     <input type="number" class="form-control reservation-article-quantity" name="reservation_categories[<?= $categoryIndex ?>][articles][<?= $articleIndex ?>][quantity]" min="1" value="<?= htmlspecialchars($articleQuantityValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                                    <div class="form-text text-muted d-none" data-article-quantity-hint>Wird automatisch je Person und Nacht berechnet.</div>
                                   </div>
                                   <div class="col-6 col-md-3">
                                     <label class="form-label">Summe (EUR)</label>
@@ -9053,10 +8984,11 @@ if ($activeSection === 'reservations') {
                                 <?= $buildArticleSelectOptions !== null ? $buildArticleSelectOptions(null) : $articleSelectOptionsHtml ?>
                               </select>
                             </div>
-                            <div class="col-6 col-md-3">
-                              <label class="form-label">Menge</label>
-                              <input type="number" class="form-control reservation-article-quantity" name="reservation_categories[__INDEX__][articles][0][quantity]" min="1" value="1" <?= $pdo === null ? 'disabled' : '' ?>>
-                            </div>
+                              <div class="col-6 col-md-3" data-article-quantity-column>
+                                <label class="form-label" data-article-quantity-label>Menge</label>
+                                <input type="number" class="form-control reservation-article-quantity" name="reservation_categories[__INDEX__][articles][0][quantity]" min="1" value="1" <?= $pdo === null ? 'disabled' : '' ?>>
+                                <div class="form-text text-muted d-none" data-article-quantity-hint>Wird automatisch je Person und Nacht berechnet.</div>
+                              </div>
                             <div class="col-6 col-md-3">
                               <label class="form-label">Summe (EUR)</label>
                               <input type="text" class="form-control reservation-article-total" name="reservation_categories[__INDEX__][articles][0][total_price]" value="" readonly>
@@ -9115,9 +9047,10 @@ if ($activeSection === 'reservations') {
                       <?= $buildArticleSelectOptions !== null ? $buildArticleSelectOptions(null) : $articleSelectOptionsHtml ?>
                     </select>
                   </div>
-                  <div class="col-6 col-md-3">
-                    <label class="form-label">Menge</label>
+                  <div class="col-6 col-md-3" data-article-quantity-column>
+                    <label class="form-label" data-article-quantity-label>Menge</label>
                     <input type="number" class="form-control reservation-article-quantity" name="reservation_categories[__INDEX__][articles][__ARTICLE_INDEX__][quantity]" min="1" value="1" <?= $pdo === null ? 'disabled' : '' ?>>
+                    <div class="form-text text-muted d-none" data-article-quantity-hint>Wird automatisch je Person und Nacht berechnet.</div>
                   </div>
                   <div class="col-6 col-md-3">
                     <label class="form-label">Summe (EUR)</label>
@@ -9708,6 +9641,54 @@ if ($activeSection === 'reservations') {
             return value;
           }
 
+          function updateArticleQuantityState(row) {
+            if (!row) {
+              return;
+            }
+
+            var select = row.querySelector('.reservation-article-select');
+            var quantityInput = row.querySelector('.reservation-article-quantity');
+            var quantityLabel = row.querySelector('[data-article-quantity-label]');
+            var hint = row.querySelector('[data-article-quantity-hint]');
+
+            var pricingType = 'per_day';
+            if (select && select.options.length > 0) {
+              var option = select.options[select.selectedIndex];
+              if (option) {
+                pricingType = option.getAttribute('data-pricing') || 'per_day';
+              }
+            }
+
+            var isPerPerson = pricingType === 'per_person_per_day';
+
+            if (quantityInput) {
+              if (isPerPerson) {
+                quantityInput.value = '1';
+                quantityInput.classList.add('d-none');
+                quantityInput.setAttribute('readonly', 'readonly');
+              } else {
+                quantityInput.classList.remove('d-none');
+                quantityInput.removeAttribute('readonly');
+              }
+            }
+
+            if (quantityLabel) {
+              if (isPerPerson) {
+                quantityLabel.classList.add('d-none');
+              } else {
+                quantityLabel.classList.remove('d-none');
+              }
+            }
+
+            if (hint) {
+              if (isPerPerson) {
+                hint.classList.remove('d-none');
+              } else {
+                hint.classList.add('d-none');
+              }
+            }
+          }
+
           function recalculateArticleRow(item, row) {
             if (!row) {
               return 0;
@@ -9734,6 +9715,10 @@ if ($activeSection === 'reservations') {
             }
 
             var pricingType = selectedOption.getAttribute('data-pricing') || 'per_day';
+            if (pricingType === 'per_person_per_day') {
+              quantityInput.value = '1';
+            }
+
             var quantity = parseInt(quantityInput.value || '1', 10);
             if (Number.isNaN(quantity) || quantity <= 0) {
               quantity = 1;
@@ -9851,6 +9836,7 @@ if ($activeSection === 'reservations') {
                 var row = wrapper.firstElementChild;
                 if (row) {
                   section.querySelector('[data-article-list]').appendChild(row);
+                  updateArticleQuantityState(row);
                   recalculateArticleRow(item, row);
                   recalculateArticlesForItem(item);
                   triggerGrandTotalUpdate();
@@ -9883,6 +9869,7 @@ if ($activeSection === 'reservations') {
                     var newRow = wrapper.firstElementChild;
                     if (newRow) {
                       list.appendChild(newRow);
+                      updateArticleQuantityState(newRow);
                     }
                   }
                 }
@@ -9903,6 +9890,7 @@ if ($activeSection === 'reservations') {
 
               if (target.matches('.reservation-article-select')) {
                 var row = target.closest('[data-article-row]');
+                updateArticleQuantityState(row);
                 recalculateArticleRow(item, row);
                 recalculateArticlesForItem(item);
                 triggerGrandTotalUpdate();
@@ -9925,6 +9913,9 @@ if ($activeSection === 'reservations') {
 
             recalculateArticlesForItem(item);
             triggerGrandTotalUpdate();
+            section.querySelectorAll('[data-article-row]').forEach(function (row) {
+              updateArticleQuantityState(row);
+            });
           }
 
           function createItem() {

@@ -127,6 +127,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS tax_categories (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(191) NOT NULL,
+                    rate DECIMAL(5,2) NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uniq_tax_categories_name (name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS articles (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(191) NOT NULL,
+                    description TEXT NULL,
+                    price DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    pricing_type VARCHAR(32) NOT NULL DEFAULT "per_day",
+                    tax_category_id INT UNSIGNED NULL,
+                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_articles_tax_category FOREIGN KEY (tax_category_id) REFERENCES tax_categories(id) ON DELETE SET NULL,
+                    INDEX idx_install_articles_tax_category (tax_category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS companies (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     name VARCHAR(190) NOT NULL,
@@ -172,6 +194,98 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_guests_arrival (arrival_date),
                     INDEX idx_guests_company (company_id),
                     INDEX idx_guests_room (room_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rates (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(190) NOT NULL,
+                    category_id INT UNSIGNED NULL,
+                    base_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    description TEXT NULL,
+                    created_by INT UNSIGNED NULL,
+                    updated_by INT UNSIGNED NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rates_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_rates_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_rates_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+                    INDEX idx_install_rates_category (category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_category_prices (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    rate_id INT UNSIGNED NOT NULL,
+                    category_id INT UNSIGNED NOT NULL,
+                    base_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rate_category_prices_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rate_category_prices_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
+                    UNIQUE KEY uniq_install_rate_category (rate_id, category_id),
+                    INDEX idx_install_rate_category_prices_category (category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_periods (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    rate_id INT UNSIGNED NOT NULL,
+                    start_date DATE NOT NULL,
+                    end_date DATE NOT NULL,
+                    price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    days_of_week VARCHAR(32) NULL,
+                    created_by INT UNSIGNED NULL,
+                    updated_by INT UNSIGNED NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rate_periods_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rate_periods_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_rate_periods_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+                    INDEX idx_install_rate_periods_rate (rate_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_period_prices (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    period_id INT UNSIGNED NOT NULL,
+                    category_id INT UNSIGNED NOT NULL,
+                    price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rate_period_prices_period FOREIGN KEY (period_id) REFERENCES rate_periods(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rate_period_prices_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
+                    UNIQUE KEY uniq_install_rate_period_category (period_id, category_id),
+                    INDEX idx_install_rate_period_prices_category (category_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_events (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    rate_id INT UNSIGNED NOT NULL,
+                    name VARCHAR(190) NOT NULL,
+                    start_date DATE NOT NULL,
+                    end_date DATE NOT NULL,
+                    default_price DECIMAL(10,2) NULL DEFAULT NULL,
+                    color VARCHAR(16) NULL,
+                    description TEXT NULL,
+                    created_by INT UNSIGNED NULL,
+                    updated_by INT UNSIGNED NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rate_events_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rate_events_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_rate_events_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+                    INDEX idx_install_rate_events_rate (rate_id),
+                    INDEX idx_install_rate_events_dates (start_date, end_date)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_event_prices (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    event_id INT UNSIGNED NOT NULL,
+                    category_id INT UNSIGNED NOT NULL,
+                    price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_rate_event_prices_event FOREIGN KEY (event_id) REFERENCES rate_events(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_rate_event_prices_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
+                    UNIQUE KEY uniq_install_rate_event_category (event_id, category_id),
+                    INDEX idx_install_rate_event_prices_category (category_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
                 $pdo->exec('CREATE TABLE IF NOT EXISTS reservations (
@@ -239,63 +353,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_install_reservation_items_primary_guest (primary_guest_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
-                $pdo->exec('CREATE TABLE IF NOT EXISTS rates (
+                $pdo->exec('CREATE TABLE IF NOT EXISTS reservation_item_articles (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                    name VARCHAR(190) NOT NULL,
-                    category_id INT UNSIGNED NULL,
-                    base_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-                    description TEXT NULL,
-                    created_by INT UNSIGNED NULL,
-                    updated_by INT UNSIGNED NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    CONSTRAINT fk_install_rates_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE SET NULL,
-                    CONSTRAINT fk_install_rates_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
-                    CONSTRAINT fk_install_rates_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
-                    INDEX idx_install_rates_category (category_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
-
-                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_category_prices (
-                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                    rate_id INT UNSIGNED NOT NULL,
-                    category_id INT UNSIGNED NOT NULL,
-                    base_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    CONSTRAINT fk_install_rate_category_prices_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE CASCADE,
-                    CONSTRAINT fk_install_rate_category_prices_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
-                    UNIQUE KEY uniq_install_rate_category (rate_id, category_id),
-                    INDEX idx_install_rate_category_prices_category (category_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
-
-                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_periods (
-                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                    rate_id INT UNSIGNED NOT NULL,
-                    start_date DATE NOT NULL,
-                    end_date DATE NOT NULL,
-                    price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-                    days_of_week VARCHAR(32) NULL,
-                    created_by INT UNSIGNED NULL,
-                    updated_by INT UNSIGNED NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    CONSTRAINT fk_install_rate_periods_rate FOREIGN KEY (rate_id) REFERENCES rates(id) ON DELETE CASCADE,
-                    CONSTRAINT fk_install_rate_periods_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
-                    CONSTRAINT fk_install_rate_periods_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
-                    INDEX idx_install_rate_periods_rate (rate_id)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
-
-                $pdo->exec('CREATE TABLE IF NOT EXISTS rate_period_prices (
-                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                    period_id INT UNSIGNED NOT NULL,
-                    category_id INT UNSIGNED NOT NULL,
-                    price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    CONSTRAINT fk_install_rate_period_prices_period FOREIGN KEY (period_id) REFERENCES rate_periods(id) ON DELETE CASCADE,
-                    CONSTRAINT fk_install_rate_period_prices_category FOREIGN KEY (category_id) REFERENCES room_categories(id) ON DELETE CASCADE,
-                    UNIQUE KEY uniq_install_rate_period_category (period_id, category_id),
-                    INDEX idx_install_rate_period_prices_category (category_id)
+                    reservation_item_id INT UNSIGNED NOT NULL,
+                    article_id INT UNSIGNED NULL,
+                    article_name VARCHAR(191) NOT NULL,
+                    pricing_type VARCHAR(32) NOT NULL DEFAULT "per_day",
+                    tax_category_id INT UNSIGNED NULL,
+                    tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0,
+                    quantity INT UNSIGNED NOT NULL DEFAULT 1,
+                    unit_price DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    total_price DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_reservation_item_articles_item FOREIGN KEY (reservation_item_id) REFERENCES reservation_items(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_reservation_item_articles_article FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_reservation_item_articles_tax FOREIGN KEY (tax_category_id) REFERENCES tax_categories(id) ON DELETE SET NULL,
+                    INDEX idx_install_reservation_item_articles_item (reservation_item_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
                 $pdo->exec('CREATE TABLE IF NOT EXISTS settings (
@@ -340,6 +414,149 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute(['101', 1, 'frei', '1']);
                     $stmt->execute(['102', 1, 'belegt', '1']);
                     $stmt->execute(['201', 2, 'frei', '2']);
+                }
+
+                $taxCategoryCount = $pdo->query('SELECT COUNT(*) FROM tax_categories')->fetchColumn();
+                if ((int) $taxCategoryCount === 0) {
+                    $stmt = $pdo->prepare('INSERT INTO tax_categories (name, rate, created_at, updated_at) VALUES (?, ?, NOW(), NOW())');
+                    $stmt->execute(['Übernachtung reduziert', '7.00']);
+                    $stmt->execute(['Standard 19%', '19.00']);
+                }
+
+                $taxCategoryRows = $pdo->query('SELECT id, name, rate FROM tax_categories ORDER BY id ASC')->fetchAll(PDO::FETCH_ASSOC);
+                $reducedTaxId = null;
+                $reducedTaxRate = null;
+                $fullTaxId = null;
+                $fullTaxRate = null;
+
+                if (is_array($taxCategoryRows)) {
+                    foreach ($taxCategoryRows as $taxCategoryRow) {
+                        if (!isset($taxCategoryRow['id'])) {
+                            continue;
+                        }
+
+                        $taxId = (int) $taxCategoryRow['id'];
+                        $taxRate = isset($taxCategoryRow['rate']) ? (float) $taxCategoryRow['rate'] : 0.0;
+                        $taxName = isset($taxCategoryRow['name']) ? (string) $taxCategoryRow['name'] : '';
+
+                        if ($reducedTaxId === null && (stripos($taxName, 'übernachtung') !== false || abs($taxRate - 7.0) < 0.01)) {
+                            $reducedTaxId = $taxId;
+                            $reducedTaxRate = $taxRate;
+                        }
+
+                        if ($fullTaxId === null && (stripos($taxName, '19') !== false || abs($taxRate - 19.0) < 0.01)) {
+                            $fullTaxId = $taxId;
+                            $fullTaxRate = $taxRate;
+                        }
+                    }
+                }
+
+                if ($taxCategoryRows && $reducedTaxId === null) {
+                    $first = $taxCategoryRows[0];
+                    $reducedTaxId = isset($first['id']) ? (int) $first['id'] : null;
+                    $reducedTaxRate = isset($first['rate']) ? (float) $first['rate'] : null;
+                }
+
+                if ($taxCategoryRows && $fullTaxId === null) {
+                    $first = $taxCategoryRows[0];
+                    $fullTaxId = isset($first['id']) ? (int) $first['id'] : null;
+                    $fullTaxRate = isset($first['rate']) ? (float) $first['rate'] : null;
+                }
+
+                if ($fullTaxId === null) {
+                    $fullTaxId = $reducedTaxId;
+                    $fullTaxRate = $reducedTaxRate;
+                }
+
+                $sampleArticlesForReservation = [];
+
+                $articleCount = $pdo->query('SELECT COUNT(*) FROM articles')->fetchColumn();
+                if ((int) $articleCount === 0) {
+                    $articleStmt = $pdo->prepare('INSERT INTO articles (name, description, price, pricing_type, tax_category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())');
+
+                    $articleStmt->execute([
+                        'Frühstücksbuffet',
+                        'Reichhaltiges Frühstück mit regionalen Produkten.',
+                        '14.90',
+                        'per_person_per_day',
+                        $reducedTaxId,
+                    ]);
+                    $breakfastArticleId = (int) $pdo->lastInsertId();
+                    if ($breakfastArticleId > 0) {
+                        $sampleArticlesForReservation[] = [
+                            'id' => $breakfastArticleId,
+                            'name' => 'Frühstücksbuffet',
+                            'price' => 14.90,
+                            'pricing_type' => 'per_person_per_day',
+                            'tax_category_id' => $reducedTaxId,
+                            'tax_rate' => $reducedTaxRate ?? 0.0,
+                        ];
+                    }
+
+                    $articleStmt->execute([
+                        'Tiefgaragenstellplatz',
+                        'Reservierter Parkplatz pro Nacht.',
+                        '9.50',
+                        'per_day',
+                        $fullTaxId,
+                    ]);
+                    $parkingArticleId = (int) $pdo->lastInsertId();
+                    if ($parkingArticleId > 0) {
+                        $sampleArticlesForReservation[] = [
+                            'id' => $parkingArticleId,
+                            'name' => 'Tiefgaragenstellplatz',
+                            'price' => 9.50,
+                            'pricing_type' => 'per_day',
+                            'tax_category_id' => $fullTaxId,
+                            'tax_rate' => $fullTaxRate ?? 0.0,
+                        ];
+                    }
+
+                    $articleStmt->execute([
+                        'Late Check-out',
+                        'Später Check-out bis 14:00 Uhr.',
+                        '25.00',
+                        'one_time',
+                        $fullTaxId,
+                    ]);
+                    $lateCheckoutArticleId = (int) $pdo->lastInsertId();
+                    if ($lateCheckoutArticleId > 0) {
+                        $sampleArticlesForReservation[] = [
+                            'id' => $lateCheckoutArticleId,
+                            'name' => 'Late Check-out',
+                            'price' => 25.00,
+                            'pricing_type' => 'one_time',
+                            'tax_category_id' => $fullTaxId,
+                            'tax_rate' => $fullTaxRate ?? 0.0,
+                        ];
+                    }
+                }
+
+                if ($sampleArticlesForReservation === []) {
+                    $articleRows = $pdo->query(
+                        'SELECT a.id, a.name, a.price, a.pricing_type, a.tax_category_id, COALESCE(tc.rate, 0) AS tax_rate
+                         FROM articles a
+                         LEFT JOIN tax_categories tc ON tc.id = a.tax_category_id
+                         ORDER BY a.id ASC
+                         LIMIT 3'
+                    )->fetchAll(PDO::FETCH_ASSOC);
+
+                    if (is_array($articleRows)) {
+                        foreach ($articleRows as $articleRow) {
+                            if (!isset($articleRow['id'])) {
+                                continue;
+                            }
+
+                            $sampleArticlesForReservation[] = [
+                                'id' => (int) $articleRow['id'],
+                                'name' => isset($articleRow['name']) ? (string) $articleRow['name'] : 'Artikel',
+                                'price' => isset($articleRow['price']) ? (float) $articleRow['price'] : 0.0,
+                                'pricing_type' => isset($articleRow['pricing_type']) ? (string) $articleRow['pricing_type'] : 'per_day',
+                                'tax_category_id' => isset($articleRow['tax_category_id']) ? (int) $articleRow['tax_category_id'] : null,
+                                'tax_rate' => isset($articleRow['tax_rate']) ? (float) $articleRow['tax_rate'] : 0.0,
+                            ];
+                        }
+                    }
                 }
 
                 $sampleRoomId = null;
@@ -490,6 +707,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $samplePricePerNight = 129.00;
                 $sampleItemTotal = $samplePricePerNight * $sampleNights;
+                $sampleOccupancy = 2;
 
                 $itemInsert = $pdo->prepare('INSERT INTO reservation_items (reservation_id, category_id, room_id, rate_id, room_quantity, occupancy, primary_guest_id, arrival_date, departure_date, price_per_night, total_price, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
                 $itemInsert->execute([
@@ -498,13 +716,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $sampleRoomId,
                     null,
                     1,
-                    1,
+                    $sampleOccupancy,
                     $sampleGuestId,
                     $arrival,
                     $departure,
                     $samplePricePerNight,
                     $sampleItemTotal,
                 ]);
+
+                $reservationItemId = (int) $pdo->lastInsertId();
+
+                if ($reservationItemId > 0 && $sampleArticlesForReservation !== []) {
+                    $roomQuantityForSeed = 1;
+                    $itemArticleStmt = $pdo->prepare(
+                        'INSERT INTO reservation_item_articles (reservation_item_id, article_id, article_name, pricing_type, tax_category_id, tax_rate, quantity, unit_price, total_price, created_at, updated_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())'
+                    );
+
+                    $articleTotalForSeed = 0.0;
+                    foreach (array_slice($sampleArticlesForReservation, 0, 2) as $articleSample) {
+                        $articleId = isset($articleSample['id']) ? (int) $articleSample['id'] : null;
+                        $articleName = isset($articleSample['name']) ? (string) $articleSample['name'] : 'Artikel';
+                        $pricingType = isset($articleSample['pricing_type']) ? (string) $articleSample['pricing_type'] : 'per_day';
+                        $unitPrice = isset($articleSample['price']) ? (float) $articleSample['price'] : 0.0;
+
+                        if ($unitPrice <= 0.0) {
+                            continue;
+                        }
+
+                        $articleQuantity = 1;
+                        $effectiveQuantity = $articleQuantity;
+                        if ($pricingType === 'per_person_per_day') {
+                            $effectiveQuantity = max(1, $sampleOccupancy) * max(1, $sampleNights) * $articleQuantity;
+                        } elseif ($pricingType === 'per_day') {
+                            $effectiveQuantity = max(1, $roomQuantityForSeed) * max(1, $sampleNights) * $articleQuantity;
+                        }
+
+                        if ($effectiveQuantity <= 0) {
+                            continue;
+                        }
+
+                        $articleTotal = round($unitPrice * $effectiveQuantity, 2);
+                        if ($articleTotal <= 0.0) {
+                            continue;
+                        }
+
+                        $itemArticleStmt->execute([
+                            $reservationItemId,
+                            $articleId > 0 ? $articleId : null,
+                            $articleName,
+                            $pricingType,
+                            isset($articleSample['tax_category_id']) && $articleSample['tax_category_id'] !== null
+                                ? (int) $articleSample['tax_category_id']
+                                : null,
+                            isset($articleSample['tax_rate'])
+                                ? number_format((float) $articleSample['tax_rate'], 2, '.', '')
+                                : '0.00',
+                            $articleQuantity,
+                            number_format($unitPrice, 2, '.', ''),
+                            number_format($articleTotal, 2, '.', ''),
+                        ]);
+
+                        $articleTotalForSeed += $articleTotal;
+                    }
+
+                    if ($articleTotalForSeed > 0.0) {
+                        $updatedTotal = round($sampleItemTotal + $articleTotalForSeed, 2);
+
+                        $updateItemStmt = $pdo->prepare('UPDATE reservation_items SET total_price = ?, updated_at = NOW() WHERE id = ?');
+                        $updateItemStmt->execute([
+                            number_format($updatedTotal, 2, '.', ''),
+                            $reservationItemId,
+                        ]);
+
+                        $updateReservationStmt = $pdo->prepare('UPDATE reservations SET total_price = ?, updated_at = NOW() WHERE id = ?');
+                        $updateReservationStmt->execute([
+                            number_format($updatedTotal, 2, '.', ''),
+                            $reservationId,
+                        ]);
+                    }
+                }
             }
 
             $guestUpdate = $pdo->prepare('UPDATE guests SET arrival_date = ?, departure_date = ?, room_id = ?, updated_at = NOW() WHERE id = ?');
