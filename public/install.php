@@ -379,6 +379,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS document_templates (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    type VARCHAR(32) NOT NULL,
+                    name VARCHAR(191) NOT NULL,
+                    subject VARCHAR(191) NULL,
+                    body_html MEDIUMTEXT NULL,
+                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_install_document_templates_type (type)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $pdo->exec('CREATE TABLE IF NOT EXISTS documents (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    type VARCHAR(32) NOT NULL,
+                    document_number VARCHAR(191) NOT NULL UNIQUE,
+                    status VARCHAR(32) NOT NULL DEFAULT "draft",
+                    recipient_name VARCHAR(191) NOT NULL,
+                    recipient_address TEXT NULL,
+                    subject VARCHAR(191) NULL,
+                    body_html MEDIUMTEXT NULL,
+                    items_json LONGTEXT NULL,
+                    total_net DECIMAL(12,2) NULL,
+                    total_vat DECIMAL(12,2) NULL,
+                    total_gross DECIMAL(12,2) NULL,
+                    currency VARCHAR(8) NOT NULL DEFAULT "EUR",
+                    issue_date DATE NULL,
+                    due_date DATE NULL,
+                    template_id INT UNSIGNED NULL,
+                    correction_of_id INT UNSIGNED NULL,
+                    correction_number INT UNSIGNED NULL,
+                    pdf_path VARCHAR(255) NULL,
+                    finalized_at TIMESTAMP NULL DEFAULT NULL,
+                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_documents_template FOREIGN KEY (template_id) REFERENCES document_templates(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_documents_correction FOREIGN KEY (correction_of_id) REFERENCES documents(id) ON DELETE SET NULL,
+                    INDEX idx_install_documents_type (type),
+                    INDEX idx_install_documents_status (status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $statusColorDefaults = [
                     'geplant' => '#2563EB',
                     'eingecheckt' => '#16A34A',

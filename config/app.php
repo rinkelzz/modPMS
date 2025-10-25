@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.8.17',
+    'version' => '1.9.0',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',
@@ -15,6 +15,10 @@ return [
         'reservations' => [
             'title' => 'Reservierungen',
             'description' => 'Aufenthalte mit Tarifen, Preisen, Historien und automatischer Archivierung verwalten.'
+        ],
+        'documents' => [
+            'title' => 'Dokumente',
+            'description' => 'Rechnungen, Angebote, Mahnungen und Korrekturen als PDF erstellen.'
         ],
         'rates' => [
             'title' => 'Raten',
