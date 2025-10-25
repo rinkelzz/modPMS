@@ -5567,9 +5567,6 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                 $totalPriceValue = isset($item['total_price']) && $item['total_price'] !== null
                     ? (float) $item['total_price']
                     : null;
-                if ($totalPriceValue !== null) {
-                    $existingTotalPrice += $totalPriceValue;
-                }
 
                 $primaryGuestIdForForm = isset($item['primary_guest_id']) ? (int) $item['primary_guest_id'] : 0;
                 $primaryGuestLabelForForm = isset($item['primary_guest_label']) && $item['primary_guest_label'] !== null
@@ -5643,6 +5640,10 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                     }
                 }
 
+                if ($articlesTotalForForm > 0.0) {
+                    $articlesTotalForForm = round($articlesTotalForForm, 2);
+                }
+
                 if ($articlesForForm === []) {
                     $articlesForForm[] = [
                         'article_id' => '',
@@ -5650,6 +5651,23 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                         'total_price' => '',
                         'pricing_type' => ArticleManager::PRICING_PER_DAY,
                     ];
+                }
+
+                $roomTotalForForm = $totalPriceValue;
+                if ($roomTotalForForm !== null) {
+                    if ($articlesTotalForForm > 0.0) {
+                        $roomTotalForForm = max(0.0, round($roomTotalForForm - $articlesTotalForForm, 2));
+                    } else {
+                        $roomTotalForForm = round($roomTotalForForm, 2);
+                    }
+                }
+
+                if ($roomTotalForForm !== null) {
+                    $existingTotalPrice += $roomTotalForForm;
+                }
+
+                if ($articlesTotalForForm > 0.0) {
+                    $existingTotalPrice += $articlesTotalForForm;
                 }
 
                 $normalizedItems[] = [
@@ -5661,7 +5679,7 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                     'departure_date' => isset($item['departure_date']) && $item['departure_date'] !== null ? (string) $item['departure_date'] : ($reservationToEdit['departure_date'] ?? ''),
                     'rate_id' => isset($item['rate_id']) && $item['rate_id'] !== null ? (string) $item['rate_id'] : '',
                     'price_per_night' => $pricePerNightFormatted,
-                    'total_price' => $totalPriceValue !== null ? number_format($totalPriceValue, 2, ',', '.') : '',
+                    'total_price' => $roomTotalForForm !== null ? number_format($roomTotalForForm, 2, ',', '.') : '',
                     'primary_guest_id' => isset($item['primary_guest_id']) && $item['primary_guest_id'] !== null ? (string) $item['primary_guest_id'] : '',
                     'primary_guest_query' => isset($item['primary_guest_label']) && $item['primary_guest_label'] !== null ? (string) $item['primary_guest_label'] : '',
                     'articles' => $articlesForForm,
