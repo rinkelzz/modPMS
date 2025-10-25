@@ -4,6 +4,8 @@ use ModPMS\ArticleManager;
 use ModPMS\BackupManager;
 use ModPMS\Calendar;
 use ModPMS\CompanyManager;
+use ModPMS\DocumentManager;
+use ModPMS\DocumentPdfRenderer;
 use ModPMS\Database;
 use ModPMS\GuestManager;
 use ModPMS\RateManager;
@@ -14,6 +16,7 @@ use ModPMS\RoomCategoryManager;
 use ModPMS\RoomManager;
 use ModPMS\SystemUpdater;
 use ModPMS\UserManager;
+use RuntimeException;
 
 require_once __DIR__ . '/../src/Database.php';
 require_once __DIR__ . '/../src/CompanyManager.php';
@@ -29,6 +32,8 @@ require_once __DIR__ . '/../src/SettingManager.php';
 require_once __DIR__ . '/../src/RateManager.php';
 require_once __DIR__ . '/../src/TaxCategoryManager.php';
 require_once __DIR__ . '/../src/ArticleManager.php';
+require_once __DIR__ . '/../src/DocumentManager.php';
+require_once __DIR__ . '/../src/DocumentPdfRenderer.php';
 
 session_start();
 
@@ -146,6 +151,68 @@ $taxCategoryFormData = [
     'name' => '',
     'rate' => '',
 ];
+$documentManager = null;
+$documents = [];
+$documentTemplates = [];
+$documentLookupById = [];
+$documentFormMode = 'create';
+$documentTemplateFormMode = 'create';
+$documentTypeLabels = DocumentManager::TYPE_LABELS;
+$documentStatusLabels = [
+    DocumentManager::STATUS_DRAFT => 'Entwurf',
+    DocumentManager::STATUS_FINALIZED => 'Finalisiert',
+    DocumentManager::STATUS_CORRECTED => 'Korrigiert',
+];
+$documentStatusBadges = [
+    DocumentManager::STATUS_DRAFT => 'text-bg-secondary',
+    DocumentManager::STATUS_FINALIZED => 'text-bg-success',
+    DocumentManager::STATUS_CORRECTED => 'text-bg-warning text-dark',
+];
+$documentFormData = [
+    'id' => null,
+    'type' => DocumentManager::TYPE_INVOICE,
+    'document_number' => '',
+    'recipient_name' => '',
+    'recipient_address' => '',
+    'subject' => '',
+    'body_html' => '',
+    'issue_date' => (new DateTimeImmutable('today'))->format('Y-m-d'),
+    'due_date' => '',
+    'currency' => 'EUR',
+    'template_id' => '',
+    'reservation_id' => '',
+    'reservation_reference' => '',
+    'items' => [
+        [
+            'description' => '',
+            'quantity' => '1',
+            'unit_price' => '',
+            'tax_rate' => '19',
+        ],
+    ],
+    'total_net' => 0.0,
+    'total_vat' => 0.0,
+    'total_gross' => 0.0,
+    'status' => DocumentManager::STATUS_DRAFT,
+    'pdf_path' => '',
+    'type_label' => DocumentManager::TYPE_LABELS[DocumentManager::TYPE_INVOICE],
+    'correction_of_id' => null,
+    'correction_number' => null,
+];
+$documentFormData['items'] = array_fill(0, 5, [
+    'description' => '',
+    'quantity' => '',
+    'unit_price' => '',
+    'tax_rate' => '',
+]);
+$documentTemplateFormData = [
+    'id' => null,
+    'type' => DocumentManager::TYPE_INVOICE,
+    'name' => '',
+    'subject' => '',
+    'body_html' => '',
+];
+$invoiceLogoPath = '';
 $reservationFormDefaults = $reservationFormData;
 $reservationFormMode = 'create';
 $isEditingReservation = false;
@@ -241,6 +308,7 @@ $userFormData = [
 $navItems = [
     'dashboard' => 'Dashboard',
     'reservations' => 'Reservierungen',
+    'documents' => 'Dokumente',
     'rates' => 'Raten',
     'articles' => 'Artikel',
     'categories' => 'Kategorien',
@@ -272,6 +340,8 @@ if (isset($_GET['editCategory'])) {
     $activeSection = 'rates';
 } elseif (isset($_GET['editArticle'])) {
     $activeSection = 'articles';
+} elseif (isset($_GET['editDocument']) || isset($_GET['editDocumentTemplate']) || isset($_GET['createDocument']) || isset($_GET['applyDocumentTemplate'])) {
+    $activeSection = 'documents';
 }
 
 $calendarPastDays = 2;
@@ -510,12 +580,43 @@ try {
     $userManager = new UserManager($pdo);
     $reservationManager = new ReservationManager($pdo);
     $settingsManager = new SettingManager($pdo);
+    $documentManager = new DocumentManager($pdo, $settingsManager);
     $backupManager = new BackupManager($pdo);
     $rateManager = new RateManager($pdo);
     $taxCategoryManager = new TaxCategoryManager($pdo);
     $articleManager = new ArticleManager($pdo);
 } catch (Throwable $exception) {
     $dbError = $exception->getMessage();
+}
+
+if ($documentManager instanceof DocumentManager && isset($_GET['downloadDocument'])) {
+    $downloadDocumentId = (int) $_GET['downloadDocument'];
+
+    if ($downloadDocumentId > 0) {
+        $documentToDownload = $documentManager->find($downloadDocumentId);
+
+        if ($documentToDownload !== null) {
+            $pdfPath = isset($documentToDownload['pdf_path']) ? (string) $documentToDownload['pdf_path'] : '';
+            if ($pdfPath !== '') {
+                $absolutePath = realpath(__DIR__ . '/../' . ltrim($pdfPath, '/'));
+                if ($absolutePath !== false && is_readable($absolutePath)) {
+                    header('Content-Type: application/pdf');
+                    header('Content-Disposition: inline; filename="' . basename($absolutePath) . '"');
+                    header('Content-Length: ' . (string) filesize($absolutePath));
+                    readfile($absolutePath);
+                    exit;
+                }
+            }
+        }
+    }
+
+    $_SESSION['alert'] = [
+        'type' => 'warning',
+        'message' => 'Das angeforderte Dokument konnte nicht heruntergeladen werden.',
+    ];
+
+    header('Location: index.php?section=documents');
+    exit;
 }
 
 $settingsAvailable = $settingsManager instanceof SettingManager && $pdo !== null;
@@ -534,6 +635,11 @@ if ($settingsManager instanceof SettingManager) {
         if ($normalized !== null) {
             $reservationStatusColors[$statusKey] = $normalized;
         }
+    }
+
+    $storedInvoiceLogo = $settingsManager->get('invoice_logo_path', '');
+    if ($storedInvoiceLogo !== null && $storedInvoiceLogo !== '') {
+        $invoiceLogoPath = $storedInvoiceLogo;
     }
 }
 
@@ -666,6 +772,15 @@ $formatPercent = static function (?float $value): ?string {
     }
 
     return number_format($value, 2, ',', '.') . ' %';
+};
+
+$formatCurrencyWithCode = static function (?float $value, string $currency): string {
+    $normalizedCurrency = strtoupper(trim($currency) !== '' ? $currency : 'EUR');
+    if ($value === null) {
+        return '—';
+    }
+
+    return number_format($value, 2, ',', '.') . ' ' . $normalizedCurrency;
 };
 
 $overnightVatRate = 7.0;
@@ -1319,6 +1434,153 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             ];
 
             header('Location: index.php?section=settings');
+            exit;
+
+        case 'settings_invoice_logo':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Einstellungen konnte nicht hergestellt werden.',
+                ];
+                break;
+            }
+
+            if (!isset($_FILES['invoice_logo']) || !is_array($_FILES['invoice_logo'])) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte wählen Sie eine Bilddatei aus.',
+                ];
+                break;
+            }
+
+            $fileError = (int) ($_FILES['invoice_logo']['error'] ?? UPLOAD_ERR_NO_FILE);
+            if ($fileError === UPLOAD_ERR_NO_FILE) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Es wurde keine Datei hochgeladen.',
+                ];
+                break;
+            }
+
+            if ($fileError !== UPLOAD_ERR_OK) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Upload ist fehlgeschlagen (Fehlercode ' . $fileError . ').',
+                ];
+                break;
+            }
+
+            $tmpPath = $_FILES['invoice_logo']['tmp_name'] ?? '';
+            if (!is_string($tmpPath) || $tmpPath === '' || !is_uploaded_file($tmpPath)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die hochgeladene Datei ist ungültig.',
+                ];
+                break;
+            }
+
+            $fileSize = (int) ($_FILES['invoice_logo']['size'] ?? 0);
+            if ($fileSize > 2 * 1024 * 1024) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datei darf maximal 2 MB groß sein.',
+                ];
+                break;
+            }
+
+            $imageInfo = @getimagesize($tmpPath);
+            if ($imageInfo === false || !isset($imageInfo['mime'])) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datei ist kein gültiges PNG- oder JPG-Bild.',
+                ];
+                break;
+            }
+
+            $mime = strtolower((string) $imageInfo['mime']);
+            $extension = '';
+            if ($mime === 'image/png') {
+                $extension = 'png';
+            } elseif ($mime === 'image/jpeg' || $mime === 'image/jpg') {
+                $extension = 'jpg';
+            } else {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Erlaubt sind nur PNG- oder JPG-Dateien.',
+                ];
+                break;
+            }
+
+            $targetDir = __DIR__ . '/../public/assets/uploads';
+            if (!is_dir($targetDir) && !mkdir($targetDir, 0775, true) && !is_dir($targetDir)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das Upload-Verzeichnis konnte nicht erstellt werden.',
+                ];
+                break;
+            }
+
+            $filename = 'invoice-logo.' . $extension;
+            $targetPath = $targetDir . '/' . $filename;
+
+            if (!move_uploaded_file($tmpPath, $targetPath)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datei konnte nicht gespeichert werden.',
+                ];
+                break;
+            }
+
+            @chmod($targetPath, 0664);
+
+            if ($invoiceLogoPath !== '') {
+                $existingPath = __DIR__ . '/../' . ltrim($invoiceLogoPath, '/');
+                if (is_file($existingPath) && realpath($existingPath) !== false && realpath($existingPath) !== realpath($targetPath)) {
+                    @unlink($existingPath);
+                }
+            }
+
+            $relativePath = 'assets/uploads/' . $filename;
+            $settingsManager->set('invoice_logo_path', $relativePath);
+            $invoiceLogoPath = $relativePath;
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Logo für Dokumente wurde gespeichert.',
+            ];
+
+            header('Location: index.php?section=settings#document-settings');
+            exit;
+
+        case 'settings_invoice_logo_remove':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Einstellungen konnte nicht hergestellt werden.',
+                ];
+                break;
+            }
+
+            if ($invoiceLogoPath !== '') {
+                $existingPath = __DIR__ . '/../' . ltrim($invoiceLogoPath, '/');
+                if (is_file($existingPath)) {
+                    @unlink($existingPath);
+                }
+            }
+
+            $settingsManager->set('invoice_logo_path', '');
+            $invoiceLogoPath = '';
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Logo wurde entfernt.',
+            ];
+
+            header('Location: index.php?section=settings#document-settings');
             exit;
 
         case 'settings_backup_export':
@@ -2599,6 +2861,424 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             header('Location: index.php?section=articles');
             exit;
+
+        case 'document_create':
+        case 'document_update':
+            $activeSection = 'documents';
+            $documentFormMode = $form === 'document_update' ? 'update' : 'create';
+
+            if (!$documentManager instanceof DocumentManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Dokumentverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $itemsInput = isset($_POST['items']) && is_array($_POST['items']) ? $_POST['items'] : [];
+            $itemsForForm = [];
+
+            foreach ($itemsInput as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+
+                $itemsForForm[] = [
+                    'description' => trim((string) ($item['description'] ?? '')),
+                    'quantity' => (string) ($item['quantity'] ?? ''),
+                    'unit_price' => (string) ($item['unit_price'] ?? ''),
+                    'tax_rate' => (string) ($item['tax_rate'] ?? ''),
+                ];
+            }
+
+            if ($itemsForForm === []) {
+                $itemsForForm[] = [
+                    'description' => '',
+                    'quantity' => '',
+                    'unit_price' => '',
+                    'tax_rate' => '',
+                ];
+            }
+
+            while (count($itemsForForm) < 5) {
+                $itemsForForm[] = [
+                    'description' => '',
+                    'quantity' => '',
+                    'unit_price' => '',
+                    'tax_rate' => '',
+                ];
+            }
+
+            $selectedType = (string) ($_POST['type'] ?? DocumentManager::TYPE_INVOICE);
+            if (!isset($documentTypeLabels[$selectedType]) || $selectedType === DocumentManager::TYPE_CORRECTION) {
+                $selectedType = DocumentManager::TYPE_INVOICE;
+            }
+
+            $selectedTemplateId = isset($_POST['template_id']) ? trim((string) $_POST['template_id']) : '';
+            $reservationIdInput = isset($_POST['reservation_id']) ? trim((string) $_POST['reservation_id']) : '';
+
+            $documentFormData = [
+                'id' => $form === 'document_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'type' => $selectedType,
+                'document_number' => '',
+                'recipient_name' => trim((string) ($_POST['recipient_name'] ?? '')),
+                'recipient_address' => trim((string) ($_POST['recipient_address'] ?? '')),
+                'subject' => trim((string) ($_POST['subject'] ?? '')),
+                'body_html' => (string) ($_POST['body_html'] ?? ''),
+                'issue_date' => trim((string) ($_POST['issue_date'] ?? '')),
+                'due_date' => trim((string) ($_POST['due_date'] ?? '')),
+                'currency' => strtoupper(trim((string) ($_POST['currency'] ?? 'EUR'))),
+                'template_id' => $selectedTemplateId,
+                'reservation_id' => $reservationIdInput,
+                'reservation_reference' => '',
+                'items' => $itemsForForm,
+                'total_net' => 0.0,
+                'total_vat' => 0.0,
+                'total_gross' => 0.0,
+                'status' => DocumentManager::STATUS_DRAFT,
+                'pdf_path' => '',
+                'type_label' => $documentTypeLabels[$selectedType] ?? 'Dokument',
+                'correction_of_id' => null,
+                'correction_number' => null,
+            ];
+
+            if ($documentFormData['currency'] === '') {
+                $documentFormData['currency'] = 'EUR';
+            }
+
+            $itemsPayload = [];
+            foreach ($itemsForForm as $itemForm) {
+                $itemsPayload[] = [
+                    'description' => $itemForm['description'],
+                    'quantity' => $itemForm['quantity'],
+                    'unit_price' => $itemForm['unit_price'],
+                    'tax_rate' => $itemForm['tax_rate'],
+                ];
+            }
+
+            try {
+                if ($form === 'document_create') {
+                    $document = $documentManager->createDocument([
+                        'type' => $selectedType,
+                        'recipient_name' => $documentFormData['recipient_name'],
+                        'recipient_address' => $documentFormData['recipient_address'],
+                        'subject' => $documentFormData['subject'],
+                        'body_html' => $documentFormData['body_html'],
+                        'issue_date' => $documentFormData['issue_date'],
+                        'due_date' => $documentFormData['due_date'],
+                        'currency' => $documentFormData['currency'],
+                        'template_id' => $selectedTemplateId !== '' ? $selectedTemplateId : null,
+                        'reservation_id' => $reservationIdInput !== '' ? $reservationIdInput : null,
+                        'items' => $itemsPayload,
+                    ]);
+                } else {
+                    $documentId = (int) ($_POST['id'] ?? 0);
+                    if ($documentId <= 0) {
+                        throw new RuntimeException('Ungültige Dokument-ID.');
+                    }
+
+                    $document = $documentManager->updateDocument($documentId, [
+                        'recipient_name' => $documentFormData['recipient_name'],
+                        'recipient_address' => $documentFormData['recipient_address'],
+                        'subject' => $documentFormData['subject'],
+                        'body_html' => $documentFormData['body_html'],
+                        'issue_date' => $documentFormData['issue_date'],
+                        'due_date' => $documentFormData['due_date'],
+                        'currency' => $documentFormData['currency'],
+                        'template_id' => $selectedTemplateId !== '' ? $selectedTemplateId : null,
+                        'reservation_id' => $reservationIdInput !== '' ? $reservationIdInput : null,
+                        'items' => $itemsPayload,
+                    ]);
+                }
+
+                if (!isset($document['id'])) {
+                    throw new RuntimeException('Dokument konnte nicht gespeichert werden.');
+                }
+
+                $documentId = (int) $document['id'];
+                $documentNumber = isset($document['document_number']) ? (string) $document['document_number'] : ('#' . $documentId);
+                $typeLabel = $documentTypeLabels[$document['type']] ?? 'Dokument';
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('%s %s wurde gespeichert.', $typeLabel, htmlspecialchars($documentNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=documents&editDocument=' . $documentId);
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'document_delete':
+            $activeSection = 'documents';
+
+            if (!$documentManager instanceof DocumentManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Dokumentverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $documentId = (int) ($_POST['id'] ?? 0);
+            if ($documentId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Ungültige Dokument-ID.',
+                ];
+                break;
+            }
+
+            try {
+                $document = $documentManager->find($documentId);
+                if ($document === null) {
+                    throw new RuntimeException('Dokument wurde nicht gefunden.');
+                }
+
+                $documentManager->deleteDraft($documentId);
+
+                $documentNumber = isset($document['document_number']) ? (string) $document['document_number'] : ('#' . $documentId);
+                $typeLabel = $documentTypeLabels[$document['type']] ?? 'Dokument';
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('%s %s wurde gelöscht.', $typeLabel, htmlspecialchars($documentNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=documents');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'document_finalize':
+            $activeSection = 'documents';
+
+            if (!$documentManager instanceof DocumentManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Dokumentverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $documentId = (int) ($_POST['id'] ?? 0);
+            if ($documentId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Ungültige Dokument-ID.',
+                ];
+                break;
+            }
+
+            try {
+                $renderer = new DocumentPdfRenderer();
+                $logoPath = $invoiceLogoPath !== '' ? $invoiceLogoPath : null;
+
+                $document = $documentManager->finalizeDocument($documentId, static function (array $doc) use ($renderer, $logoPath): string {
+                    return $renderer->render($doc, $logoPath);
+                });
+
+                $documentNumber = isset($document['document_number']) ? (string) $document['document_number'] : ('#' . $documentId);
+                $typeLabel = $documentTypeLabels[$document['type']] ?? 'Dokument';
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('%s %s wurde finalisiert.', $typeLabel, htmlspecialchars($documentNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=documents&editDocument=' . $documentId);
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'document_generate_correction':
+            $activeSection = 'documents';
+
+            if (!$documentManager instanceof DocumentManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Dokumentverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $documentId = (int) ($_POST['id'] ?? 0);
+            if ($documentId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Ungültige Dokument-ID.',
+                ];
+                break;
+            }
+
+            try {
+                $renderer = new DocumentPdfRenderer();
+                $logoPath = $invoiceLogoPath !== '' ? $invoiceLogoPath : null;
+
+                $correction = $documentManager->createCorrection($documentId, static function (array $doc) use ($renderer, $logoPath): string {
+                    return $renderer->render($doc, $logoPath);
+                });
+
+                $correctionId = isset($correction['id']) ? (int) $correction['id'] : 0;
+                $correctionNumber = isset($correction['document_number']) ? (string) $correction['document_number'] : ('#' . $correctionId);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Rechnungskorrektur %s wurde erstellt.', htmlspecialchars($correctionNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                if ($correctionId > 0) {
+                    header('Location: index.php?section=documents&editDocument=' . $correctionId);
+                } else {
+                    header('Location: index.php?section=documents');
+                }
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'document_template_create':
+        case 'document_template_update':
+            $activeSection = 'documents';
+            $documentTemplateFormMode = $form === 'document_template_update' ? 'update' : 'create';
+
+            if (!$documentManager instanceof DocumentManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Dokumentverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $templateType = (string) ($_POST['type'] ?? DocumentManager::TYPE_INVOICE);
+            if (!isset($documentTypeLabels[$templateType]) || $templateType === DocumentManager::TYPE_CORRECTION) {
+                $templateType = DocumentManager::TYPE_INVOICE;
+            }
+
+            $templateName = trim((string) ($_POST['name'] ?? ''));
+            $templateSubject = trim((string) ($_POST['subject'] ?? ''));
+            $templateBody = (string) ($_POST['body_html'] ?? '');
+
+            $documentTemplateFormData = [
+                'id' => $form === 'document_template_update' ? (int) ($_POST['id'] ?? 0) : null,
+                'type' => $templateType,
+                'name' => $templateName,
+                'subject' => $templateSubject,
+                'body_html' => $templateBody,
+            ];
+
+            try {
+                if ($form === 'document_template_create') {
+                    $templateId = $documentManager->createTemplate([
+                        'type' => $templateType,
+                        'name' => $templateName,
+                        'subject' => $templateSubject,
+                        'body_html' => $templateBody,
+                    ]);
+
+                    $_SESSION['alert'] = [
+                        'type' => 'success',
+                        'message' => sprintf('Vorlage "%s" wurde erstellt.', htmlspecialchars($templateName, ENT_QUOTES, 'UTF-8')),
+                    ];
+
+                    header('Location: index.php?section=documents#template-management');
+                    exit;
+                }
+
+                $templateId = (int) ($_POST['id'] ?? 0);
+                if ($templateId <= 0) {
+                    throw new RuntimeException('Ungültige Vorlagen-ID.');
+                }
+
+                $documentManager->updateTemplate($templateId, [
+                    'type' => $templateType,
+                    'name' => $templateName,
+                    'subject' => $templateSubject,
+                    'body_html' => $templateBody,
+                ]);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Vorlage "%s" wurde aktualisiert.', htmlspecialchars($templateName, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=documents#template-management');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'document_template_delete':
+            $activeSection = 'documents';
+
+            if (!$documentManager instanceof DocumentManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Dokumentverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $templateId = (int) ($_POST['id'] ?? 0);
+            if ($templateId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Ungültige Vorlagen-ID.',
+                ];
+                break;
+            }
+
+            try {
+                $template = $documentManager->findTemplate($templateId);
+                if ($template === null) {
+                    throw new RuntimeException('Vorlage wurde nicht gefunden.');
+                }
+
+                $documentManager->deleteTemplate($templateId);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Vorlage "%s" wurde gelöscht.', htmlspecialchars((string) ($template['name'] ?? ''), ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=documents#template-management');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
 
         case 'category_move':
             $activeSection = 'categories';
@@ -4200,6 +4880,23 @@ if ($pdo !== null) {
         $categories = $categoryManager->all();
     }
 
+    if ($documentManager instanceof DocumentManager) {
+        $documents = $documentManager->listDocuments();
+        $documentTemplates = $documentManager->listTemplates();
+        foreach ($documents as $docRecord) {
+            if (!isset($docRecord['id'])) {
+                continue;
+            }
+
+            $docId = (int) $docRecord['id'];
+            if ($docId <= 0) {
+                continue;
+            }
+
+            $documentLookupById[$docId] = $docRecord;
+        }
+    }
+
     if ($taxCategoryManager instanceof TaxCategoryManager) {
         $taxCategories = $taxCategoryManager->all();
 
@@ -5171,6 +5868,426 @@ if ($pdo !== null) {
             $calendarCategoryGroups[$index]['overbookings'] = $categoryOverbookingOccupancies[$categoryId];
             $calendarCategoryGroups[$index]['overbookingReservations'] = $categoryOverbookingStats[$categoryId]['reservations'] ?? 0;
             $calendarCategoryGroups[$index]['overbookingRooms'] = $categoryOverbookingStats[$categoryId]['rooms'] ?? 0;
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editDocument']) && $documentFormData['id'] === null) {
+    $documentId = (int) $_GET['editDocument'];
+
+    if ($documentId > 0 && $documentManager instanceof DocumentManager) {
+        $documentToEdit = $documentManager->find($documentId);
+
+        if ($documentToEdit) {
+            $documentFormMode = 'update';
+
+            $itemsForForm = [];
+            $itemsSource = isset($documentToEdit['items']) && is_array($documentToEdit['items']) ? $documentToEdit['items'] : [];
+
+            foreach ($itemsSource as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+
+                $itemsForForm[] = [
+                    'description' => (string) ($item['description'] ?? ''),
+                    'quantity' => (string) ($item['quantity'] ?? ''),
+                    'unit_price' => (string) ($item['unit_price'] ?? ''),
+                    'tax_rate' => (string) ($item['tax_rate'] ?? ''),
+                ];
+            }
+
+            if ($itemsForForm === []) {
+                $itemsForForm[] = [
+                    'description' => '',
+                    'quantity' => '',
+                    'unit_price' => '',
+                    'tax_rate' => '',
+                ];
+            }
+
+            while (count($itemsForForm) < 5) {
+                $itemsForForm[] = [
+                    'description' => '',
+                    'quantity' => '',
+                    'unit_price' => '',
+                    'tax_rate' => '',
+                ];
+            }
+
+            $documentFormData = [
+                'id' => (int) ($documentToEdit['id'] ?? $documentId),
+                'type' => (string) ($documentToEdit['type'] ?? DocumentManager::TYPE_INVOICE),
+                'document_number' => (string) ($documentToEdit['document_number'] ?? ''),
+                'recipient_name' => (string) ($documentToEdit['recipient_name'] ?? ''),
+                'recipient_address' => (string) ($documentToEdit['recipient_address'] ?? ''),
+                'subject' => (string) ($documentToEdit['subject'] ?? ''),
+                'body_html' => (string) ($documentToEdit['body_html'] ?? ''),
+                'issue_date' => (string) ($documentToEdit['issue_date'] ?? ''),
+                'due_date' => (string) ($documentToEdit['due_date'] ?? ''),
+                'currency' => strtoupper((string) ($documentToEdit['currency'] ?? 'EUR')),
+                'template_id' => isset($documentToEdit['template_id']) && $documentToEdit['template_id'] !== null
+                    ? (string) $documentToEdit['template_id']
+                    : '',
+                'reservation_id' => isset($documentToEdit['reservation_id']) && $documentToEdit['reservation_id'] !== null
+                    ? (string) $documentToEdit['reservation_id']
+                    : '',
+                'reservation_reference' => isset($documentToEdit['reservation_number']) && $documentToEdit['reservation_number'] !== null
+                    ? (string) $documentToEdit['reservation_number']
+                    : '',
+                'items' => $itemsForForm,
+                'total_net' => isset($documentToEdit['total_net']) ? (float) $documentToEdit['total_net'] : 0.0,
+                'total_vat' => isset($documentToEdit['total_vat']) ? (float) $documentToEdit['total_vat'] : 0.0,
+                'total_gross' => isset($documentToEdit['total_gross']) ? (float) $documentToEdit['total_gross'] : 0.0,
+                'status' => (string) ($documentToEdit['status'] ?? DocumentManager::STATUS_DRAFT),
+                'pdf_path' => (string) ($documentToEdit['pdf_path'] ?? ''),
+                'type_label' => $documentTypeLabels[$documentToEdit['type'] ?? DocumentManager::TYPE_INVOICE] ?? 'Dokument',
+                'correction_of_id' => isset($documentToEdit['correction_of_id']) ? $documentToEdit['correction_of_id'] : null,
+                'correction_number' => isset($documentToEdit['correction_number']) ? $documentToEdit['correction_number'] : null,
+            ];
+
+            if ($documentFormData['currency'] === '') {
+                $documentFormData['currency'] = 'EUR';
+            }
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Das ausgewählte Dokument wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editDocumentTemplate']) && $documentTemplateFormData['id'] === null) {
+    $templateId = (int) $_GET['editDocumentTemplate'];
+
+    if ($templateId > 0 && $documentManager instanceof DocumentManager) {
+        $template = $documentManager->findTemplate($templateId);
+
+        if ($template) {
+            $documentTemplateFormMode = 'update';
+            $documentTemplateFormData = [
+                'id' => (int) $template['id'],
+                'type' => (string) ($template['type'] ?? DocumentManager::TYPE_INVOICE),
+                'name' => (string) ($template['name'] ?? ''),
+                'subject' => (string) ($template['subject'] ?? ''),
+                'body_html' => (string) ($template['body_html'] ?? ''),
+            ];
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die ausgewählte Vorlage wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['createDocument']) && $documentFormData['id'] === null && $documentFormMode === 'create') {
+    $requestedType = (string) $_GET['createDocument'];
+    if (isset($documentTypeLabels[$requestedType]) && $requestedType !== DocumentManager::TYPE_CORRECTION) {
+        $documentFormData['type'] = $requestedType;
+        $documentFormData['type_label'] = $documentTypeLabels[$requestedType];
+    }
+
+    $reservationFromQuery = isset($_GET['reservationId']) ? (int) $_GET['reservationId'] : 0;
+    if ($reservationFromQuery > 0 && $reservationManager instanceof ReservationManager) {
+        $reservationData = $reservationManager->find($reservationFromQuery);
+
+        if (is_array($reservationData)) {
+            $documentFormData['reservation_id'] = (string) $reservationFromQuery;
+            $reservationNumber = isset($reservationData['reservation_number']) && $reservationData['reservation_number'] !== null
+                ? (string) $reservationData['reservation_number']
+                : ('#' . $reservationFromQuery);
+            $documentFormData['reservation_reference'] = $reservationNumber;
+
+            $formatQuantityForForm = static function (float $value): string {
+                $normalized = number_format($value, 2, '.', '');
+                $trimmed = rtrim(rtrim($normalized, '0'), '.');
+
+                return $trimmed === '' ? '1' : $trimmed;
+            };
+
+            $parseMoneyValue = static function ($value) use ($normalizeMoneyInput): float {
+                if ($value === null || $value === '') {
+                    return 0.0;
+                }
+
+                if (is_float($value) || is_int($value)) {
+                    return (float) $value;
+                }
+
+                $parsed = $normalizeMoneyInput((string) $value);
+
+                return $parsed !== null ? $parsed : 0.0;
+            };
+
+            $guestData = null;
+            $companyData = null;
+
+            $guestIdForReservation = isset($reservationData['guest_id']) ? (int) $reservationData['guest_id'] : 0;
+            if ($guestIdForReservation > 0 && $guestManager instanceof GuestManager) {
+                $guestData = $guestManager->find($guestIdForReservation);
+            }
+
+            $companyIdForReservation = isset($reservationData['company_id']) ? (int) $reservationData['company_id'] : 0;
+            if ($companyIdForReservation > 0 && $companyManager instanceof CompanyManager) {
+                $companyData = $companyManager->find($companyIdForReservation);
+            }
+
+            $guestFirstName = trim((string) ($reservationData['guest_first_name'] ?? ($guestData['first_name'] ?? '')));
+            $guestLastName = trim((string) ($reservationData['guest_last_name'] ?? ($guestData['last_name'] ?? '')));
+            $guestFullName = trim($guestFirstName . ' ' . $guestLastName);
+
+            $companyName = trim((string) ($reservationData['company_name'] ?? ($companyData['name'] ?? '')));
+
+            $recipientName = $companyName !== '' ? $companyName : ($guestFullName !== '' ? $guestFullName : sprintf('Reservierung #%d', $reservationFromQuery));
+            if ($documentFormData['recipient_name'] === '' || $documentFormData['recipient_name'] === null) {
+                $documentFormData['recipient_name'] = $recipientName;
+            }
+
+            $addressSource = null;
+            if ($companyName !== '' && is_array($companyData)) {
+                $addressSource = $companyData;
+            } elseif (is_array($guestData)) {
+                $addressSource = $guestData;
+            }
+
+            $addressLines = [];
+            if ($companyName !== '' && $guestFullName !== '') {
+                $addressLines[] = 'z. Hd. ' . $guestFullName;
+            }
+
+            if (is_array($addressSource)) {
+                $streetLine = trim((string) ($addressSource['address_street'] ?? ''));
+                if ($streetLine !== '') {
+                    $addressLines[] = $streetLine;
+                }
+
+                $postal = trim((string) ($addressSource['address_postal_code'] ?? ''));
+                $city = trim((string) ($addressSource['address_city'] ?? ''));
+                $cityLine = trim(($postal !== '' ? $postal . ' ' : '') . $city);
+                if ($cityLine !== '') {
+                    $addressLines[] = $cityLine;
+                }
+
+                $country = trim((string) ($addressSource['address_country'] ?? ''));
+                if ($country !== '') {
+                    $addressLines[] = $country;
+                }
+            }
+
+            if (($documentFormData['recipient_address'] ?? '') === '' && $addressLines !== []) {
+                $documentFormData['recipient_address'] = implode("\n", $addressLines);
+            }
+
+            $subjectPrefix = $documentTypeLabels[$documentFormData['type']] ?? 'Dokument';
+            $documentFormData['subject'] = sprintf('%s zur Reservierung %s', $subjectPrefix, $reservationNumber);
+
+            if ($documentFormData['body_html'] === '') {
+                $documentFormData['body_html'] = 'Bezug: Reservierung ' . $reservationNumber;
+            }
+
+            $today = new DateTimeImmutable('today');
+            $documentFormData['issue_date'] = $today->format('Y-m-d');
+            if ($documentFormData['type'] === DocumentManager::TYPE_INVOICE) {
+                $documentFormData['due_date'] = $today->modify('+14 days')->format('Y-m-d');
+            }
+
+            $defaultVatRate = isset($reservationData['vat_rate']) && $reservationData['vat_rate'] !== null
+                ? $parseMoneyValue($reservationData['vat_rate'])
+                : $overnightVatRate;
+            if ($defaultVatRate < 0) {
+                $defaultVatRate = 0.0;
+            }
+
+            $itemsFromReservation = [];
+            $reservationItems = isset($reservationData['items']) && is_array($reservationData['items']) ? $reservationData['items'] : [];
+            $prefillTotals = ['net' => 0.0, 'vat' => 0.0, 'gross' => 0.0];
+
+            foreach ($reservationItems as $reservationItem) {
+                if (!is_array($reservationItem)) {
+                    continue;
+                }
+
+                $roomQuantity = isset($reservationItem['room_quantity']) ? (int) $reservationItem['room_quantity'] : 1;
+                if ($roomQuantity <= 0) {
+                    $roomQuantity = 1;
+                }
+
+                $itemArrival = isset($reservationItem['arrival_date']) ? $createDateImmutable((string) $reservationItem['arrival_date']) : null;
+                if ($itemArrival === null) {
+                    $itemArrival = $createDateImmutable($reservationData['arrival_date'] ?? null);
+                }
+
+                $itemDeparture = isset($reservationItem['departure_date']) ? $createDateImmutable((string) $reservationItem['departure_date']) : null;
+                if ($itemDeparture === null) {
+                    $itemDeparture = $createDateImmutable($reservationData['departure_date'] ?? null);
+                }
+
+                if ($itemArrival instanceof DateTimeImmutable && $itemDeparture instanceof DateTimeImmutable && $itemDeparture <= $itemArrival) {
+                    $itemDeparture = $itemArrival->modify('+1 day');
+                }
+
+                $nightCount = 1;
+                if ($itemArrival instanceof DateTimeImmutable && $itemDeparture instanceof DateTimeImmutable) {
+                    $diff = $itemArrival->diff($itemDeparture);
+                    $nightCount = max(1, (int) $diff->days);
+                }
+
+                $quantityValue = max(1, $roomQuantity * $nightCount);
+
+                $grossTotal = 0.0;
+                if (isset($reservationItem['total_price'])) {
+                    $grossTotal = $parseMoneyValue($reservationItem['total_price']);
+                }
+                if ($grossTotal <= 0 && isset($reservationItem['price_per_night'])) {
+                    $grossTotal = $parseMoneyValue($reservationItem['price_per_night']) * $quantityValue;
+                }
+                if ($grossTotal <= 0) {
+                    continue;
+                }
+
+                $taxRate = $defaultVatRate;
+                if (isset($reservationItem['tax_rate']) && $reservationItem['tax_rate'] !== null && $reservationItem['tax_rate'] !== '') {
+                    $taxRate = $parseMoneyValue($reservationItem['tax_rate']);
+                }
+                if ($taxRate < 0) {
+                    $taxRate = 0.0;
+                }
+
+                $categoryName = isset($reservationItem['category_name']) ? trim((string) $reservationItem['category_name']) : '';
+                if ($categoryName === '') {
+                    $categoryName = 'Übernachtung';
+                }
+
+                $stayLabel = '';
+                if ($itemArrival instanceof DateTimeImmutable && $itemDeparture instanceof DateTimeImmutable) {
+                    $stayLabel = $itemArrival->format('d.m.Y') . ' – ' . $itemDeparture->format('d.m.Y');
+                } elseif ($itemArrival instanceof DateTimeImmutable) {
+                    $stayLabel = 'ab ' . $itemArrival->format('d.m.Y');
+                } elseif ($itemDeparture instanceof DateTimeImmutable) {
+                    $stayLabel = 'bis ' . $itemDeparture->format('d.m.Y');
+                }
+
+                $descriptionParts = [$categoryName];
+                if ($stayLabel !== '') {
+                    $descriptionParts[] = $stayLabel;
+                }
+                $descriptionParts[] = sprintf('%d %s', $nightCount, $nightCount === 1 ? 'Nacht' : 'Nächte');
+                $descriptionParts[] = $roomQuantity > 1 ? sprintf('%d Zimmer', $roomQuantity) : '1 Zimmer';
+                $description = implode(' · ', array_filter($descriptionParts));
+
+                $grossPerUnit = $grossTotal / $quantityValue;
+                $netPerUnit = $grossPerUnit / (1 + ($taxRate / 100));
+                $netPerUnit = round($netPerUnit, 2);
+
+                $itemsFromReservation[] = [
+                    'description' => $description,
+                    'quantity' => $formatQuantityForForm((float) $quantityValue),
+                    'unit_price' => number_format($netPerUnit, 2, '.', ''),
+                    'tax_rate' => number_format($taxRate, 2, '.', ''),
+                ];
+
+                $lineNet = round($netPerUnit * $quantityValue, 2);
+                $lineVat = round($lineNet * ($taxRate / 100), 2);
+                $lineGross = round($lineNet + $lineVat, 2);
+                $prefillTotals['net'] += $lineNet;
+                $prefillTotals['vat'] += $lineVat;
+                $prefillTotals['gross'] += $lineGross;
+
+                if (isset($reservationItem['articles']) && is_array($reservationItem['articles'])) {
+                    foreach ($reservationItem['articles'] as $articleEntry) {
+                        if (!is_array($articleEntry)) {
+                            continue;
+                        }
+
+                        $articleName = trim((string) ($articleEntry['article_name'] ?? ''));
+                        if ($articleName === '') {
+                            $articleName = 'Zusatzleistung';
+                        }
+
+                        $articleQuantity = isset($articleEntry['quantity']) ? (float) $articleEntry['quantity'] : 1.0;
+                        if ($articleQuantity <= 0) {
+                            $articleQuantity = 1.0;
+                        }
+
+                        $articleTotal = 0.0;
+                        if (isset($articleEntry['total_price'])) {
+                            $articleTotal = $parseMoneyValue($articleEntry['total_price']);
+                        }
+                        if ($articleTotal <= 0 && isset($articleEntry['unit_price'])) {
+                            $articleTotal = $parseMoneyValue($articleEntry['unit_price']) * $articleQuantity;
+                        }
+                        if ($articleTotal <= 0) {
+                            continue;
+                        }
+
+                        $articleTaxRate = isset($articleEntry['tax_rate']) ? $parseMoneyValue($articleEntry['tax_rate']) : 0.0;
+                        if ($articleTaxRate < 0) {
+                            $articleTaxRate = 0.0;
+                        }
+
+                        $grossArticlePerUnit = $articleTotal / max(1.0, $articleQuantity);
+                        $netArticlePerUnit = $grossArticlePerUnit / (1 + ($articleTaxRate / 100));
+                        $netArticlePerUnit = round($netArticlePerUnit, 2);
+
+                        $itemsFromReservation[] = [
+                            'description' => $articleName,
+                            'quantity' => $formatQuantityForForm($articleQuantity),
+                            'unit_price' => number_format($netArticlePerUnit, 2, '.', ''),
+                            'tax_rate' => number_format($articleTaxRate, 2, '.', ''),
+                        ];
+
+                        $articleLineNet = round($netArticlePerUnit * $articleQuantity, 2);
+                        $articleLineVat = round($articleLineNet * ($articleTaxRate / 100), 2);
+                        $articleLineGross = round($articleLineNet + $articleLineVat, 2);
+                        $prefillTotals['net'] += $articleLineNet;
+                        $prefillTotals['vat'] += $articleLineVat;
+                        $prefillTotals['gross'] += $articleLineGross;
+                    }
+                }
+            }
+
+            if ($itemsFromReservation !== []) {
+                $documentFormData['items'] = array_values($itemsFromReservation);
+                $documentFormData['total_net'] = round($prefillTotals['net'], 2);
+                $documentFormData['total_vat'] = round($prefillTotals['vat'], 2);
+                $documentFormData['total_gross'] = round($prefillTotals['gross'], 2);
+
+                while (count($documentFormData['items']) < 5) {
+                    $documentFormData['items'][] = [
+                        'description' => '',
+                        'quantity' => '',
+                        'unit_price' => '',
+                        'tax_rate' => '',
+                    ];
+                }
+            }
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die zugehörige Reservierung wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['applyDocumentTemplate']) && $documentManager instanceof DocumentManager) {
+    $templateId = (int) $_GET['applyDocumentTemplate'];
+    if ($templateId > 0) {
+        $template = $documentManager->findTemplate($templateId);
+        if ($template && ($documentFormData['id'] === null || $documentFormData['status'] === DocumentManager::STATUS_DRAFT)) {
+            $documentFormData['template_id'] = (string) $templateId;
+            if ($documentFormData['subject'] === '') {
+                $documentFormData['subject'] = (string) ($template['subject'] ?? '');
+            }
+            if ($documentFormData['body_html'] === '') {
+                $documentFormData['body_html'] = (string) ($template['body_html'] ?? '');
+            }
+            if (isset($template['type']) && isset($documentTypeLabels[$template['type']]) && $template['type'] !== DocumentManager::TYPE_CORRECTION) {
+                $documentFormData['type'] = (string) $template['type'];
+                $documentFormData['type_label'] = $documentTypeLabels[$documentFormData['type']];
+            }
         }
     }
 }
@@ -6771,6 +7888,15 @@ if ($activeSection === 'reservations') {
                             <td class="text-end">
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=reservations&amp;editReservation=<?= (int) $reservation['id'] ?>">Bearbeiten</a>
+                                <div class="btn-group">
+                                  <button class="btn btn-outline-primary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                    Dokumente
+                                  </button>
+                                  <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><a class="dropdown-item" href="index.php?section=documents&amp;createDocument=invoice&amp;reservationId=<?= (int) $reservation['id'] ?>">Rechnung erstellen</a></li>
+                                    <li><a class="dropdown-item" href="index.php?section=documents&amp;createDocument=offer&amp;reservationId=<?= (int) $reservation['id'] ?>">Angebot erstellen</a></li>
+                                  </ul>
+                                </div>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Reservierung wirklich löschen?');">
                                   <input type="hidden" name="form" value="reservation_delete">
                                   <input type="hidden" name="id" value="<?= (int) $reservation['id'] ?>">
@@ -6784,6 +7910,454 @@ if ($activeSection === 'reservations') {
                     </table>
                   </div>
                 <?php endif; ?>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php elseif ($activeSection === 'documents'): ?>
+      <?php
+        $isDocumentEditing = $documentFormData['id'] !== null;
+        $documentIsEditable = $documentFormData['status'] === DocumentManager::STATUS_DRAFT && $documentFormData['type'] !== DocumentManager::TYPE_CORRECTION;
+        $documentFormAction = $isDocumentEditing ? 'document_update' : 'document_create';
+        $documentTypeSelectOptions = [];
+        foreach ($documentTypeLabels as $typeKey => $typeLabel) {
+            if ($typeKey === DocumentManager::TYPE_CORRECTION) {
+                continue;
+            }
+
+            $documentTypeSelectOptions[] = [
+                'value' => $typeKey,
+                'label' => $typeLabel,
+            ];
+        }
+        $documentTotalsSummary = [
+            'net' => $formatCurrencyWithCode($documentFormData['total_net'] ?? 0.0, $documentFormData['currency'] ?? 'EUR'),
+            'vat' => $formatCurrencyWithCode($documentFormData['total_vat'] ?? 0.0, $documentFormData['currency'] ?? 'EUR'),
+            'gross' => $formatCurrencyWithCode($documentFormData['total_gross'] ?? 0.0, $documentFormData['currency'] ?? 'EUR'),
+        ];
+      ?>
+      <section id="documents" class="app-section active">
+        <div class="row g-4">
+          <div class="col-12 col-xxl-7">
+            <div class="card module-card">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Dokumente</h2>
+                  <p class="text-muted mb-0">Rechnungen, Angebote und Mahnungen inklusive PDF-Ausgabe.</p>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                  <div class="btn-group">
+                    <a class="btn btn-primary btn-sm" href="index.php?section=documents&amp;createDocument=invoice">Neue Rechnung</a>
+                    <button class="btn btn-primary btn-sm dropdown-toggle dropdown-toggle-split" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                      <span class="visually-hidden">Weitere Dokumente</span>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                      <li><a class="dropdown-item" href="index.php?section=documents&amp;createDocument=offer">Neues Angebot</a></li>
+                      <li><a class="dropdown-item" href="index.php?section=documents&amp;createDocument=reminder">Neue Mahnung</a></li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+              <div class="card-body">
+                <?php if ($documents === []): ?>
+                  <p class="text-muted mb-0">Noch keine Dokumente erstellt. Legen Sie jetzt eine erste Rechnung an.</p>
+                <?php else: ?>
+                  <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                      <thead class="table-light">
+                        <tr>
+                          <th>Typ</th>
+                          <th>Nummer</th>
+                          <th>Empfänger</th>
+                          <th>Reservierung</th>
+                          <th class="text-end">Brutto</th>
+                          <th>Status</th>
+                          <th>Ausgestellt</th>
+                          <th class="text-end">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($documents as $document): ?>
+                          <?php
+                            if (!is_array($document) || !isset($document['id'])) {
+                                continue;
+                            }
+
+                            $documentId = (int) $document['id'];
+                            if ($documentId <= 0) {
+                                continue;
+                            }
+
+                            $documentType = isset($document['type']) ? (string) $document['type'] : DocumentManager::TYPE_INVOICE;
+                            $documentTypeLabel = $documentTypeLabels[$documentType] ?? 'Dokument';
+                            $documentNumber = isset($document['document_number']) && $document['document_number'] !== '' ? (string) $document['document_number'] : ('DOC-' . $documentId);
+                            $documentRecipient = trim((string) ($document['recipient_name'] ?? ''));
+                            $documentRecipientAddress = trim((string) ($document['recipient_address'] ?? ''));
+                            $documentRecipientDisplay = $documentRecipient !== '' ? htmlspecialchars($documentRecipient) : '—';
+                            if ($documentRecipientAddress !== '') {
+                                $documentRecipientDisplay .= '<div class="small text-muted">' . nl2br(htmlspecialchars($documentRecipientAddress, ENT_QUOTES, 'UTF-8')) . '</div>';
+                            }
+
+                            $documentReservationId = isset($document['reservation_id']) ? (int) $document['reservation_id'] : 0;
+                            $documentReservationNumber = isset($document['reservation_number']) && $document['reservation_number'] !== null
+                                ? trim((string) $document['reservation_number'])
+                                : '';
+                            $documentReservationLabel = $documentReservationNumber !== ''
+                                ? $documentReservationNumber
+                                : ($documentReservationId > 0 ? ('#' . $documentReservationId) : '');
+                            $documentReservationUrl = $documentReservationId > 0
+                                ? 'index.php?section=reservations&editReservation=' . $documentReservationId
+                                : '';
+
+                            $documentCurrency = isset($document['currency']) ? (string) $document['currency'] : 'EUR';
+                            $documentTotalGross = isset($document['total_gross']) ? (float) $document['total_gross'] : 0.0;
+                            $documentTotalGrossDisplay = $formatCurrencyWithCode($documentTotalGross, $documentCurrency);
+
+                            $documentStatus = isset($document['status']) ? (string) $document['status'] : DocumentManager::STATUS_DRAFT;
+                            $documentStatusLabel = $documentStatusLabels[$documentStatus] ?? ucfirst($documentStatus);
+                            $documentStatusBadge = $documentStatusBadges[$documentStatus] ?? 'text-bg-secondary';
+
+                            $documentIssueDate = isset($document['issue_date']) && $document['issue_date'] !== null && $document['issue_date'] !== '' ? (string) $document['issue_date'] : null;
+                            $documentIssueDateLabel = '—';
+                            if ($documentIssueDate !== null) {
+                                $timestamp = strtotime($documentIssueDate);
+                                if ($timestamp !== false) {
+                                    $documentIssueDateLabel = date('d.m.Y', $timestamp);
+                                }
+                            } elseif (isset($document['created_at']) && $document['created_at'] !== null) {
+                                $timestamp = strtotime((string) $document['created_at']);
+                                if ($timestamp !== false) {
+                                    $documentIssueDateLabel = date('d.m.Y', $timestamp);
+                                }
+                            }
+
+                            $documentPdfPath = isset($document['pdf_path']) ? (string) $document['pdf_path'] : '';
+                            $documentCanFinalize = $documentStatus === DocumentManager::STATUS_DRAFT;
+                            $documentCanDelete = $documentCanFinalize;
+                            $documentCanCorrect = $documentStatus === DocumentManager::STATUS_FINALIZED && $documentType === DocumentManager::TYPE_INVOICE;
+
+                            $correctionOfId = isset($document['correction_of_id']) && $document['correction_of_id'] !== null ? (int) $document['correction_of_id'] : null;
+                            $correctionReferenceNumber = null;
+                            if ($correctionOfId !== null && isset($documentLookupById[$correctionOfId]['document_number'])) {
+                                $correctionReferenceNumber = (string) $documentLookupById[$correctionOfId]['document_number'];
+                            }
+
+                            $correctionNumberLabel = null;
+                            if (isset($document['correction_number']) && $document['correction_number'] !== null) {
+                                $correctionNumberLabel = (int) $document['correction_number'];
+                            }
+                          ?>
+                          <tr>
+                            <td>
+                              <span class="fw-semibold"><?= htmlspecialchars($documentTypeLabel) ?></span>
+                              <?php if ($correctionNumberLabel !== null): ?>
+                                <div class="small text-muted">Korrektur #<?= (int) $correctionNumberLabel ?></div>
+                              <?php endif; ?>
+                              <?php if ($correctionReferenceNumber !== null): ?>
+                                <div class="small text-muted">Zu <?= htmlspecialchars($correctionReferenceNumber) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td><?= htmlspecialchars($documentNumber) ?></td>
+                            <td><?= $documentRecipientDisplay ?></td>
+                            <td>
+                              <?php if ($documentReservationUrl !== ''): ?>
+                                <a href="<?= htmlspecialchars($documentReservationUrl) ?>">Reservierung <?= htmlspecialchars($documentReservationLabel) ?></a>
+                              <?php elseif ($documentReservationLabel !== ''): ?>
+                                <span class="text-muted">Reservierung <?= htmlspecialchars($documentReservationLabel) ?></span>
+                              <?php else: ?>
+                                <span class="text-muted">—</span>
+                              <?php endif; ?>
+                            </td>
+                            <td class="text-end"><?= htmlspecialchars($documentTotalGrossDisplay) ?></td>
+                            <td>
+                              <span class="badge <?= htmlspecialchars($documentStatusBadge) ?>"><?= htmlspecialchars($documentStatusLabel) ?></span>
+                            </td>
+                            <td><?= htmlspecialchars($documentIssueDateLabel) ?></td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=documents&amp;editDocument=<?= $documentId ?>">Details</a>
+                                <?php if ($documentPdfPath !== ''): ?>
+                                  <a class="btn btn-outline-primary btn-sm" href="index.php?section=documents&amp;downloadDocument=<?= $documentId ?>">PDF</a>
+                                <?php endif; ?>
+                                <?php if ($documentCanFinalize): ?>
+                                  <form method="post" class="d-inline">
+                                    <input type="hidden" name="form" value="document_finalize">
+                                    <input type="hidden" name="id" value="<?= $documentId ?>">
+                                    <button type="submit" class="btn btn-success btn-sm" onclick="return confirm('Dokument finalisieren und PDF erzeugen?');">Finalisieren</button>
+                                  </form>
+                                <?php endif; ?>
+                                <?php if ($documentCanDelete): ?>
+                                  <form method="post" class="d-inline" onsubmit="return confirm('Dokument wirklich löschen?');">
+                                    <input type="hidden" name="form" value="document_delete">
+                                    <input type="hidden" name="id" value="<?= $documentId ?>">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                                  </form>
+                                <?php endif; ?>
+                                <?php if ($documentCanCorrect): ?>
+                                  <form method="post" class="d-inline" onsubmit="return confirm('Rechnungskorrektur erstellen?');">
+                                    <input type="hidden" name="form" value="document_generate_correction">
+                                    <input type="hidden" name="id" value="<?= $documentId ?>">
+                                    <button type="submit" class="btn btn-outline-warning btn-sm text-dark">Korrektur</button>
+                                  </form>
+                                <?php endif; ?>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xxl-5">
+            <div class="card module-card">
+              <div class="card-header bg-transparent border-0">
+                <h3 class="h5 mb-0"><?= $isDocumentEditing ? 'Dokument bearbeiten' : 'Neues Dokument' ?></h3>
+              </div>
+              <div class="card-body">
+                <?php if (!$documentIsEditable && $isDocumentEditing): ?>
+                  <div class="alert alert-info" role="status">
+                    Dieses Dokument ist bereits finalisiert. Änderungen sind nicht mehr möglich.
+                  </div>
+                <?php endif; ?>
+                <form method="post">
+                  <input type="hidden" name="form" value="<?= htmlspecialchars($documentFormAction) ?>">
+                  <?php if ($isDocumentEditing): ?>
+                    <input type="hidden" name="id" value="<?= (int) $documentFormData['id'] ?>">
+                  <?php endif; ?>
+                  <input type="hidden" name="reservation_id" value="<?= htmlspecialchars((string) $documentFormData['reservation_id']) ?>">
+                  <div class="mb-3">
+                    <label for="document-type" class="form-label">Dokumenttyp</label>
+                    <select id="document-type" name="type" class="form-select" <?= $isDocumentEditing ? 'disabled' : '' ?>>
+                      <?php foreach ($documentTypeSelectOptions as $option): ?>
+                        <option value="<?= htmlspecialchars($option['value']) ?>" <?= $documentFormData['type'] === $option['value'] ? 'selected' : '' ?>><?= htmlspecialchars($option['label']) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <?php if ($isDocumentEditing): ?>
+                      <input type="hidden" name="type" value="<?= htmlspecialchars($documentFormData['type']) ?>">
+                    <?php endif; ?>
+                  </div>
+                  <?php if ($documentFormData['reservation_id'] !== ''): ?>
+                    <?php
+                      $linkedReservationId = (int) $documentFormData['reservation_id'];
+                      $reservationLabel = $documentFormData['reservation_reference'] !== ''
+                          ? (string) $documentFormData['reservation_reference']
+                          : ('#' . $linkedReservationId);
+                      $reservationUrl = 'index.php?section=reservations&editReservation=' . $linkedReservationId;
+                    ?>
+                    <div class="mb-3">
+                      <label class="form-label">Verknüpfte Reservierung</label>
+                      <?php if ($linkedReservationId > 0): ?>
+                        <div class="form-control-plaintext"><a href="<?= htmlspecialchars($reservationUrl) ?>">Reservierung <?= htmlspecialchars($reservationLabel) ?></a></div>
+                      <?php else: ?>
+                        <div class="form-control-plaintext">Reservierung <?= htmlspecialchars($reservationLabel) ?></div>
+                      <?php endif; ?>
+                    </div>
+                  <?php endif; ?>
+                  <?php if ($documentFormData['document_number'] !== ''): ?>
+                    <div class="mb-3">
+                      <label class="form-label">Dokumentnummer</label>
+                      <div class="form-control-plaintext"><?= htmlspecialchars($documentFormData['document_number']) ?></div>
+                    </div>
+                  <?php endif; ?>
+                  <div class="mb-3">
+                    <label for="document-recipient" class="form-label">Empfänger</label>
+                    <input type="text" class="form-control" id="document-recipient" name="recipient_name" value="<?= htmlspecialchars($documentFormData['recipient_name']) ?>" required <?= $documentIsEditable ? '' : 'readonly' ?>>
+                  </div>
+                  <div class="mb-3">
+                    <label for="document-address" class="form-label">Adresse</label>
+                    <textarea class="form-control" id="document-address" name="recipient_address" rows="2" <?= $documentIsEditable ? '' : 'readonly' ?>><?= htmlspecialchars($documentFormData['recipient_address']) ?></textarea>
+                  </div>
+                  <div class="mb-3">
+                    <label for="document-template" class="form-label">Vorlage</label>
+                    <select id="document-template" name="template_id" class="form-select" <?= $documentIsEditable ? '' : 'disabled' ?>>
+                      <option value="">Ohne Vorlage</option>
+                      <?php foreach ($documentTemplates as $template): ?>
+                        <?php
+                          if (!isset($template['id'])) {
+                              continue;
+                          }
+                          $templateId = (int) $template['id'];
+                          if ($templateId <= 0) {
+                              continue;
+                          }
+                          $templateType = isset($template['type']) ? (string) $template['type'] : DocumentManager::TYPE_INVOICE;
+                          $templateLabel = ($template['name'] ?? 'Vorlage') . ' – ' . ($documentTypeLabels[$templateType] ?? ucfirst($templateType));
+                        ?>
+                        <option value="<?= (int) $templateId ?>" <?= (string) $documentFormData['template_id'] === (string) $templateId ? 'selected' : '' ?>><?= htmlspecialchars($templateLabel) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Vorlagen können unten bearbeitet und angewendet werden.</div>
+                  </div>
+                  <div class="mb-3">
+                    <label for="document-subject" class="form-label">Betreff</label>
+                    <input type="text" class="form-control" id="document-subject" name="subject" value="<?= htmlspecialchars($documentFormData['subject']) ?>" <?= $documentIsEditable ? '' : 'readonly' ?>>
+                  </div>
+                  <div class="mb-3">
+                    <label for="document-body" class="form-label">Text / Hinweise</label>
+                    <textarea class="form-control" id="document-body" name="body_html" rows="4" <?= $documentIsEditable ? '' : 'readonly' ?>><?= htmlspecialchars($documentFormData['body_html']) ?></textarea>
+                    <div class="form-text">HTML wird unterstützt; Zeilenumbrüche erscheinen im PDF.</div>
+                  </div>
+                  <div class="row g-3 mb-3">
+                    <div class="col-md-6">
+                      <label for="document-issue-date" class="form-label">Ausstellungsdatum</label>
+                      <input type="date" class="form-control" id="document-issue-date" name="issue_date" value="<?= htmlspecialchars($documentFormData['issue_date']) ?>" <?= $documentIsEditable ? '' : 'readonly' ?>>
+                    </div>
+                    <div class="col-md-6">
+                      <label for="document-due-date" class="form-label">Fällig bis</label>
+                      <input type="date" class="form-control" id="document-due-date" name="due_date" value="<?= htmlspecialchars($documentFormData['due_date']) ?>" <?= $documentIsEditable ? '' : 'readonly' ?>>
+                    </div>
+                  </div>
+                  <div class="mb-3">
+                    <label for="document-currency" class="form-label">Währung</label>
+                    <input type="text" class="form-control" id="document-currency" name="currency" value="<?= htmlspecialchars($documentFormData['currency']) ?>" maxlength="3" <?= $documentIsEditable ? '' : 'readonly' ?>>
+                  </div>
+                  <div class="mb-3">
+                    <label class="form-label">Positionen</label>
+                    <div class="table-responsive">
+                      <table class="table table-sm align-middle mb-0">
+                        <thead class="table-light">
+                          <tr>
+                            <th style="width: 45%;">Beschreibung</th>
+                            <th style="width: 15%;">Menge</th>
+                            <th style="width: 20%;">Einzelpreis</th>
+                            <th style="width: 20%;">MwSt. %</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <?php foreach ($documentFormData['items'] as $itemIndex => $itemRow): ?>
+                            <tr>
+                              <td>
+                                <input type="text" name="items[<?= $itemIndex ?>][description]" class="form-control form-control-sm" value="<?= htmlspecialchars((string) ($itemRow['description'] ?? '')) ?>" <?= $documentIsEditable ? '' : 'readonly' ?>>
+                              </td>
+                              <td>
+                                <input type="number" step="0.01" min="-999" name="items[<?= $itemIndex ?>][quantity]" class="form-control form-control-sm" value="<?= htmlspecialchars((string) ($itemRow['quantity'] ?? '')) ?>" placeholder="1" <?= $documentIsEditable ? '' : 'readonly' ?>>
+                              </td>
+                              <td>
+                                <input type="number" step="0.01" min="0" name="items[<?= $itemIndex ?>][unit_price]" class="form-control form-control-sm" value="<?= htmlspecialchars((string) ($itemRow['unit_price'] ?? '')) ?>" placeholder="0,00" <?= $documentIsEditable ? '' : 'readonly' ?>>
+                              </td>
+                              <td>
+                                <input type="number" step="0.01" min="0" name="items[<?= $itemIndex ?>][tax_rate]" class="form-control form-control-sm" value="<?= htmlspecialchars((string) ($itemRow['tax_rate'] ?? '')) ?>" placeholder="19" <?= $documentIsEditable ? '' : 'readonly' ?>>
+                              </td>
+                            </tr>
+                          <?php endforeach; ?>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="form-text">Leere Zeilen werden beim Speichern ignoriert.</div>
+                  </div>
+                  <div class="mb-3">
+                    <div class="small text-muted">Netto: <?= htmlspecialchars($documentTotalsSummary['net']) ?></div>
+                    <div class="small text-muted">MwSt.: <?= htmlspecialchars($documentTotalsSummary['vat']) ?></div>
+                    <div class="small text-muted">Brutto: <?= htmlspecialchars($documentTotalsSummary['gross']) ?></div>
+                  </div>
+                  <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary" <?= $documentIsEditable ? '' : 'disabled' ?>>Speichern</button>
+                    <?php if ($isDocumentEditing): ?>
+                      <a href="index.php?section=documents" class="btn btn-outline-secondary">Neu</a>
+                    <?php endif; ?>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+          <div class="col-12">
+            <div class="card module-card" id="template-management">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h3 class="h5 mb-0">Vorlagen</h3>
+                  <p class="text-muted mb-0">Standardtexte für Rechnungen, Angebote und Mahnungen.</p>
+                </div>
+              </div>
+              <div class="card-body">
+                <?php if ($documentTemplates === []): ?>
+                  <p class="text-muted">Noch keine Vorlagen gespeichert.</p>
+                <?php else: ?>
+                  <div class="table-responsive mb-4">
+                    <table class="table table-sm align-middle">
+                      <thead class="table-light">
+                        <tr>
+                          <th>Name</th>
+                          <th>Typ</th>
+                          <th>Betreff</th>
+                          <th class="text-end">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($documentTemplates as $template): ?>
+                          <?php
+                            if (!isset($template['id'])) {
+                                continue;
+                            }
+
+                            $templateId = (int) $template['id'];
+                            if ($templateId <= 0) {
+                                continue;
+                            }
+
+                            $templateType = isset($template['type']) ? (string) $template['type'] : DocumentManager::TYPE_INVOICE;
+                            $templateTypeLabel = $documentTypeLabels[$templateType] ?? ucfirst($templateType);
+                            $templateName = (string) ($template['name'] ?? ('Vorlage #' . $templateId));
+                            $templateSubject = (string) ($template['subject'] ?? '');
+                          ?>
+                          <tr>
+                            <td><?= htmlspecialchars($templateName) ?></td>
+                            <td><?= htmlspecialchars($templateTypeLabel) ?></td>
+                            <td><?= $templateSubject !== '' ? htmlspecialchars($templateSubject) : '—' ?></td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2">
+                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=documents&amp;editDocumentTemplate=<?= (int) $templateId ?>">Bearbeiten</a>
+                                <a class="btn btn-outline-primary btn-sm" href="index.php?section=documents&amp;applyDocumentTemplate=<?= (int) $templateId ?>">Anwenden</a>
+                                <form method="post" class="d-inline" onsubmit="return confirm('Vorlage wirklich löschen?');">
+                                  <input type="hidden" name="form" value="document_template_delete">
+                                  <input type="hidden" name="id" value="<?= (int) $templateId ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                                </form>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
+                <form method="post">
+                  <input type="hidden" name="form" value="<?= $documentTemplateFormMode === 'update' ? 'document_template_update' : 'document_template_create' ?>">
+                  <?php if ($documentTemplateFormMode === 'update' && $documentTemplateFormData['id'] !== null): ?>
+                    <input type="hidden" name="id" value="<?= (int) $documentTemplateFormData['id'] ?>">
+                  <?php endif; ?>
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label for="template-type" class="form-label">Typ</label>
+                      <select id="template-type" name="type" class="form-select">
+                        <?php foreach ($documentTypeSelectOptions as $option): ?>
+                          <option value="<?= htmlspecialchars($option['value']) ?>" <?= $documentTemplateFormData['type'] === $option['value'] ? 'selected' : '' ?>><?= htmlspecialchars($option['label']) ?></option>
+                        <?php endforeach; ?>
+                      </select>
+                    </div>
+                    <div class="col-md-8">
+                      <label for="template-name" class="form-label">Name</label>
+                      <input type="text" class="form-control" id="template-name" name="name" value="<?= htmlspecialchars($documentTemplateFormData['name']) ?>" required>
+                    </div>
+                    <div class="col-12">
+                      <label for="template-subject" class="form-label">Betreff</label>
+                      <input type="text" class="form-control" id="template-subject" name="subject" value="<?= htmlspecialchars($documentTemplateFormData['subject']) ?>">
+                    </div>
+                    <div class="col-12">
+                      <label for="template-body" class="form-label">Text</label>
+                      <textarea class="form-control" id="template-body" name="body_html" rows="4"><?= htmlspecialchars($documentTemplateFormData['body_html']) ?></textarea>
+                    </div>
+                  </div>
+                  <div class="d-flex gap-2 mt-3">
+                    <button type="submit" class="btn btn-primary"><?= $documentTemplateFormMode === 'update' ? 'Vorlage aktualisieren' : 'Vorlage erstellen' ?></button>
+                    <?php if ($documentTemplateFormMode === 'update'): ?>
+                      <a href="index.php?section=documents#template-management" class="btn btn-outline-secondary">Neu</a>
+                    <?php endif; ?>
+                  </div>
+                </form>
               </div>
             </div>
           </div>
@@ -7952,6 +9526,52 @@ if ($activeSection === 'reservations') {
                     <button type="submit" class="btn btn-outline-primary">Mehrwertsteuer speichern</button>
                   </div>
                 </form>
+              <?php endif; ?>
+            </div>
+          </div>
+          <div class="card module-card mt-4" id="document-settings">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+              <div>
+                <h2 class="h5 mb-1">Dokumentenlayout</h2>
+                <p class="text-muted mb-0">Logo für Rechnungen, Angebote und Mahnungen verwalten.</p>
+              </div>
+              <span class="badge text-bg-dark">Dokumente</span>
+            </div>
+            <div class="card-body">
+              <?php if (!$settingsAvailable): ?>
+                <p class="text-muted mb-0">Das Dokumentenlogo kann erst nach einer erfolgreichen Datenbankverbindung hochgeladen werden.</p>
+              <?php else: ?>
+                <div class="row g-4 align-items-start">
+                  <div class="col-md-4 col-lg-3">
+                    <?php if ($invoiceLogoPath !== ''): ?>
+                      <div class="border rounded bg-light p-2 text-center">
+                        <img src="<?= htmlspecialchars($invoiceLogoPath) ?>" alt="Rechnungslogo" class="img-fluid" style="max-height: 120px;">
+                      </div>
+                      <div class="small text-muted mt-2">Aktuelles Logo</div>
+                    <?php else: ?>
+                      <div class="border rounded bg-light text-muted small text-center p-3">
+                        Kein Logo hinterlegt
+                      </div>
+                    <?php endif; ?>
+                  </div>
+                  <div class="col-md-8 col-lg-9">
+                    <form method="post" enctype="multipart/form-data" class="d-flex flex-column gap-3">
+                      <input type="hidden" name="form" value="settings_invoice_logo">
+                      <div>
+                        <label for="invoice-logo" class="form-label">Logo hochladen</label>
+                        <input type="file" class="form-control" id="invoice-logo" name="invoice_logo" accept="image/png,image/jpeg" required>
+                        <div class="form-text">PNG oder JPG, maximal 2&nbsp;MB. Das Logo erscheint im PDF-Kopfbereich.</div>
+                      </div>
+                      <button type="submit" class="btn btn-outline-primary align-self-start">Logo speichern</button>
+                    </form>
+                    <?php if ($invoiceLogoPath !== ''): ?>
+                      <form method="post" class="mt-3" onsubmit="return confirm('Logo wirklich entfernen?');">
+                        <input type="hidden" name="form" value="settings_invoice_logo_remove">
+                        <button type="submit" class="btn btn-outline-danger">Logo entfernen</button>
+                      </form>
+                    <?php endif; ?>
+                  </div>
+                </div>
               <?php endif; ?>
             </div>
           </div>
