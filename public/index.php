@@ -639,7 +639,48 @@ $normalizeMoneyInput = static function (?string $value): ?float {
         return null;
     }
 
-    $normalized = str_replace(',', '.', preg_replace('/[^0-9,\.\-]/', '', $trimmed));
+    $sanitized = preg_replace('/[^0-9,\.\-]/', '', $trimmed);
+    if ($sanitized === '') {
+        return null;
+    }
+
+    $hasComma = strpos($sanitized, ',') !== false;
+    $hasDot = strpos($sanitized, '.') !== false;
+
+    if ($hasComma && $hasDot) {
+        if (strrpos($sanitized, ',') > strrpos($sanitized, '.')) {
+            $sanitized = str_replace('.', '', $sanitized);
+            $sanitized = str_replace(',', '.', $sanitized);
+        } else {
+            $sanitized = str_replace(',', '', $sanitized);
+        }
+    } elseif ($hasComma) {
+        $commaCount = substr_count($sanitized, ',');
+        if ($commaCount > 1) {
+            $sanitized = str_replace(',', '', $sanitized);
+        } else {
+            $lastCommaPos = strrpos($sanitized, ',');
+            $digitsAfter = $lastCommaPos === false ? 0 : strlen($sanitized) - $lastCommaPos - 1;
+            if ($digitsAfter > 2) {
+                $sanitized = str_replace(',', '', $sanitized);
+            } else {
+                $sanitized = str_replace(',', '.', $sanitized);
+            }
+        }
+    } elseif ($hasDot) {
+        $dotCount = substr_count($sanitized, '.');
+        if ($dotCount > 1) {
+            $sanitized = str_replace('.', '', $sanitized);
+        } else {
+            $lastDotPos = strrpos($sanitized, '.');
+            $digitsAfter = $lastDotPos === false ? 0 : strlen($sanitized) - $lastDotPos - 1;
+            if ($digitsAfter > 2) {
+                $sanitized = str_replace('.', '', $sanitized);
+            }
+        }
+    }
+
+    $normalized = $sanitized;
     if ($normalized === '' || !is_numeric($normalized)) {
         return null;
     }
@@ -10030,12 +10071,52 @@ if ($activeSection === 'reservations') {
               return null;
             }
 
-            var normalized = value.replace(/[^0-9,.-]/g, '').replace(',', '.');
-            if (normalized === '' || !normalized.match(/^-?\d*(\.\d+)?$/)) {
+            var sanitized = value.replace(/[^0-9,.-]/g, '');
+            if (sanitized === '') {
               return null;
             }
 
-            var parsed = parseFloat(normalized);
+            var hasComma = sanitized.indexOf(',') !== -1;
+            var hasDot = sanitized.indexOf('.') !== -1;
+
+            if (hasComma && hasDot) {
+              if (sanitized.lastIndexOf(',') > sanitized.lastIndexOf('.')) {
+                sanitized = sanitized.replace(/\./g, '');
+                sanitized = sanitized.replace(/,/g, '.');
+              } else {
+                sanitized = sanitized.replace(/,/g, '');
+              }
+            } else if (hasComma) {
+              var commaMatches = sanitized.match(/,/g) || [];
+              if (commaMatches.length > 1) {
+                sanitized = sanitized.replace(/,/g, '');
+              } else {
+                var lastComma = sanitized.lastIndexOf(',');
+                var digitsAfter = lastComma === -1 ? 0 : sanitized.length - lastComma - 1;
+                if (digitsAfter > 2) {
+                  sanitized = sanitized.replace(/,/g, '');
+                } else {
+                  sanitized = sanitized.replace(',', '.');
+                }
+              }
+            } else if (hasDot) {
+              var dotMatches = sanitized.match(/\./g) || [];
+              if (dotMatches.length > 1) {
+                sanitized = sanitized.replace(/\./g, '');
+              } else {
+                var lastDot = sanitized.lastIndexOf('.');
+                var digitsAfterDot = lastDot === -1 ? 0 : sanitized.length - lastDot - 1;
+                if (digitsAfterDot > 2) {
+                  sanitized = sanitized.replace(/\./g, '');
+                }
+              }
+            }
+
+            if (sanitized === '' || !sanitized.match(/^-?\d*(\.\d+)?$/)) {
+              return null;
+            }
+
+            var parsed = parseFloat(sanitized);
             return Number.isNaN(parsed) ? null : parsed;
           }
 
