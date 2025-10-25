@@ -400,6 +400,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     subject VARCHAR(191) NULL,
                     body_html MEDIUMTEXT NULL,
                     items_json LONGTEXT NULL,
+                    reservation_id INT UNSIGNED NULL,
                     total_net DECIMAL(12,2) NULL,
                     total_vat DECIMAL(12,2) NULL,
                     total_gross DECIMAL(12,2) NULL,
@@ -415,8 +416,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     CONSTRAINT fk_install_documents_template FOREIGN KEY (template_id) REFERENCES document_templates(id) ON DELETE SET NULL,
                     CONSTRAINT fk_install_documents_correction FOREIGN KEY (correction_of_id) REFERENCES documents(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_install_documents_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE SET NULL,
                     INDEX idx_install_documents_type (type),
-                    INDEX idx_install_documents_status (status)
+                    INDEX idx_install_documents_status (status),
+                    INDEX idx_install_documents_reservation (reservation_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
                 $statusColorDefaults = [
