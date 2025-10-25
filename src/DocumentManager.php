@@ -242,12 +242,12 @@ class DocumentManager
             throw new RuntimeException('Bitte mindestens eine Position erfassen.');
         }
 
-        $documentNumber = $this->generateDocumentNumber($type);
-
         $recipientName = trim((string) ($data['recipient_name'] ?? ''));
         if ($recipientName === '') {
             throw new RuntimeException('Bitte einen Empfänger angeben.');
         }
+
+        $documentNumber = $this->generateDocumentNumber($type);
 
         return $this->persistDocument([
             'type' => $type,
