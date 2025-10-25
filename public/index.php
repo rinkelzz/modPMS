@@ -9278,6 +9278,51 @@ if ($activeSection === 'reservations') {
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
     <script>
       (function () {
+        function normalizeHexColor(value) {
+          if (typeof value !== 'string') {
+            return '';
+          }
+
+          var trimmed = value.trim();
+          if (trimmed === '') {
+            return '';
+          }
+
+          if (trimmed.charAt(0) !== '#') {
+            trimmed = '#' + trimmed;
+          }
+
+          var hex = trimmed.slice(1);
+          if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+            hex = hex.split('').map(function (char) {
+              return char + char;
+            }).join('');
+          } else if (!/^[0-9a-fA-F]{6}$/.test(hex)) {
+            return '';
+          }
+
+          return '#' + hex.toLowerCase();
+        }
+
+        function getContrastingTextColor(color) {
+          var normalized = normalizeHexColor(color);
+          if (!normalized) {
+            return '';
+          }
+
+          var value = normalized.slice(1);
+          var r = parseInt(value.slice(0, 2), 16);
+          var g = parseInt(value.slice(2, 4), 16);
+          var b = parseInt(value.slice(4, 6), 16);
+
+          if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+            return '';
+          }
+
+          var luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+          return luminance > 0.5 ? '#111827' : '#ffffff';
+        }
+
         function parseISODate(value) {
           if (typeof value !== 'string' || value.trim() === '') {
             return null;
@@ -9336,6 +9381,90 @@ if ($activeSection === 'reservations') {
         var now = new Date();
         var todayUtcDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
         var todayIsoString = formatISODate(todayUtcDate);
+
+        function setupStatusColorPickers() {
+          var containers = document.querySelectorAll('[data-status-color]');
+
+          if (!containers.length) {
+            return;
+          }
+
+          containers.forEach(function (container) {
+            if (!(container instanceof HTMLElement)) {
+              return;
+            }
+
+            var colorPicker = container.querySelector('[data-status-color-picker]');
+            var textInput = container.querySelector('[data-status-color-input]');
+            var preview = container.querySelector('[data-status-color-preview]');
+
+            if (!textInput) {
+              return;
+            }
+
+            var initialBackground = preview ? preview.style.backgroundColor : '';
+            var initialTextColor = preview ? preview.style.color : '';
+
+            function applyColor(color) {
+              if (!preview) {
+                return;
+              }
+
+              if (color) {
+                preview.style.backgroundColor = color;
+                var contrast = getContrastingTextColor(color);
+                if (contrast) {
+                  preview.style.color = contrast;
+                }
+              } else {
+                if (initialBackground) {
+                  preview.style.backgroundColor = initialBackground;
+                } else {
+                  preview.style.removeProperty('background-color');
+                }
+
+                if (initialTextColor) {
+                  preview.style.color = initialTextColor;
+                } else {
+                  preview.style.removeProperty('color');
+                }
+              }
+            }
+
+            function syncFromText() {
+              var normalized = normalizeHexColor(textInput.value);
+
+              if (normalized) {
+                if ((textInput.value || '').toLowerCase() !== normalized) {
+                  textInput.value = normalized;
+                }
+
+                if (colorPicker && (colorPicker.value || '').toLowerCase() !== normalized) {
+                  colorPicker.value = normalized;
+                }
+              }
+
+              applyColor(normalized);
+            }
+
+            textInput.addEventListener('input', syncFromText);
+            textInput.addEventListener('blur', syncFromText);
+
+            if (colorPicker) {
+              colorPicker.addEventListener('input', function () {
+                var normalized = normalizeHexColor(colorPicker.value);
+
+                if (normalized && (textInput.value || '').toLowerCase() !== normalized) {
+                  textInput.value = normalized;
+                }
+
+                applyColor(normalized);
+              });
+            }
+
+            syncFromText();
+          });
+        }
 
         function setupReservationFormModal() {
           var modalElement = document.getElementById('reservationFormModal');
@@ -10339,6 +10468,31 @@ if ($activeSection === 'reservations') {
           var reservationIdInput = modalElement.querySelector('#reservation-status-id');
           var redirectDateInput = modalElement.querySelector('#reservation-status-date');
           var redirectDisplayInput = modalElement.querySelector('#reservation-status-display');
+          var reservationIdState = '';
+          var statusValueState = '';
+
+          function setReservationId(value) {
+            reservationIdState = value ? String(value) : '';
+            if (reservationIdInput) {
+              reservationIdInput.value = reservationIdState;
+            }
+          }
+
+          function getReservationId() {
+            return reservationIdInput ? reservationIdInput.value : reservationIdState;
+          }
+
+          function setStatusValue(value) {
+            statusValueState = value ? String(value) : '';
+            if (statusInput) {
+              statusInput.value = statusValueState;
+            }
+          }
+
+          function getStatusValue() {
+            return statusInput ? statusInput.value : statusValueState;
+          }
+
           var detailElements = {
             title: modalElement.querySelector('[data-detail="title"]'),
             subtitle: modalElement.querySelector('[data-detail="subtitle"]'),
@@ -10369,10 +10523,6 @@ if ($activeSection === 'reservations') {
             statusButtonsContainer: modalElement.querySelector('[data-detail="status-buttons"]')
           };
 
-          if (!statusForm || !statusInput || !reservationIdInput) {
-            return;
-          }
-
           var statusButtons = detailElements.statusButtonsContainer
             ? detailElements.statusButtonsContainer.querySelectorAll('[data-status-action]')
             : [];
@@ -10382,8 +10532,8 @@ if ($activeSection === 'reservations') {
           }
 
           function resetModal() {
-            reservationIdInput.value = '';
-            statusInput.value = '';
+            setReservationId('');
+            setStatusValue('');
             if (redirectDateInput) {
               redirectDateInput.value = defaultRedirectDate;
             }
@@ -10490,9 +10640,10 @@ if ($activeSection === 'reservations') {
                 return;
               }
 
-              button.disabled = !reservationIdInput.value;
+              var currentReservationId = getReservationId();
+              button.disabled = !currentReservationId;
 
-              if (reservationIdInput.value && buttonStatus === activeStatus) {
+              if (currentReservationId && buttonStatus === activeStatus) {
                 button.classList.add('active', 'btn-primary');
                 button.classList.remove('btn-outline-secondary');
               } else {
@@ -10529,7 +10680,7 @@ if ($activeSection === 'reservations') {
             }
 
             if (data.reservationId) {
-              reservationIdInput.value = String(data.reservationId);
+              setReservationId(data.reservationId);
             }
 
             if (redirectDateInput && data.calendarDate) {
@@ -10540,7 +10691,7 @@ if ($activeSection === 'reservations') {
               redirectDisplayInput.value = data.displayPreference;
             }
 
-            statusInput.value = data.status || '';
+            setStatusValue(data.status || '');
 
             if (detailElements.title) {
               detailElements.title.textContent = data.guestLabel || data.guestName || 'Reservierung';
@@ -10830,7 +10981,7 @@ if ($activeSection === 'reservations') {
             button.addEventListener('click', function (event) {
               event.preventDefault();
 
-              if (!reservationIdInput.value) {
+              if (!getReservationId()) {
                 return;
               }
 
@@ -10839,13 +10990,15 @@ if ($activeSection === 'reservations') {
                 return;
               }
 
-              statusInput.value = status;
-              statusForm.submit();
+              setStatusValue(status);
+              if (statusForm) {
+                statusForm.submit();
+              }
             });
           });
 
           modalElement.addEventListener('show.bs.modal', function () {
-            applyStatusButtonState(reservationIdInput.value ? statusInput.value : '');
+            applyStatusButtonState(getReservationId() ? getStatusValue() : '');
           });
 
           modalElement.addEventListener('hidden.bs.modal', function () {
