@@ -6292,6 +6292,138 @@ if ($pdo !== null && isset($_GET['applyDocumentTemplate']) && $documentManager i
     }
 }
 
+if ($pdo !== null && isset($_GET['editDocument']) && $documentFormData['id'] === null) {
+    $documentId = (int) $_GET['editDocument'];
+
+    if ($documentId > 0 && $documentManager instanceof DocumentManager) {
+        $documentToEdit = $documentManager->find($documentId);
+
+        if ($documentToEdit) {
+            $documentFormMode = 'update';
+
+            $itemsForForm = [];
+            $itemsSource = isset($documentToEdit['items']) && is_array($documentToEdit['items']) ? $documentToEdit['items'] : [];
+
+            foreach ($itemsSource as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+
+                $itemsForForm[] = [
+                    'description' => (string) ($item['description'] ?? ''),
+                    'quantity' => (string) ($item['quantity'] ?? ''),
+                    'unit_price' => (string) ($item['unit_price'] ?? ''),
+                    'tax_rate' => (string) ($item['tax_rate'] ?? ''),
+                ];
+            }
+
+            if ($itemsForForm === []) {
+                $itemsForForm[] = [
+                    'description' => '',
+                    'quantity' => '',
+                    'unit_price' => '',
+                    'tax_rate' => '',
+                ];
+            }
+
+            while (count($itemsForForm) < 5) {
+                $itemsForForm[] = [
+                    'description' => '',
+                    'quantity' => '',
+                    'unit_price' => '',
+                    'tax_rate' => '',
+                ];
+            }
+
+            $documentFormData = [
+                'id' => (int) ($documentToEdit['id'] ?? $documentId),
+                'type' => (string) ($documentToEdit['type'] ?? DocumentManager::TYPE_INVOICE),
+                'document_number' => (string) ($documentToEdit['document_number'] ?? ''),
+                'recipient_name' => (string) ($documentToEdit['recipient_name'] ?? ''),
+                'recipient_address' => (string) ($documentToEdit['recipient_address'] ?? ''),
+                'subject' => (string) ($documentToEdit['subject'] ?? ''),
+                'body_html' => (string) ($documentToEdit['body_html'] ?? ''),
+                'issue_date' => (string) ($documentToEdit['issue_date'] ?? ''),
+                'due_date' => (string) ($documentToEdit['due_date'] ?? ''),
+                'currency' => strtoupper((string) ($documentToEdit['currency'] ?? 'EUR')),
+                'template_id' => isset($documentToEdit['template_id']) && $documentToEdit['template_id'] !== null
+                    ? (string) $documentToEdit['template_id']
+                    : '',
+                'items' => $itemsForForm,
+                'total_net' => isset($documentToEdit['total_net']) ? (float) $documentToEdit['total_net'] : 0.0,
+                'total_vat' => isset($documentToEdit['total_vat']) ? (float) $documentToEdit['total_vat'] : 0.0,
+                'total_gross' => isset($documentToEdit['total_gross']) ? (float) $documentToEdit['total_gross'] : 0.0,
+                'status' => (string) ($documentToEdit['status'] ?? DocumentManager::STATUS_DRAFT),
+                'pdf_path' => (string) ($documentToEdit['pdf_path'] ?? ''),
+                'type_label' => $documentTypeLabels[$documentToEdit['type'] ?? DocumentManager::TYPE_INVOICE] ?? 'Dokument',
+                'correction_of_id' => isset($documentToEdit['correction_of_id']) ? $documentToEdit['correction_of_id'] : null,
+                'correction_number' => isset($documentToEdit['correction_number']) ? $documentToEdit['correction_number'] : null,
+            ];
+
+            if ($documentFormData['currency'] === '') {
+                $documentFormData['currency'] = 'EUR';
+            }
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Das ausgewählte Dokument wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editDocumentTemplate']) && $documentTemplateFormData['id'] === null) {
+    $templateId = (int) $_GET['editDocumentTemplate'];
+
+    if ($templateId > 0 && $documentManager instanceof DocumentManager) {
+        $template = $documentManager->findTemplate($templateId);
+
+        if ($template) {
+            $documentTemplateFormMode = 'update';
+            $documentTemplateFormData = [
+                'id' => (int) $template['id'],
+                'type' => (string) ($template['type'] ?? DocumentManager::TYPE_INVOICE),
+                'name' => (string) ($template['name'] ?? ''),
+                'subject' => (string) ($template['subject'] ?? ''),
+                'body_html' => (string) ($template['body_html'] ?? ''),
+            ];
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die ausgewählte Vorlage wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['createDocument']) && $documentFormData['id'] === null && $documentFormMode === 'create') {
+    $requestedType = (string) $_GET['createDocument'];
+    if (isset($documentTypeLabels[$requestedType]) && $requestedType !== DocumentManager::TYPE_CORRECTION) {
+        $documentFormData['type'] = $requestedType;
+        $documentFormData['type_label'] = $documentTypeLabels[$requestedType];
+    }
+}
+
+if ($pdo !== null && isset($_GET['applyDocumentTemplate']) && $documentManager instanceof DocumentManager) {
+    $templateId = (int) $_GET['applyDocumentTemplate'];
+    if ($templateId > 0) {
+        $template = $documentManager->findTemplate($templateId);
+        if ($template && ($documentFormData['id'] === null || $documentFormData['status'] === DocumentManager::STATUS_DRAFT)) {
+            $documentFormData['template_id'] = (string) $templateId;
+            if ($documentFormData['subject'] === '') {
+                $documentFormData['subject'] = (string) ($template['subject'] ?? '');
+            }
+            if ($documentFormData['body_html'] === '') {
+                $documentFormData['body_html'] = (string) ($template['body_html'] ?? '');
+            }
+            if (isset($template['type']) && isset($documentTypeLabels[$template['type']]) && $template['type'] !== DocumentManager::TYPE_CORRECTION) {
+                $documentFormData['type'] = (string) $template['type'];
+                $documentFormData['type_label'] = $documentTypeLabels[$documentFormData['type']];
+            }
+        }
+    }
+}
+
 if ($pdo !== null && isset($_GET['editCategory']) && $categoryFormData['id'] === null) {
     $categoryToEdit = $categoryManager->find((int) $_GET['editCategory']);
 
