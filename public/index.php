@@ -3248,6 +3248,40 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 break;
             }
 
+            if ($articleLookup === [] && $articleManager instanceof ArticleManager) {
+                $articles = $articleManager->all();
+
+                foreach ($articles as $article) {
+                    if (!isset($article['id'])) {
+                        continue;
+                    }
+
+                    $articleId = (int) $article['id'];
+                    if ($articleId <= 0) {
+                        continue;
+                    }
+
+                    $articleLookup[$articleId] = $article;
+                }
+            }
+
+            if ($taxCategoryLookup === [] && $taxCategoryManager instanceof TaxCategoryManager) {
+                $taxCategories = $taxCategoryManager->all();
+
+                foreach ($taxCategories as $taxCategory) {
+                    if (!isset($taxCategory['id'])) {
+                        continue;
+                    }
+
+                    $taxCategoryId = (int) $taxCategory['id'];
+                    if ($taxCategoryId <= 0) {
+                        continue;
+                    }
+
+                    $taxCategoryLookup[$taxCategoryId] = $taxCategory;
+                }
+            }
+
             $guestIdInput = trim((string) ($_POST['guest_id'] ?? ''));
             $guestQueryInput = trim((string) ($_POST['guest_query'] ?? ''));
             $companyIdInput = trim((string) ($_POST['company_id'] ?? ''));
