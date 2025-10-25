@@ -70,6 +70,7 @@ class DocumentManager
                     subject VARCHAR(191) NULL,
                     body_html MEDIUMTEXT NULL,
                     items_json LONGTEXT NULL,
+                    reservation_id INT UNSIGNED NULL,
                     total_net DECIMAL(12,2) NULL,
                     total_vat DECIMAL(12,2) NULL,
                     total_gross DECIMAL(12,2) NULL,
@@ -85,17 +86,32 @@ class DocumentManager
                     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     CONSTRAINT fk_documents_template FOREIGN KEY (template_id) REFERENCES document_templates(id) ON DELETE SET NULL,
                     CONSTRAINT fk_documents_correction FOREIGN KEY (correction_of_id) REFERENCES documents(id) ON DELETE SET NULL,
+                    CONSTRAINT fk_documents_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE SET NULL,
                     INDEX idx_documents_type (type),
-                    INDEX idx_documents_status (status)
+                    INDEX idx_documents_status (status),
+                    INDEX idx_documents_reservation (reservation_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
             );
         } catch (PDOException $exception) {
             error_log('DocumentManager: unable to ensure documents schema: ' . $exception->getMessage());
         }
 
+        $this->ensureColumn('documents', 'reservation_id', 'ALTER TABLE documents ADD COLUMN reservation_id INT UNSIGNED NULL AFTER items_json');
         $this->ensureColumn('documents', 'pdf_path', 'ALTER TABLE documents ADD COLUMN pdf_path VARCHAR(255) NULL AFTER correction_number');
         $this->ensureColumn('documents', 'finalized_at', 'ALTER TABLE documents ADD COLUMN finalized_at TIMESTAMP NULL DEFAULT NULL AFTER pdf_path');
         $this->ensureColumn('documents', 'correction_number', 'ALTER TABLE documents ADD COLUMN correction_number INT UNSIGNED NULL AFTER correction_of_id');
+
+        try {
+            $this->pdo->exec('ALTER TABLE documents ADD INDEX idx_documents_reservation (reservation_id)');
+        } catch (PDOException $exception) {
+            // index might already exist
+        }
+
+        try {
+            $this->pdo->exec('ALTER TABLE documents ADD CONSTRAINT fk_documents_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE SET NULL');
+        } catch (PDOException $exception) {
+            // constraint might already exist
+        }
     }
 
     /**
@@ -104,9 +120,10 @@ class DocumentManager
     public function listDocuments(): array
     {
         $stmt = $this->pdo->query(
-            'SELECT d.*, t.name AS template_name
+            'SELECT d.*, t.name AS template_name, r.reservation_number
              FROM documents d
              LEFT JOIN document_templates t ON t.id = d.template_id
+             LEFT JOIN reservations r ON r.id = d.reservation_id
              ORDER BY d.created_at DESC'
         );
 
@@ -215,9 +232,10 @@ class DocumentManager
     public function find(int $id): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT d.*, t.name AS template_name
+            'SELECT d.*, t.name AS template_name, r.reservation_number
              FROM documents d
              LEFT JOIN document_templates t ON t.id = d.template_id
+             LEFT JOIN reservations r ON r.id = d.reservation_id
              WHERE d.id = :id LIMIT 1'
         );
         $stmt->execute(['id' => $id]);
@@ -263,6 +281,7 @@ class DocumentManager
             'template_id' => isset($data['template_id']) ? $this->normalizeId($data['template_id']) : null,
             'correction_of_id' => null,
             'correction_number' => null,
+            'reservation_id' => isset($data['reservation_id']) ? $this->normalizeId($data['reservation_id']) : null,
         ], $items);
     }
 
@@ -302,6 +321,9 @@ class DocumentManager
             'template_id' => isset($data['template_id']) ? $this->normalizeId($data['template_id']) : ($existing['template_id'] ?? null),
             'correction_of_id' => $existing['correction_of_id'] ?? null,
             'correction_number' => $existing['correction_number'] ?? null,
+            'reservation_id' => array_key_exists('reservation_id', $data)
+                ? $this->normalizeId($data['reservation_id'])
+                : ($existing['reservation_id'] ?? null),
         ], $items);
     }
 
@@ -428,6 +450,7 @@ class DocumentManager
             'template_id' => null,
             'correction_of_id' => $documentId,
             'correction_number' => $correctionNumber,
+            'reservation_id' => $original['reservation_id'] ?? null,
         ], $items, $totals);
 
         $finalizedCorrection = $this->finalizeDocument($inserted['id'], $pdfGenerator);
@@ -449,8 +472,8 @@ class DocumentManager
 
         if ($id === null) {
             $stmt = $this->pdo->prepare(
-                'INSERT INTO documents (type, document_number, status, recipient_name, recipient_address, subject, body_html, items_json, total_net, total_vat, total_gross, currency, issue_date, due_date, template_id, correction_of_id, correction_number, pdf_path, created_at, updated_at)
-                 VALUES (:type, :document_number, :status, :recipient_name, :recipient_address, :subject, :body_html, :items_json, :total_net, :total_vat, :total_gross, :currency, :issue_date, :due_date, :template_id, :correction_of_id, :correction_number, NULL, NOW(), NOW())'
+                'INSERT INTO documents (type, document_number, status, recipient_name, recipient_address, subject, body_html, items_json, reservation_id, total_net, total_vat, total_gross, currency, issue_date, due_date, template_id, correction_of_id, correction_number, pdf_path, created_at, updated_at)
+                 VALUES (:type, :document_number, :status, :recipient_name, :recipient_address, :subject, :body_html, :items_json, :reservation_id, :total_net, :total_vat, :total_gross, :currency, :issue_date, :due_date, :template_id, :correction_of_id, :correction_number, NULL, NOW(), NOW())'
             );
 
             $parameters = [
@@ -462,6 +485,7 @@ class DocumentManager
                 'subject' => $documentData['subject'],
                 'body_html' => $documentData['body_html'],
                 'items_json' => $itemsJson,
+                'reservation_id' => $documentData['reservation_id'],
                 'total_net' => $totals['net'],
                 'total_vat' => $totals['vat'],
                 'total_gross' => $totals['gross'],
@@ -474,7 +498,7 @@ class DocumentManager
             ];
         } else {
             $stmt = $this->pdo->prepare(
-                'UPDATE documents SET recipient_name = :recipient_name, recipient_address = :recipient_address, subject = :subject, body_html = :body_html, items_json = :items_json, total_net = :total_net, total_vat = :total_vat, total_gross = :total_gross, currency = :currency, issue_date = :issue_date, due_date = :due_date, template_id = :template_id, correction_of_id = :correction_of_id, correction_number = :correction_number, updated_at = NOW() WHERE id = :id'
+                'UPDATE documents SET recipient_name = :recipient_name, recipient_address = :recipient_address, subject = :subject, body_html = :body_html, items_json = :items_json, reservation_id = :reservation_id, total_net = :total_net, total_vat = :total_vat, total_gross = :total_gross, currency = :currency, issue_date = :issue_date, due_date = :due_date, template_id = :template_id, correction_of_id = :correction_of_id, correction_number = :correction_number, updated_at = NOW() WHERE id = :id'
             );
 
             $parameters = [
@@ -483,6 +507,7 @@ class DocumentManager
                 'subject' => $documentData['subject'],
                 'body_html' => $documentData['body_html'],
                 'items_json' => $itemsJson,
+                'reservation_id' => $documentData['reservation_id'],
                 'total_net' => $totals['net'],
                 'total_vat' => $totals['vat'],
                 'total_gross' => $totals['gross'],
@@ -653,6 +678,7 @@ class DocumentManager
         $record['template_id'] = isset($record['template_id']) && $record['template_id'] !== null ? (int) $record['template_id'] : null;
         $record['correction_of_id'] = isset($record['correction_of_id']) && $record['correction_of_id'] !== null ? (int) $record['correction_of_id'] : null;
         $record['correction_number'] = isset($record['correction_number']) && $record['correction_number'] !== null ? (int) $record['correction_number'] : null;
+        $record['reservation_id'] = isset($record['reservation_id']) && $record['reservation_id'] !== null ? (int) $record['reservation_id'] : null;
         $record['total_net'] = isset($record['total_net']) ? (float) $record['total_net'] : 0.0;
         $record['total_vat'] = isset($record['total_vat']) ? (float) $record['total_vat'] : 0.0;
         $record['total_gross'] = isset($record['total_gross']) ? (float) $record['total_gross'] : 0.0;
@@ -670,6 +696,9 @@ class DocumentManager
         }
 
         $record['type_label'] = self::TYPE_LABELS[$record['type']] ?? 'Dokument';
+        $record['reservation_number'] = isset($record['reservation_number']) && $record['reservation_number'] !== null
+            ? (string) $record['reservation_number']
+            : null;
 
         return $record;
     }

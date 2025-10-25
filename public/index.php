@@ -180,6 +180,8 @@ $documentFormData = [
     'due_date' => '',
     'currency' => 'EUR',
     'template_id' => '',
+    'reservation_id' => '',
+    'reservation_reference' => '',
     'items' => [
         [
             'description' => '',
@@ -2913,6 +2915,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             $selectedTemplateId = isset($_POST['template_id']) ? trim((string) $_POST['template_id']) : '';
+            $reservationIdInput = isset($_POST['reservation_id']) ? trim((string) $_POST['reservation_id']) : '';
 
             $documentFormData = [
                 'id' => $form === 'document_update' ? (int) ($_POST['id'] ?? 0) : null,
@@ -2926,6 +2929,8 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 'due_date' => trim((string) ($_POST['due_date'] ?? '')),
                 'currency' => strtoupper(trim((string) ($_POST['currency'] ?? 'EUR'))),
                 'template_id' => $selectedTemplateId,
+                'reservation_id' => $reservationIdInput,
+                'reservation_reference' => '',
                 'items' => $itemsForForm,
                 'total_net' => 0.0,
                 'total_vat' => 0.0,
@@ -2963,6 +2968,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         'due_date' => $documentFormData['due_date'],
                         'currency' => $documentFormData['currency'],
                         'template_id' => $selectedTemplateId !== '' ? $selectedTemplateId : null,
+                        'reservation_id' => $reservationIdInput !== '' ? $reservationIdInput : null,
                         'items' => $itemsPayload,
                     ]);
                 } else {
@@ -2980,6 +2986,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         'due_date' => $documentFormData['due_date'],
                         'currency' => $documentFormData['currency'],
                         'template_id' => $selectedTemplateId !== '' ? $selectedTemplateId : null,
+                        'reservation_id' => $reservationIdInput !== '' ? $reservationIdInput : null,
                         'items' => $itemsPayload,
                     ]);
                 }
@@ -5922,6 +5929,426 @@ if ($pdo !== null && isset($_GET['editDocument']) && $documentFormData['id'] ===
                 'template_id' => isset($documentToEdit['template_id']) && $documentToEdit['template_id'] !== null
                     ? (string) $documentToEdit['template_id']
                     : '',
+                'reservation_id' => isset($documentToEdit['reservation_id']) && $documentToEdit['reservation_id'] !== null
+                    ? (string) $documentToEdit['reservation_id']
+                    : '',
+                'reservation_reference' => isset($documentToEdit['reservation_number']) && $documentToEdit['reservation_number'] !== null
+                    ? (string) $documentToEdit['reservation_number']
+                    : '',
+                'items' => $itemsForForm,
+                'total_net' => isset($documentToEdit['total_net']) ? (float) $documentToEdit['total_net'] : 0.0,
+                'total_vat' => isset($documentToEdit['total_vat']) ? (float) $documentToEdit['total_vat'] : 0.0,
+                'total_gross' => isset($documentToEdit['total_gross']) ? (float) $documentToEdit['total_gross'] : 0.0,
+                'status' => (string) ($documentToEdit['status'] ?? DocumentManager::STATUS_DRAFT),
+                'pdf_path' => (string) ($documentToEdit['pdf_path'] ?? ''),
+                'type_label' => $documentTypeLabels[$documentToEdit['type'] ?? DocumentManager::TYPE_INVOICE] ?? 'Dokument',
+                'correction_of_id' => isset($documentToEdit['correction_of_id']) ? $documentToEdit['correction_of_id'] : null,
+                'correction_number' => isset($documentToEdit['correction_number']) ? $documentToEdit['correction_number'] : null,
+            ];
+
+            if ($documentFormData['currency'] === '') {
+                $documentFormData['currency'] = 'EUR';
+            }
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Das ausgewählte Dokument wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editDocumentTemplate']) && $documentTemplateFormData['id'] === null) {
+    $templateId = (int) $_GET['editDocumentTemplate'];
+
+    if ($templateId > 0 && $documentManager instanceof DocumentManager) {
+        $template = $documentManager->findTemplate($templateId);
+
+        if ($template) {
+            $documentTemplateFormMode = 'update';
+            $documentTemplateFormData = [
+                'id' => (int) $template['id'],
+                'type' => (string) ($template['type'] ?? DocumentManager::TYPE_INVOICE),
+                'name' => (string) ($template['name'] ?? ''),
+                'subject' => (string) ($template['subject'] ?? ''),
+                'body_html' => (string) ($template['body_html'] ?? ''),
+            ];
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die ausgewählte Vorlage wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['createDocument']) && $documentFormData['id'] === null && $documentFormMode === 'create') {
+    $requestedType = (string) $_GET['createDocument'];
+    if (isset($documentTypeLabels[$requestedType]) && $requestedType !== DocumentManager::TYPE_CORRECTION) {
+        $documentFormData['type'] = $requestedType;
+        $documentFormData['type_label'] = $documentTypeLabels[$requestedType];
+    }
+
+    $reservationFromQuery = isset($_GET['reservationId']) ? (int) $_GET['reservationId'] : 0;
+    if ($reservationFromQuery > 0 && $reservationManager instanceof ReservationManager) {
+        $reservationData = $reservationManager->find($reservationFromQuery);
+
+        if (is_array($reservationData)) {
+            $documentFormData['reservation_id'] = (string) $reservationFromQuery;
+            $reservationNumber = isset($reservationData['reservation_number']) && $reservationData['reservation_number'] !== null
+                ? (string) $reservationData['reservation_number']
+                : ('#' . $reservationFromQuery);
+            $documentFormData['reservation_reference'] = $reservationNumber;
+
+            $formatQuantityForForm = static function (float $value): string {
+                $normalized = number_format($value, 2, '.', '');
+                $trimmed = rtrim(rtrim($normalized, '0'), '.');
+
+                return $trimmed === '' ? '1' : $trimmed;
+            };
+
+            $parseMoneyValue = static function ($value) use ($normalizeMoneyInput): float {
+                if ($value === null || $value === '') {
+                    return 0.0;
+                }
+
+                if (is_float($value) || is_int($value)) {
+                    return (float) $value;
+                }
+
+                $parsed = $normalizeMoneyInput((string) $value);
+
+                return $parsed !== null ? $parsed : 0.0;
+            };
+
+            $guestData = null;
+            $companyData = null;
+
+            $guestIdForReservation = isset($reservationData['guest_id']) ? (int) $reservationData['guest_id'] : 0;
+            if ($guestIdForReservation > 0 && $guestManager instanceof GuestManager) {
+                $guestData = $guestManager->find($guestIdForReservation);
+            }
+
+            $companyIdForReservation = isset($reservationData['company_id']) ? (int) $reservationData['company_id'] : 0;
+            if ($companyIdForReservation > 0 && $companyManager instanceof CompanyManager) {
+                $companyData = $companyManager->find($companyIdForReservation);
+            }
+
+            $guestFirstName = trim((string) ($reservationData['guest_first_name'] ?? ($guestData['first_name'] ?? '')));
+            $guestLastName = trim((string) ($reservationData['guest_last_name'] ?? ($guestData['last_name'] ?? '')));
+            $guestFullName = trim($guestFirstName . ' ' . $guestLastName);
+
+            $companyName = trim((string) ($reservationData['company_name'] ?? ($companyData['name'] ?? '')));
+
+            $recipientName = $companyName !== '' ? $companyName : ($guestFullName !== '' ? $guestFullName : sprintf('Reservierung #%d', $reservationFromQuery));
+            if ($documentFormData['recipient_name'] === '' || $documentFormData['recipient_name'] === null) {
+                $documentFormData['recipient_name'] = $recipientName;
+            }
+
+            $addressSource = null;
+            if ($companyName !== '' && is_array($companyData)) {
+                $addressSource = $companyData;
+            } elseif (is_array($guestData)) {
+                $addressSource = $guestData;
+            }
+
+            $addressLines = [];
+            if ($companyName !== '' && $guestFullName !== '') {
+                $addressLines[] = 'z. Hd. ' . $guestFullName;
+            }
+
+            if (is_array($addressSource)) {
+                $streetLine = trim((string) ($addressSource['address_street'] ?? ''));
+                if ($streetLine !== '') {
+                    $addressLines[] = $streetLine;
+                }
+
+                $postal = trim((string) ($addressSource['address_postal_code'] ?? ''));
+                $city = trim((string) ($addressSource['address_city'] ?? ''));
+                $cityLine = trim(($postal !== '' ? $postal . ' ' : '') . $city);
+                if ($cityLine !== '') {
+                    $addressLines[] = $cityLine;
+                }
+
+                $country = trim((string) ($addressSource['address_country'] ?? ''));
+                if ($country !== '') {
+                    $addressLines[] = $country;
+                }
+            }
+
+            if (($documentFormData['recipient_address'] ?? '') === '' && $addressLines !== []) {
+                $documentFormData['recipient_address'] = implode("\n", $addressLines);
+            }
+
+            $subjectPrefix = $documentTypeLabels[$documentFormData['type']] ?? 'Dokument';
+            $documentFormData['subject'] = sprintf('%s zur Reservierung %s', $subjectPrefix, $reservationNumber);
+
+            if ($documentFormData['body_html'] === '') {
+                $documentFormData['body_html'] = 'Bezug: Reservierung ' . $reservationNumber;
+            }
+
+            $today = new DateTimeImmutable('today');
+            $documentFormData['issue_date'] = $today->format('Y-m-d');
+            if ($documentFormData['type'] === DocumentManager::TYPE_INVOICE) {
+                $documentFormData['due_date'] = $today->modify('+14 days')->format('Y-m-d');
+            }
+
+            $defaultVatRate = isset($reservationData['vat_rate']) && $reservationData['vat_rate'] !== null
+                ? $parseMoneyValue($reservationData['vat_rate'])
+                : $overnightVatRate;
+            if ($defaultVatRate < 0) {
+                $defaultVatRate = 0.0;
+            }
+
+            $itemsFromReservation = [];
+            $reservationItems = isset($reservationData['items']) && is_array($reservationData['items']) ? $reservationData['items'] : [];
+            $prefillTotals = ['net' => 0.0, 'vat' => 0.0, 'gross' => 0.0];
+
+            foreach ($reservationItems as $reservationItem) {
+                if (!is_array($reservationItem)) {
+                    continue;
+                }
+
+                $roomQuantity = isset($reservationItem['room_quantity']) ? (int) $reservationItem['room_quantity'] : 1;
+                if ($roomQuantity <= 0) {
+                    $roomQuantity = 1;
+                }
+
+                $itemArrival = isset($reservationItem['arrival_date']) ? $createDateImmutable((string) $reservationItem['arrival_date']) : null;
+                if ($itemArrival === null) {
+                    $itemArrival = $createDateImmutable($reservationData['arrival_date'] ?? null);
+                }
+
+                $itemDeparture = isset($reservationItem['departure_date']) ? $createDateImmutable((string) $reservationItem['departure_date']) : null;
+                if ($itemDeparture === null) {
+                    $itemDeparture = $createDateImmutable($reservationData['departure_date'] ?? null);
+                }
+
+                if ($itemArrival instanceof DateTimeImmutable && $itemDeparture instanceof DateTimeImmutable && $itemDeparture <= $itemArrival) {
+                    $itemDeparture = $itemArrival->modify('+1 day');
+                }
+
+                $nightCount = 1;
+                if ($itemArrival instanceof DateTimeImmutable && $itemDeparture instanceof DateTimeImmutable) {
+                    $diff = $itemArrival->diff($itemDeparture);
+                    $nightCount = max(1, (int) $diff->days);
+                }
+
+                $quantityValue = max(1, $roomQuantity * $nightCount);
+
+                $grossTotal = 0.0;
+                if (isset($reservationItem['total_price'])) {
+                    $grossTotal = $parseMoneyValue($reservationItem['total_price']);
+                }
+                if ($grossTotal <= 0 && isset($reservationItem['price_per_night'])) {
+                    $grossTotal = $parseMoneyValue($reservationItem['price_per_night']) * $quantityValue;
+                }
+                if ($grossTotal <= 0) {
+                    continue;
+                }
+
+                $taxRate = $defaultVatRate;
+                if (isset($reservationItem['tax_rate']) && $reservationItem['tax_rate'] !== null && $reservationItem['tax_rate'] !== '') {
+                    $taxRate = $parseMoneyValue($reservationItem['tax_rate']);
+                }
+                if ($taxRate < 0) {
+                    $taxRate = 0.0;
+                }
+
+                $categoryName = isset($reservationItem['category_name']) ? trim((string) $reservationItem['category_name']) : '';
+                if ($categoryName === '') {
+                    $categoryName = 'Übernachtung';
+                }
+
+                $stayLabel = '';
+                if ($itemArrival instanceof DateTimeImmutable && $itemDeparture instanceof DateTimeImmutable) {
+                    $stayLabel = $itemArrival->format('d.m.Y') . ' – ' . $itemDeparture->format('d.m.Y');
+                } elseif ($itemArrival instanceof DateTimeImmutable) {
+                    $stayLabel = 'ab ' . $itemArrival->format('d.m.Y');
+                } elseif ($itemDeparture instanceof DateTimeImmutable) {
+                    $stayLabel = 'bis ' . $itemDeparture->format('d.m.Y');
+                }
+
+                $descriptionParts = [$categoryName];
+                if ($stayLabel !== '') {
+                    $descriptionParts[] = $stayLabel;
+                }
+                $descriptionParts[] = sprintf('%d %s', $nightCount, $nightCount === 1 ? 'Nacht' : 'Nächte');
+                $descriptionParts[] = $roomQuantity > 1 ? sprintf('%d Zimmer', $roomQuantity) : '1 Zimmer';
+                $description = implode(' · ', array_filter($descriptionParts));
+
+                $grossPerUnit = $grossTotal / $quantityValue;
+                $netPerUnit = $grossPerUnit / (1 + ($taxRate / 100));
+                $netPerUnit = round($netPerUnit, 2);
+
+                $itemsFromReservation[] = [
+                    'description' => $description,
+                    'quantity' => $formatQuantityForForm((float) $quantityValue),
+                    'unit_price' => number_format($netPerUnit, 2, '.', ''),
+                    'tax_rate' => number_format($taxRate, 2, '.', ''),
+                ];
+
+                $lineNet = round($netPerUnit * $quantityValue, 2);
+                $lineVat = round($lineNet * ($taxRate / 100), 2);
+                $lineGross = round($lineNet + $lineVat, 2);
+                $prefillTotals['net'] += $lineNet;
+                $prefillTotals['vat'] += $lineVat;
+                $prefillTotals['gross'] += $lineGross;
+
+                if (isset($reservationItem['articles']) && is_array($reservationItem['articles'])) {
+                    foreach ($reservationItem['articles'] as $articleEntry) {
+                        if (!is_array($articleEntry)) {
+                            continue;
+                        }
+
+                        $articleName = trim((string) ($articleEntry['article_name'] ?? ''));
+                        if ($articleName === '') {
+                            $articleName = 'Zusatzleistung';
+                        }
+
+                        $articleQuantity = isset($articleEntry['quantity']) ? (float) $articleEntry['quantity'] : 1.0;
+                        if ($articleQuantity <= 0) {
+                            $articleQuantity = 1.0;
+                        }
+
+                        $articleTotal = 0.0;
+                        if (isset($articleEntry['total_price'])) {
+                            $articleTotal = $parseMoneyValue($articleEntry['total_price']);
+                        }
+                        if ($articleTotal <= 0 && isset($articleEntry['unit_price'])) {
+                            $articleTotal = $parseMoneyValue($articleEntry['unit_price']) * $articleQuantity;
+                        }
+                        if ($articleTotal <= 0) {
+                            continue;
+                        }
+
+                        $articleTaxRate = isset($articleEntry['tax_rate']) ? $parseMoneyValue($articleEntry['tax_rate']) : 0.0;
+                        if ($articleTaxRate < 0) {
+                            $articleTaxRate = 0.0;
+                        }
+
+                        $grossArticlePerUnit = $articleTotal / max(1.0, $articleQuantity);
+                        $netArticlePerUnit = $grossArticlePerUnit / (1 + ($articleTaxRate / 100));
+                        $netArticlePerUnit = round($netArticlePerUnit, 2);
+
+                        $itemsFromReservation[] = [
+                            'description' => $articleName,
+                            'quantity' => $formatQuantityForForm($articleQuantity),
+                            'unit_price' => number_format($netArticlePerUnit, 2, '.', ''),
+                            'tax_rate' => number_format($articleTaxRate, 2, '.', ''),
+                        ];
+
+                        $articleLineNet = round($netArticlePerUnit * $articleQuantity, 2);
+                        $articleLineVat = round($articleLineNet * ($articleTaxRate / 100), 2);
+                        $articleLineGross = round($articleLineNet + $articleLineVat, 2);
+                        $prefillTotals['net'] += $articleLineNet;
+                        $prefillTotals['vat'] += $articleLineVat;
+                        $prefillTotals['gross'] += $articleLineGross;
+                    }
+                }
+            }
+
+            if ($itemsFromReservation !== []) {
+                $documentFormData['items'] = array_values($itemsFromReservation);
+                $documentFormData['total_net'] = round($prefillTotals['net'], 2);
+                $documentFormData['total_vat'] = round($prefillTotals['vat'], 2);
+                $documentFormData['total_gross'] = round($prefillTotals['gross'], 2);
+
+                while (count($documentFormData['items']) < 5) {
+                    $documentFormData['items'][] = [
+                        'description' => '',
+                        'quantity' => '',
+                        'unit_price' => '',
+                        'tax_rate' => '',
+                    ];
+                }
+            }
+        } elseif ($alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Die zugehörige Reservierung wurde nicht gefunden.',
+            ];
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['applyDocumentTemplate']) && $documentManager instanceof DocumentManager) {
+    $templateId = (int) $_GET['applyDocumentTemplate'];
+    if ($templateId > 0) {
+        $template = $documentManager->findTemplate($templateId);
+        if ($template && ($documentFormData['id'] === null || $documentFormData['status'] === DocumentManager::STATUS_DRAFT)) {
+            $documentFormData['template_id'] = (string) $templateId;
+            if ($documentFormData['subject'] === '') {
+                $documentFormData['subject'] = (string) ($template['subject'] ?? '');
+            }
+            if ($documentFormData['body_html'] === '') {
+                $documentFormData['body_html'] = (string) ($template['body_html'] ?? '');
+            }
+            if (isset($template['type']) && isset($documentTypeLabels[$template['type']]) && $template['type'] !== DocumentManager::TYPE_CORRECTION) {
+                $documentFormData['type'] = (string) $template['type'];
+                $documentFormData['type_label'] = $documentTypeLabels[$documentFormData['type']];
+            }
+        }
+    }
+}
+
+if ($pdo !== null && isset($_GET['editDocument']) && $documentFormData['id'] === null) {
+    $documentId = (int) $_GET['editDocument'];
+
+    if ($documentId > 0 && $documentManager instanceof DocumentManager) {
+        $documentToEdit = $documentManager->find($documentId);
+
+        if ($documentToEdit) {
+            $documentFormMode = 'update';
+
+            $itemsForForm = [];
+            $itemsSource = isset($documentToEdit['items']) && is_array($documentToEdit['items']) ? $documentToEdit['items'] : [];
+
+            foreach ($itemsSource as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+
+                $itemsForForm[] = [
+                    'description' => (string) ($item['description'] ?? ''),
+                    'quantity' => (string) ($item['quantity'] ?? ''),
+                    'unit_price' => (string) ($item['unit_price'] ?? ''),
+                    'tax_rate' => (string) ($item['tax_rate'] ?? ''),
+                ];
+            }
+
+            if ($itemsForForm === []) {
+                $itemsForForm[] = [
+                    'description' => '',
+                    'quantity' => '',
+                    'unit_price' => '',
+                    'tax_rate' => '',
+                ];
+            }
+
+            while (count($itemsForForm) < 5) {
+                $itemsForForm[] = [
+                    'description' => '',
+                    'quantity' => '',
+                    'unit_price' => '',
+                    'tax_rate' => '',
+                ];
+            }
+
+            $documentFormData = [
+                'id' => (int) ($documentToEdit['id'] ?? $documentId),
+                'type' => (string) ($documentToEdit['type'] ?? DocumentManager::TYPE_INVOICE),
+                'document_number' => (string) ($documentToEdit['document_number'] ?? ''),
+                'recipient_name' => (string) ($documentToEdit['recipient_name'] ?? ''),
+                'recipient_address' => (string) ($documentToEdit['recipient_address'] ?? ''),
+                'subject' => (string) ($documentToEdit['subject'] ?? ''),
+                'body_html' => (string) ($documentToEdit['body_html'] ?? ''),
+                'issue_date' => (string) ($documentToEdit['issue_date'] ?? ''),
+                'due_date' => (string) ($documentToEdit['due_date'] ?? ''),
+                'currency' => strtoupper((string) ($documentToEdit['currency'] ?? 'EUR')),
+                'template_id' => isset($documentToEdit['template_id']) && $documentToEdit['template_id'] !== null
+                    ? (string) $documentToEdit['template_id']
+                    : '',
                 'items' => $itemsForForm,
                 'total_net' => isset($documentToEdit['total_net']) ? (float) $documentToEdit['total_net'] : 0.0,
                 'total_vat' => isset($documentToEdit['total_vat']) ? (float) $documentToEdit['total_vat'] : 0.0,
@@ -7593,6 +8020,15 @@ if ($activeSection === 'reservations') {
                             <td class="text-end">
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
                                 <a class="btn btn-outline-secondary btn-sm" href="index.php?section=reservations&amp;editReservation=<?= (int) $reservation['id'] ?>">Bearbeiten</a>
+                                <div class="btn-group">
+                                  <button class="btn btn-outline-primary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                    Dokumente
+                                  </button>
+                                  <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><a class="dropdown-item" href="index.php?section=documents&amp;createDocument=invoice&amp;reservationId=<?= (int) $reservation['id'] ?>">Rechnung erstellen</a></li>
+                                    <li><a class="dropdown-item" href="index.php?section=documents&amp;createDocument=offer&amp;reservationId=<?= (int) $reservation['id'] ?>">Angebot erstellen</a></li>
+                                  </ul>
+                                </div>
                                 <form method="post" class="d-inline" onsubmit="return confirm('Reservierung wirklich löschen?');">
                                   <input type="hidden" name="form" value="reservation_delete">
                                   <input type="hidden" name="id" value="<?= (int) $reservation['id'] ?>">
@@ -7666,6 +8102,7 @@ if ($activeSection === 'reservations') {
                           <th>Typ</th>
                           <th>Nummer</th>
                           <th>Empfänger</th>
+                          <th>Reservierung</th>
                           <th class="text-end">Brutto</th>
                           <th>Status</th>
                           <th>Ausgestellt</th>
@@ -7693,6 +8130,17 @@ if ($activeSection === 'reservations') {
                             if ($documentRecipientAddress !== '') {
                                 $documentRecipientDisplay .= '<div class="small text-muted">' . nl2br(htmlspecialchars($documentRecipientAddress, ENT_QUOTES, 'UTF-8')) . '</div>';
                             }
+
+                            $documentReservationId = isset($document['reservation_id']) ? (int) $document['reservation_id'] : 0;
+                            $documentReservationNumber = isset($document['reservation_number']) && $document['reservation_number'] !== null
+                                ? trim((string) $document['reservation_number'])
+                                : '';
+                            $documentReservationLabel = $documentReservationNumber !== ''
+                                ? $documentReservationNumber
+                                : ($documentReservationId > 0 ? ('#' . $documentReservationId) : '');
+                            $documentReservationUrl = $documentReservationId > 0
+                                ? 'index.php?section=reservations&editReservation=' . $documentReservationId
+                                : '';
 
                             $documentCurrency = isset($document['currency']) ? (string) $document['currency'] : 'EUR';
                             $documentTotalGross = isset($document['total_gross']) ? (float) $document['total_gross'] : 0.0;
@@ -7744,6 +8192,15 @@ if ($activeSection === 'reservations') {
                             </td>
                             <td><?= htmlspecialchars($documentNumber) ?></td>
                             <td><?= $documentRecipientDisplay ?></td>
+                            <td>
+                              <?php if ($documentReservationUrl !== ''): ?>
+                                <a href="<?= htmlspecialchars($documentReservationUrl) ?>">Reservierung <?= htmlspecialchars($documentReservationLabel) ?></a>
+                              <?php elseif ($documentReservationLabel !== ''): ?>
+                                <span class="text-muted">Reservierung <?= htmlspecialchars($documentReservationLabel) ?></span>
+                              <?php else: ?>
+                                <span class="text-muted">—</span>
+                              <?php endif; ?>
+                            </td>
                             <td class="text-end"><?= htmlspecialchars($documentTotalGrossDisplay) ?></td>
                             <td>
                               <span class="badge <?= htmlspecialchars($documentStatusBadge) ?>"><?= htmlspecialchars($documentStatusLabel) ?></span>
@@ -7803,6 +8260,7 @@ if ($activeSection === 'reservations') {
                   <?php if ($isDocumentEditing): ?>
                     <input type="hidden" name="id" value="<?= (int) $documentFormData['id'] ?>">
                   <?php endif; ?>
+                  <input type="hidden" name="reservation_id" value="<?= htmlspecialchars((string) $documentFormData['reservation_id']) ?>">
                   <div class="mb-3">
                     <label for="document-type" class="form-label">Dokumenttyp</label>
                     <select id="document-type" name="type" class="form-select" <?= $isDocumentEditing ? 'disabled' : '' ?>>
@@ -7814,6 +8272,23 @@ if ($activeSection === 'reservations') {
                       <input type="hidden" name="type" value="<?= htmlspecialchars($documentFormData['type']) ?>">
                     <?php endif; ?>
                   </div>
+                  <?php if ($documentFormData['reservation_id'] !== ''): ?>
+                    <?php
+                      $linkedReservationId = (int) $documentFormData['reservation_id'];
+                      $reservationLabel = $documentFormData['reservation_reference'] !== ''
+                          ? (string) $documentFormData['reservation_reference']
+                          : ('#' . $linkedReservationId);
+                      $reservationUrl = 'index.php?section=reservations&editReservation=' . $linkedReservationId;
+                    ?>
+                    <div class="mb-3">
+                      <label class="form-label">Verknüpfte Reservierung</label>
+                      <?php if ($linkedReservationId > 0): ?>
+                        <div class="form-control-plaintext"><a href="<?= htmlspecialchars($reservationUrl) ?>">Reservierung <?= htmlspecialchars($reservationLabel) ?></a></div>
+                      <?php else: ?>
+                        <div class="form-control-plaintext">Reservierung <?= htmlspecialchars($reservationLabel) ?></div>
+                      <?php endif; ?>
+                    </div>
+                  <?php endif; ?>
                   <?php if ($documentFormData['document_number'] !== ''): ?>
                     <div class="mb-3">
                       <label class="form-label">Dokumentnummer</label>
