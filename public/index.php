@@ -10339,6 +10339,31 @@ if ($activeSection === 'reservations') {
           var reservationIdInput = modalElement.querySelector('#reservation-status-id');
           var redirectDateInput = modalElement.querySelector('#reservation-status-date');
           var redirectDisplayInput = modalElement.querySelector('#reservation-status-display');
+          var reservationIdState = '';
+          var statusValueState = '';
+
+          function setReservationId(value) {
+            reservationIdState = value ? String(value) : '';
+            if (reservationIdInput) {
+              reservationIdInput.value = reservationIdState;
+            }
+          }
+
+          function getReservationId() {
+            return reservationIdInput ? reservationIdInput.value : reservationIdState;
+          }
+
+          function setStatusValue(value) {
+            statusValueState = value ? String(value) : '';
+            if (statusInput) {
+              statusInput.value = statusValueState;
+            }
+          }
+
+          function getStatusValue() {
+            return statusInput ? statusInput.value : statusValueState;
+          }
+
           var detailElements = {
             title: modalElement.querySelector('[data-detail="title"]'),
             subtitle: modalElement.querySelector('[data-detail="subtitle"]'),
@@ -10369,10 +10394,6 @@ if ($activeSection === 'reservations') {
             statusButtonsContainer: modalElement.querySelector('[data-detail="status-buttons"]')
           };
 
-          if (!statusForm || !statusInput || !reservationIdInput) {
-            return;
-          }
-
           var statusButtons = detailElements.statusButtonsContainer
             ? detailElements.statusButtonsContainer.querySelectorAll('[data-status-action]')
             : [];
@@ -10382,8 +10403,8 @@ if ($activeSection === 'reservations') {
           }
 
           function resetModal() {
-            reservationIdInput.value = '';
-            statusInput.value = '';
+            setReservationId('');
+            setStatusValue('');
             if (redirectDateInput) {
               redirectDateInput.value = defaultRedirectDate;
             }
@@ -10490,9 +10511,10 @@ if ($activeSection === 'reservations') {
                 return;
               }
 
-              button.disabled = !reservationIdInput.value;
+              var currentReservationId = getReservationId();
+              button.disabled = !currentReservationId;
 
-              if (reservationIdInput.value && buttonStatus === activeStatus) {
+              if (currentReservationId && buttonStatus === activeStatus) {
                 button.classList.add('active', 'btn-primary');
                 button.classList.remove('btn-outline-secondary');
               } else {
@@ -10529,7 +10551,7 @@ if ($activeSection === 'reservations') {
             }
 
             if (data.reservationId) {
-              reservationIdInput.value = String(data.reservationId);
+              setReservationId(data.reservationId);
             }
 
             if (redirectDateInput && data.calendarDate) {
@@ -10540,7 +10562,7 @@ if ($activeSection === 'reservations') {
               redirectDisplayInput.value = data.displayPreference;
             }
 
-            statusInput.value = data.status || '';
+            setStatusValue(data.status || '');
 
             if (detailElements.title) {
               detailElements.title.textContent = data.guestLabel || data.guestName || 'Reservierung';
@@ -10830,7 +10852,7 @@ if ($activeSection === 'reservations') {
             button.addEventListener('click', function (event) {
               event.preventDefault();
 
-              if (!reservationIdInput.value) {
+              if (!getReservationId()) {
                 return;
               }
 
@@ -10839,13 +10861,15 @@ if ($activeSection === 'reservations') {
                 return;
               }
 
-              statusInput.value = status;
-              statusForm.submit();
+              setStatusValue(status);
+              if (statusForm) {
+                statusForm.submit();
+              }
             });
           });
 
           modalElement.addEventListener('show.bs.modal', function () {
-            applyStatusButtonState(reservationIdInput.value ? statusInput.value : '');
+            applyStatusButtonState(getReservationId() ? getStatusValue() : '');
           });
 
           modalElement.addEventListener('hidden.bs.modal', function () {
