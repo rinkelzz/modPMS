@@ -3248,6 +3248,40 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 break;
             }
 
+            if ($articleLookup === [] && $articleManager instanceof ArticleManager) {
+                $articles = $articleManager->all();
+
+                foreach ($articles as $article) {
+                    if (!isset($article['id'])) {
+                        continue;
+                    }
+
+                    $articleId = (int) $article['id'];
+                    if ($articleId <= 0) {
+                        continue;
+                    }
+
+                    $articleLookup[$articleId] = $article;
+                }
+            }
+
+            if ($taxCategoryLookup === [] && $taxCategoryManager instanceof TaxCategoryManager) {
+                $taxCategories = $taxCategoryManager->all();
+
+                foreach ($taxCategories as $taxCategory) {
+                    if (!isset($taxCategory['id'])) {
+                        continue;
+                    }
+
+                    $taxCategoryId = (int) $taxCategory['id'];
+                    if ($taxCategoryId <= 0) {
+                        continue;
+                    }
+
+                    $taxCategoryLookup[$taxCategoryId] = $taxCategory;
+                }
+            }
+
             $guestIdInput = trim((string) ($_POST['guest_id'] ?? ''));
             $guestQueryInput = trim((string) ($_POST['guest_query'] ?? ''));
             $companyIdInput = trim((string) ($_POST['company_id'] ?? ''));
@@ -5555,6 +5589,69 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                     }
                 }
 
+                $articlesForForm = [];
+                $articlesTotalForForm = 0.0;
+                if (isset($item['articles']) && is_array($item['articles'])) {
+                    foreach ($item['articles'] as $articleRow) {
+                        if (!is_array($articleRow)) {
+                            continue;
+                        }
+
+                        $articleIdValue = isset($articleRow['article_id']) ? (int) $articleRow['article_id'] : 0;
+                        $articleQuantityValue = isset($articleRow['quantity']) ? (float) $articleRow['quantity'] : 0.0;
+                        if ($articleQuantityValue <= 0) {
+                            $articleQuantityValue = 1.0;
+                        }
+
+                        $articleTotalValue = isset($articleRow['total_price']) && $articleRow['total_price'] !== null
+                            ? (float) $articleRow['total_price']
+                            : 0.0;
+
+                        if ($articleTotalValue <= 0.0 && isset($articleRow['unit_price'])) {
+                            $articleTotalValue = (float) $articleRow['unit_price'] * $articleQuantityValue;
+                        }
+
+                        if ($articleTotalValue > 0.0) {
+                            $articlesTotalForForm += $articleTotalValue;
+                        }
+
+                        $pricingTypeValue = isset($articleRow['pricing_type']) && $articleRow['pricing_type'] !== null
+                            ? (string) $articleRow['pricing_type']
+                            : ArticleManager::PRICING_PER_DAY;
+
+                        if ($articleIdValue > 0 && isset($articleLookup[$articleIdValue]['pricing_type'])) {
+                            $pricingTypeValue = (string) $articleLookup[$articleIdValue]['pricing_type'];
+                        }
+
+                        $quantityLabel = (string) $articleQuantityValue;
+                        if (abs($articleQuantityValue - round($articleQuantityValue)) < 0.00001) {
+                            $quantityLabel = (string) (int) round($articleQuantityValue);
+                        } elseif (strpos($quantityLabel, '.') !== false) {
+                            $quantityLabel = rtrim(rtrim(number_format($articleQuantityValue, 2, '.', ''), '0'), '.');
+                        }
+
+                        $articlesForForm[] = [
+                            'article_id' => $articleIdValue > 0 ? (string) $articleIdValue : '',
+                            'quantity' => $pricingTypeValue === ArticleManager::PRICING_PER_PERSON_PER_DAY
+                                ? '1'
+                                : $quantityLabel,
+                            'total_price' => $articleTotalValue > 0.0
+                                ? number_format($articleTotalValue, 2, ',', '.')
+                                : '',
+                            'pricing_type' => $pricingTypeValue,
+                        ];
+                    }
+                }
+
+                if ($articlesForForm === []) {
+                    $articlesForForm[] = [
+                        'article_id' => '',
+                        'quantity' => '1',
+                        'total_price' => '',
+                        'pricing_type' => ArticleManager::PRICING_PER_DAY,
+                    ];
+                }
+
                 $normalizedItems[] = [
                     'category_id' => isset($item['category_id']) && $item['category_id'] !== null ? (string) $item['category_id'] : '',
                     'room_quantity' => isset($item['room_quantity']) && (int) $item['room_quantity'] > 0 ? (string) $item['room_quantity'] : '1',
@@ -5567,6 +5664,8 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
                     'total_price' => $totalPriceValue !== null ? number_format($totalPriceValue, 2, ',', '.') : '',
                     'primary_guest_id' => isset($item['primary_guest_id']) && $item['primary_guest_id'] !== null ? (string) $item['primary_guest_id'] : '',
                     'primary_guest_query' => isset($item['primary_guest_label']) && $item['primary_guest_label'] !== null ? (string) $item['primary_guest_label'] : '',
+                    'articles' => $articlesForForm,
+                    'articles_total' => $articlesTotalForForm > 0.0 ? number_format($articlesTotalForForm, 2, ',', '.') : '',
                 ];
             }
 
