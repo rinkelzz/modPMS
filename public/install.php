@@ -433,6 +433,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS email_logs (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    recipient VARCHAR(191) NOT NULL,
+                    subject VARCHAR(255) NOT NULL,
+                    body LONGTEXT NOT NULL,
+                    headers LONGTEXT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    error_message TEXT NULL,
+                    context_json LONGTEXT NULL,
+                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_install_email_logs_recipient (recipient),
+                    INDEX idx_install_email_logs_status (status),
+                    INDEX idx_install_email_logs_created (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS document_templates (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     type VARCHAR(32) NOT NULL,

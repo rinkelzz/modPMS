@@ -6,6 +6,7 @@ use ModPMS\Calendar;
 use ModPMS\CompanyManager;
 use ModPMS\DocumentManager;
 use ModPMS\DocumentPdfRenderer;
+use ModPMS\EmailLogManager;
 use ModPMS\Database;
 use ModPMS\GuestManager;
 use ModPMS\MeldescheinManager;
@@ -35,6 +36,7 @@ require_once __DIR__ . '/../src/TaxCategoryManager.php';
 require_once __DIR__ . '/../src/ArticleManager.php';
 require_once __DIR__ . '/../src/DocumentManager.php';
 require_once __DIR__ . '/../src/DocumentPdfRenderer.php';
+require_once __DIR__ . '/../src/EmailLogManager.php';
 require_once __DIR__ . '/../src/MeldescheinManager.php';
 require_once __DIR__ . '/../src/MeldescheinPdfRenderer.php';
 
@@ -177,6 +179,7 @@ $documentStatusBadges = [
     DocumentManager::STATUS_FINALIZED => 'text-bg-success',
     DocumentManager::STATUS_CORRECTED => 'text-bg-warning text-dark',
 ];
+$emailLogManager = null;
 $meldescheinManager = null;
 $meldescheine = [];
 $meldescheinCandidates = [];
@@ -229,6 +232,7 @@ $mailFromAddress = '';
 $mailReplyToAddress = '';
 $mailFromAddressFormValue = '';
 $mailReplyToAddressFormValue = '';
+$mailLogEntries = [];
 $reservationFormDefaults = $reservationFormData;
 $reservationFormMode = 'create';
 $isEditingReservation = false;
@@ -597,6 +601,7 @@ try {
     $userManager = new UserManager($pdo);
     $reservationManager = new ReservationManager($pdo);
     $settingsManager = new SettingManager($pdo);
+    $emailLogManager = new EmailLogManager($pdo);
     $documentManager = new DocumentManager($pdo, $settingsManager);
     $meldescheinManager = new MeldescheinManager($pdo, $settingsManager);
     $backupManager = new BackupManager($pdo);
@@ -726,6 +731,15 @@ if ($settingsManager instanceof SettingManager) {
 
 $mailFromAddressFormValue = $mailFromAddress;
 $mailReplyToAddressFormValue = $mailReplyToAddress;
+
+if ($emailLogManager instanceof EmailLogManager) {
+    try {
+        $mailLogEntries = $emailLogManager->recent(50);
+    } catch (Throwable $exception) {
+        $mailLogEntries = [];
+        error_log('Unable to fetch email logs: ' . $exception->getMessage());
+    }
+}
 
 $reservationStatusFormColors = $reservationStatusColors;
 $reservationStatusMeta = [];
@@ -1660,6 +1674,35 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             ];
 
             header('Location: index.php?section=settings#mail-settings');
+            exit;
+
+        case 'settings_mail_log_clear':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$emailLogManager instanceof EmailLogManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das E-Mail-Protokoll steht derzeit nicht zur Verfügung.',
+                ];
+                break;
+            }
+
+            try {
+                $emailLogManager->clear();
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Das E-Mail-Protokoll wurde geleert.',
+                ];
+            } catch (Throwable $exception) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Das E-Mail-Protokoll konnte nicht geleert werden: '
+                        . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            header('Location: index.php?section=settings#mail-log');
             exit;
 
         case 'settings_invoice_logo':
@@ -4012,51 +4055,111 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
                 $emailStatus = 'skipped';
                 $mailSent = false;
+                $mailErrorMessage = null;
+                $mailSubject = '';
+                $mailBody = '';
+                $mailHeaders = '';
 
                 if ($emailRaw !== '') {
-                    if ($emailValid) {
-                        $mailSubject = sprintf(
-                            'Meldeschein %s unterschreiben',
-                            isset($form['form_number']) && $form['form_number'] !== ''
-                                ? (string) $form['form_number']
-                                : ('#' . $inviteFormId)
-                        );
-                        $guestNameForMail = isset($form['guest_name']) ? (string) $form['guest_name'] : '';
-                        $appName = isset($config['name']) ? (string) $config['name'] : 'Ihre Unterkunft';
-                        $mailLines = [
-                            'Guten Tag' . ($guestNameForMail !== '' ? ' ' . $guestNameForMail : '') . ',',
-                            '',
-                            'bitte unterschreiben Sie Ihren Meldeschein digital über den folgenden Link:',
-                            $inviteLink,
-                        ];
-                        if ($expiresAtLabel !== null) {
-                            $mailLines[] = '';
-                            $mailLines[] = 'Der Link ist gültig bis ' . $expiresAtLabel . '.';
-                        }
+                    $mailSubject = sprintf(
+                        'Meldeschein %s unterschreiben',
+                        isset($form['form_number']) && $form['form_number'] !== ''
+                            ? (string) $form['form_number']
+                            : ('#' . $inviteFormId)
+                    );
+                    $guestNameForMail = isset($form['guest_name']) ? (string) $form['guest_name'] : '';
+                    $appName = isset($config['name']) ? (string) $config['name'] : 'Ihre Unterkunft';
+                    $mailLines = [
+                        'Guten Tag' . ($guestNameForMail !== '' ? ' ' . $guestNameForMail : '') . ',',
+                        '',
+                        'bitte unterschreiben Sie Ihren Meldeschein digital über den folgenden Link:',
+                        $inviteLink,
+                    ];
+                    if ($expiresAtLabel !== null) {
                         $mailLines[] = '';
-                        $mailLines[] = 'Vielen Dank!';
-                        $mailLines[] = $appName;
+                        $mailLines[] = 'Der Link ist gültig bis ' . $expiresAtLabel . '.';
+                    }
+                    $mailLines[] = '';
+                    $mailLines[] = 'Vielen Dank!';
+                    $mailLines[] = $appName;
 
-                        $mailBody = implode("\n", $mailLines);
-                        $mailHeaderLines = [
-                            'Content-Type: text/plain; charset=utf-8',
-                            'Content-Transfer-Encoding: 8bit',
-                        ];
+                    $mailBody = implode("\n", $mailLines);
+                    $mailHeaderLines = [
+                        'Content-Type: text/plain; charset=utf-8',
+                        'Content-Transfer-Encoding: 8bit',
+                    ];
+                    if ($mailFromAddress !== '') {
+                        $mailHeaderLines[] = 'From: ' . str_replace(["\r", "\n"], '', $mailFromAddress);
+                    }
+                    if ($mailReplyToAddress !== '') {
+                        $mailHeaderLines[] = 'Reply-To: ' . str_replace(["\r", "\n"], '', $mailReplyToAddress);
+                    }
+                    $mailHeaders = implode("\r\n", $mailHeaderLines) . "\r\n";
+
+                    if ($emailValid) {
+                        $envelopeFrom = '';
                         if ($mailFromAddress !== '') {
-                            $mailHeaderLines[] = 'From: ' . str_replace(["\r", "\n"], '', $mailFromAddress);
+                            $envelopeCandidate = $mailFromAddress;
+                            if (preg_match('/<([^>]+)>/', $envelopeCandidate, $matches)) {
+                                $envelopeCandidate = $matches[1];
+                            }
+                            $envelopeCandidate = trim(str_replace(["\r", "\n"], '', $envelopeCandidate));
+                            if ($envelopeCandidate !== '' && filter_var($envelopeCandidate, FILTER_VALIDATE_EMAIL)) {
+                                $envelopeFrom = $envelopeCandidate;
+                            }
                         }
-                        if ($mailReplyToAddress !== '') {
-                            $mailHeaderLines[] = 'Reply-To: ' . str_replace(["\r", "\n"], '', $mailReplyToAddress);
-                        }
-                        $mailHeaders = implode("\r\n", $mailHeaderLines) . "\r\n";
 
-                        if (function_exists('mail')) {
-                            $mailSent = @mail($emailRaw, $mailSubject, $mailBody, $mailHeaders);
+                        if (!function_exists('mail')) {
+                            $mailErrorMessage = 'Die PHP-Funktion mail() ist auf diesem Server nicht verfügbar.';
+                        } else {
+                            $mailAdditionalParameters = $envelopeFrom !== '' ? ('-f' . $envelopeFrom) : '';
+                            $mailErrorMessage = null;
+                            set_error_handler(static function (int $severity, string $message) use (&$mailErrorMessage): bool {
+                                $mailErrorMessage = $message;
+                                return true;
+                            });
+                            try {
+                                if ($mailAdditionalParameters !== '') {
+                                    $mailSent = mail($emailRaw, $mailSubject, $mailBody, $mailHeaders, $mailAdditionalParameters);
+                                } else {
+                                    $mailSent = mail($emailRaw, $mailSubject, $mailBody, $mailHeaders);
+                                }
+                            } catch (Throwable $mailException) {
+                                $mailSent = false;
+                                $mailErrorMessage = $mailException->getMessage();
+                            } finally {
+                                restore_error_handler();
+                            }
+
+                            if (!$mailSent && $mailErrorMessage === null) {
+                                $mailErrorMessage = 'mail() lieferte keine Erfolgsbestätigung.';
+                            }
                         }
 
                         $emailStatus = $mailSent ? 'sent' : 'failed';
                     } else {
                         $emailStatus = 'invalid';
+                        $mailErrorMessage = 'Die E-Mail-Adresse ist ungültig.';
+                    }
+
+                    if ($emailLogManager instanceof EmailLogManager) {
+                        $context = [
+                            'form_id' => $inviteFormId,
+                            'form_number' => isset($form['form_number']) ? (string) $form['form_number'] : null,
+                            'guest_name' => isset($form['guest_name']) ? (string) $form['guest_name'] : null,
+                            'token_suffix' => $token !== '' ? substr($token, -8) : null,
+                            'expires_at' => $expiresAtRaw,
+                        ];
+
+                        $emailLogManager->log(
+                            $emailRaw,
+                            $mailSubject,
+                            $mailBody,
+                            $mailHeaders,
+                            $emailStatus,
+                            $mailErrorMessage,
+                            array_filter($context, static fn ($value) => $value !== null && $value !== '')
+                        );
                     }
                 }
 
@@ -4080,6 +4183,11 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         'Signatur-Link erstellt, aber die E-Mail an <strong>%s</strong> konnte nicht versendet werden.',
                         htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8')
                     );
+                    if ($mailErrorMessage !== null && $mailErrorMessage !== '') {
+                        $alertMessage .= '<br><small class="text-danger">Fehler: '
+                            . htmlspecialchars($mailErrorMessage, ENT_QUOTES, 'UTF-8')
+                            . '</small>';
+                    }
                 }
 
                 $_SESSION['alert'] = [
@@ -4096,6 +4204,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     'valid_hours' => $validHours,
                     'email' => $emailRaw,
                     'email_status' => $emailStatus,
+                    'email_error' => $mailErrorMessage,
                 ];
 
                 header('Location: index.php?section=meldeschein&signMeldeschein=' . $inviteFormId);
@@ -10675,6 +10784,126 @@ if ($activeSection === 'reservations') {
               <?php endif; ?>
             </div>
           </div>
+          <div class="card module-card mt-4" id="mail-log">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+              <div>
+                <h2 class="h5 mb-1">E-Mail-Protokoll</h2>
+                <p class="text-muted mb-0">Nachverfolgen, wann Signatur-E-Mails versendet oder abgelehnt wurden.</p>
+              </div>
+              <span class="badge text-bg-secondary">Protokoll</span>
+            </div>
+            <div class="card-body">
+              <?php if (!$settingsAvailable): ?>
+                <p class="text-muted mb-0">Das Protokoll steht nach erfolgreicher Datenbankverbindung zur Verfügung.</p>
+              <?php elseif ($mailLogEntries === []): ?>
+                <p class="text-muted mb-0">Es wurden noch keine E-Mails protokolliert.</p>
+              <?php else: ?>
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                  <div class="text-muted small">Es werden die letzten <?= count($mailLogEntries) ?> Einträge angezeigt.</div>
+                  <form method="post" onsubmit="return confirm('E-Mail-Protokoll wirklich leeren?');">
+                    <input type="hidden" name="form" value="settings_mail_log_clear">
+                    <button type="submit" class="btn btn-outline-danger btn-sm">Protokoll leeren</button>
+                  </form>
+                </div>
+                <div class="table-responsive">
+                  <table class="table table-sm align-middle mb-0">
+                    <thead>
+                      <tr>
+                        <th scope="col">Zeitpunkt</th>
+                        <th scope="col">Empfänger</th>
+                        <th scope="col">Betreff</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <?php
+                        $mailLogStatusMeta = [
+                            'sent' => ['label' => 'Versendet', 'badge' => 'text-bg-success'],
+                            'failed' => ['label' => 'Fehlgeschlagen', 'badge' => 'text-bg-danger'],
+                            'invalid' => ['label' => 'Ungültig', 'badge' => 'text-bg-warning text-dark'],
+                            'skipped' => ['label' => 'Übersprungen', 'badge' => 'text-bg-secondary'],
+                        ];
+                      ?>
+                      <?php foreach ($mailLogEntries as $mailLogEntry): ?>
+                        <?php
+                          $logCreatedAtRaw = isset($mailLogEntry['created_at']) && $mailLogEntry['created_at'] !== null
+                              ? (string) $mailLogEntry['created_at']
+                              : '';
+                          $logCreatedLabel = '—';
+                          if ($logCreatedAtRaw !== '') {
+                              try {
+                                  $logCreatedLabel = (new DateTimeImmutable($logCreatedAtRaw))->format('d.m.Y H:i');
+                              } catch (Throwable $exception) {
+                                  $logCreatedLabel = $logCreatedAtRaw;
+                              }
+                          }
+                          $logRecipient = isset($mailLogEntry['recipient']) ? (string) $mailLogEntry['recipient'] : '';
+                          $logSubject = isset($mailLogEntry['subject']) ? (string) $mailLogEntry['subject'] : '';
+                          $logStatusKey = strtolower((string) ($mailLogEntry['status'] ?? 'unknown'));
+                          $logStatusMeta = $mailLogStatusMeta[$logStatusKey] ?? [
+                              'label' => ucfirst($logStatusKey !== '' ? $logStatusKey : 'Unbekannt'),
+                              'badge' => 'text-bg-secondary',
+                          ];
+                          $logError = isset($mailLogEntry['error_message']) && $mailLogEntry['error_message'] !== null
+                              ? (string) $mailLogEntry['error_message']
+                              : '';
+                          $logContext = isset($mailLogEntry['context']) && is_array($mailLogEntry['context'])
+                              ? $mailLogEntry['context']
+                              : [];
+                          $logFormNumber = isset($logContext['form_number']) ? (string) $logContext['form_number'] : '';
+                          $logGuestName = isset($logContext['guest_name']) ? (string) $logContext['guest_name'] : '';
+                          $logFormId = isset($logContext['form_id']) ? (int) $logContext['form_id'] : null;
+                          $logTokenSuffix = isset($logContext['token_suffix']) ? (string) $logContext['token_suffix'] : '';
+                          $logExpiresRaw = isset($logContext['expires_at']) ? (string) $logContext['expires_at'] : '';
+                          $logExpiresLabel = '';
+                          if ($logExpiresRaw !== '') {
+                              try {
+                                  $logExpiresLabel = (new DateTimeImmutable($logExpiresRaw))->format('d.m.Y H:i');
+                              } catch (Throwable $exception) {
+                                  $logExpiresLabel = $logExpiresRaw;
+                              }
+                          }
+                        ?>
+                        <tr>
+                          <td class="text-nowrap"><?= htmlspecialchars($logCreatedLabel) ?></td>
+                          <td>
+                            <div><?= htmlspecialchars($logRecipient) ?></div>
+                            <?php if ($logGuestName !== ''): ?>
+                              <div class="text-muted small">Gast: <?= htmlspecialchars($logGuestName) ?></div>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <div class="fw-semibold"><?= htmlspecialchars($logSubject) ?></div>
+                            <?php if ($logFormNumber !== ''): ?>
+                              <div class="text-muted small">Meldeschein: <?= htmlspecialchars($logFormNumber) ?></div>
+                            <?php endif; ?>
+                            <?php if ($logFormId !== null): ?>
+                              <div class="text-muted small">ID: <?= $logFormId ?></div>
+                            <?php endif; ?>
+                          </td>
+                          <td class="text-nowrap">
+                            <span class="badge <?= $logStatusMeta['badge'] ?>"><?= htmlspecialchars($logStatusMeta['label']) ?></span>
+                            <?php if ($logTokenSuffix !== ''): ?>
+                              <div class="text-muted small">Token …<?= htmlspecialchars($logTokenSuffix) ?></div>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($logError !== ''): ?>
+                              <div class="text-danger small">Fehler: <?= htmlspecialchars($logError) ?></div>
+                            <?php endif; ?>
+                            <?php if ($logExpiresLabel !== ''): ?>
+                              <div class="text-muted small">Gültig bis <?= htmlspecialchars($logExpiresLabel) ?></div>
+                            <?php endif; ?>
+                          </td>
+                        </tr>
+                      <?php endforeach; ?>
+                    </tbody>
+                  </table>
+                </div>
+              <?php endif; ?>
+            </div>
+          </div>
           <div class="card module-card mt-4" id="cache-tools">
             <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
               <div>
@@ -11068,6 +11297,7 @@ if ($activeSection === 'reservations') {
                 $signatureInviteSelectedHours = 72;
                 $signatureInviteFeedbackStatus = '';
                 $signatureInviteFeedbackMessage = '';
+                $signatureInviteFeedbackError = '';
                 $signatureInviteFeedbackMatches = is_array($signatureInviteResult)
                     && isset($signatureInviteResult['form_id'])
                     && (int) $signatureInviteResult['form_id'] === $signatureFormId;
@@ -11099,10 +11329,19 @@ if ($activeSection === 'reservations') {
                     $signatureInviteFeedbackStatus = isset($signatureInviteResult['email_status'])
                         ? (string) $signatureInviteResult['email_status']
                         : '';
+                    if (isset($signatureInviteResult['email_error']) && $signatureInviteResult['email_error'] !== null && $signatureInviteResult['email_error'] !== '') {
+                        $signatureInviteFeedbackError = (string) $signatureInviteResult['email_error'];
+                    }
                     if ($signatureInviteFeedbackStatus === 'invalid') {
                         $signatureInviteFeedbackMessage = 'Die angegebene E-Mail-Adresse konnte nicht verwendet werden. Bitte prüfen Sie die Eingabe.';
+                        if ($signatureInviteFeedbackError !== '') {
+                            $signatureInviteFeedbackMessage .= ' Fehler: ' . $signatureInviteFeedbackError;
+                        }
                     } elseif ($signatureInviteFeedbackStatus === 'failed') {
                         $signatureInviteFeedbackMessage = 'Der Link wurde erstellt, die E-Mail konnte jedoch nicht zugestellt werden.';
+                        if ($signatureInviteFeedbackError !== '') {
+                            $signatureInviteFeedbackMessage .= ' Fehler: ' . $signatureInviteFeedbackError;
+                        }
                     } elseif ($signatureInviteFeedbackStatus === 'sent') {
                         $signatureInviteFeedbackMessage = 'Der Signatur-Link wurde per E-Mail versendet.';
                     }
