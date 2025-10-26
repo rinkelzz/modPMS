@@ -327,6 +327,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_reservations_archived (archived_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $pdo->exec('CREATE TABLE IF NOT EXISTS meldescheine (
+                    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    form_number VARCHAR(191) NOT NULL UNIQUE,
+                    guest_id INT UNSIGNED NOT NULL,
+                    reservation_id INT UNSIGNED NULL,
+                    guest_name VARCHAR(191) NOT NULL,
+                    company_name VARCHAR(191) NULL,
+                    purpose_of_stay VARCHAR(50) NULL,
+                    arrival_date DATE NULL,
+                    departure_date DATE NULL,
+                    issued_date DATE NOT NULL,
+                    room_label VARCHAR(191) NULL,
+                    pdf_path VARCHAR(255) NULL,
+                    details_json LONGTEXT NULL,
+                    created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_install_meldescheine_guest FOREIGN KEY (guest_id) REFERENCES guests(id) ON DELETE CASCADE,
+                    CONSTRAINT fk_install_meldescheine_reservation FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE SET NULL,
+                    INDEX idx_install_meldescheine_guest (guest_id),
+                    INDEX idx_install_meldescheine_reservation (reservation_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS reservation_items (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     reservation_id INT UNSIGNED NOT NULL,

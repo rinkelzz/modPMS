@@ -8,6 +8,8 @@ use ModPMS\DocumentManager;
 use ModPMS\DocumentPdfRenderer;
 use ModPMS\Database;
 use ModPMS\GuestManager;
+use ModPMS\MeldescheinManager;
+use ModPMS\MeldescheinPdfRenderer;
 use ModPMS\RateManager;
 use ModPMS\ReservationManager;
 use ModPMS\TaxCategoryManager;
@@ -16,7 +18,6 @@ use ModPMS\RoomCategoryManager;
 use ModPMS\RoomManager;
 use ModPMS\SystemUpdater;
 use ModPMS\UserManager;
-use RuntimeException;
 
 require_once __DIR__ . '/../src/Database.php';
 require_once __DIR__ . '/../src/CompanyManager.php';
@@ -34,6 +35,8 @@ require_once __DIR__ . '/../src/TaxCategoryManager.php';
 require_once __DIR__ . '/../src/ArticleManager.php';
 require_once __DIR__ . '/../src/DocumentManager.php';
 require_once __DIR__ . '/../src/DocumentPdfRenderer.php';
+require_once __DIR__ . '/../src/MeldescheinManager.php';
+require_once __DIR__ . '/../src/MeldescheinPdfRenderer.php';
 
 session_start();
 
@@ -168,6 +171,9 @@ $documentStatusBadges = [
     DocumentManager::STATUS_FINALIZED => 'text-bg-success',
     DocumentManager::STATUS_CORRECTED => 'text-bg-warning text-dark',
 ];
+$meldescheinManager = null;
+$meldescheine = [];
+$meldescheinCandidates = [];
 $documentFormData = [
     'id' => null,
     'type' => DocumentManager::TYPE_INVOICE,
@@ -314,6 +320,7 @@ $navItems = [
     'categories' => 'Kategorien',
     'rooms' => 'Zimmer',
     'guests' => 'Gäste',
+    'meldeschein' => 'Meldescheine',
     'users' => 'Benutzer',
     'settings' => 'Einstellungen',
     'updates' => 'Updates',
@@ -581,6 +588,7 @@ try {
     $reservationManager = new ReservationManager($pdo);
     $settingsManager = new SettingManager($pdo);
     $documentManager = new DocumentManager($pdo, $settingsManager);
+    $meldescheinManager = new MeldescheinManager($pdo, $settingsManager);
     $backupManager = new BackupManager($pdo);
     $rateManager = new RateManager($pdo);
     $taxCategoryManager = new TaxCategoryManager($pdo);
@@ -616,6 +624,37 @@ if ($documentManager instanceof DocumentManager && isset($_GET['downloadDocument
     ];
 
     header('Location: index.php?section=documents');
+    exit;
+}
+
+$activeMeldescheinDownload = isset($_GET['downloadMeldeschein']);
+if ($meldescheinManager instanceof MeldescheinManager && $activeMeldescheinDownload) {
+    $downloadMeldescheinId = (int) $_GET['downloadMeldeschein'];
+
+    if ($downloadMeldescheinId > 0) {
+        $meldescheinToDownload = $meldescheinManager->find($downloadMeldescheinId);
+
+        if ($meldescheinToDownload !== null) {
+            $pdfPath = isset($meldescheinToDownload['pdf_path']) ? (string) $meldescheinToDownload['pdf_path'] : '';
+            if ($pdfPath !== '') {
+                $absolutePath = realpath(__DIR__ . '/../' . ltrim($pdfPath, '/'));
+                if ($absolutePath !== false && is_readable($absolutePath)) {
+                    header('Content-Type: application/pdf');
+                    header('Content-Disposition: inline; filename="' . basename($absolutePath) . '"');
+                    header('Content-Length: ' . (string) filesize($absolutePath));
+                    readfile($absolutePath);
+                    exit;
+                }
+            }
+        }
+    }
+
+    $_SESSION['alert'] = [
+        'type' => 'warning',
+        'message' => 'Der angeforderte Meldeschein konnte nicht heruntergeladen werden.',
+    ];
+
+    header('Location: index.php?section=meldeschein');
     exit;
 }
 
@@ -781,6 +820,65 @@ $formatCurrencyWithCode = static function (?float $value, string $currency): str
     }
 
     return number_format($value, 2, ',', '.') . ' ' . $normalizedCurrency;
+};
+
+$formatDateLabel = static function (?string $value): ?string {
+    if ($value === null || $value === '') {
+        return null;
+    }
+
+    try {
+        return (new DateTimeImmutable($value))->format('d.m.Y');
+    } catch (Throwable $exception) {
+        return null;
+    }
+};
+
+$calculateNightCount = static function (?string $arrival, ?string $departure): ?int {
+    if ($arrival === null || $arrival === '' || $departure === null || $departure === '') {
+        return null;
+    }
+
+    try {
+        $arrivalDate = new DateTimeImmutable($arrival);
+        $departureDate = new DateTimeImmutable($departure);
+    } catch (Throwable $exception) {
+        return null;
+    }
+
+    $diff = $arrivalDate->diff($departureDate);
+    if ($diff->invert === 1) {
+        return null;
+    }
+
+    $nights = (int) $diff->days;
+
+    return $nights > 0 ? $nights : 1;
+};
+
+$buildAddressLines = static function (array $data, string $streetKey = 'address_street', string $postalKey = 'address_postal_code', string $cityKey = 'address_city', string $countryKey = 'address_country'): array {
+    $lines = [];
+
+    if (!empty($data[$streetKey])) {
+        $lines[] = trim((string) $data[$streetKey]);
+    }
+
+    $cityParts = [];
+    if (!empty($data[$postalKey])) {
+        $cityParts[] = trim((string) $data[$postalKey]);
+    }
+    if (!empty($data[$cityKey])) {
+        $cityParts[] = trim((string) $data[$cityKey]);
+    }
+    if ($cityParts !== []) {
+        $lines[] = implode(' ', $cityParts);
+    }
+
+    if (!empty($data[$countryKey])) {
+        $lines[] = trim((string) $data[$countryKey]);
+    }
+
+    return array_values(array_filter($lines, static fn ($value) => $value !== ''));
 };
 
 $overnightVatRate = 7.0;
@@ -3524,6 +3622,273 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             header('Location: index.php?section=rooms');
             exit;
 
+        case 'meldeschein_create':
+            $activeSection = 'meldeschein';
+
+            if (!$meldescheinManager instanceof MeldescheinManager || !$guestManager instanceof GuestManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Meldescheinverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $guestId = (int) ($_POST['guest_id'] ?? 0);
+            if ($guestId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Meldeschein konnte nicht erstellt werden, da kein Gast angegeben wurde.',
+                ];
+                break;
+            }
+
+            try {
+                $guest = $guestManager->find($guestId);
+                if ($guest === null) {
+                    throw new RuntimeException('Der ausgewählte Gast wurde nicht gefunden.');
+                }
+
+                $reservationIdInput = isset($_POST['reservation_id']) ? (int) $_POST['reservation_id'] : 0;
+                $reservationDetails = null;
+
+                if ($reservationIdInput > 0 && $reservationManager instanceof ReservationManager) {
+                    $reservationDetails = $reservationManager->find($reservationIdInput);
+                }
+
+                if ($reservationDetails === null && $reservationManager instanceof ReservationManager) {
+                    $latestReservation = $reservationManager->latestForGuest($guestId);
+                    if ($latestReservation !== null && isset($latestReservation['id'])) {
+                        $reservationDetails = $reservationManager->find((int) $latestReservation['id']);
+                    }
+                }
+
+                $reservationId = null;
+                $reservationNumber = '';
+                $reservationRoomLabel = '';
+                $reservationArrival = null;
+                $reservationDeparture = null;
+
+                if (is_array($reservationDetails)) {
+                    $reservationId = isset($reservationDetails['id']) ? (int) $reservationDetails['id'] : null;
+                    $reservationNumber = isset($reservationDetails['reservation_number']) ? (string) $reservationDetails['reservation_number'] : '';
+                    if (!empty($reservationDetails['arrival_date'])) {
+                        $reservationArrival = (string) $reservationDetails['arrival_date'];
+                    }
+                    if (!empty($reservationDetails['departure_date'])) {
+                        $reservationDeparture = (string) $reservationDetails['departure_date'];
+                    }
+
+                    $items = isset($reservationDetails['items']) && is_array($reservationDetails['items']) ? $reservationDetails['items'] : [];
+                    $matchedItem = null;
+                    foreach ($items as $item) {
+                        if ((int) ($item['primary_guest_id'] ?? 0) === $guestId) {
+                            $matchedItem = $item;
+                            break;
+                        }
+                    }
+                    if ($matchedItem === null && $items !== []) {
+                        $matchedItem = $items[0];
+                    }
+
+                    if (is_array($matchedItem)) {
+                        if (!empty($matchedItem['arrival_date'])) {
+                            $reservationArrival = (string) $matchedItem['arrival_date'];
+                        }
+                        if (!empty($matchedItem['departure_date'])) {
+                            $reservationDeparture = (string) $matchedItem['departure_date'];
+                        }
+
+                        $roomParts = [];
+                        if (!empty($matchedItem['room_number'])) {
+                            $roomParts[] = 'Zimmer ' . trim((string) $matchedItem['room_number']);
+                        }
+                        if (!empty($matchedItem['category_name'])) {
+                            $roomParts[] = trim((string) $matchedItem['category_name']);
+                        }
+                        $reservationRoomLabel = implode(' · ', array_values(array_filter($roomParts, static fn ($value) => $value !== '')));
+                    }
+                }
+
+                $arrivalDate = $reservationArrival !== null ? $reservationArrival : ($guest['arrival_date'] ?? null);
+                $departureDate = $reservationDeparture !== null ? $reservationDeparture : ($guest['departure_date'] ?? null);
+
+                if ($reservationRoomLabel === '' && isset($guest['room_id']) && $guest['room_id'] !== null && $roomManager instanceof RoomManager) {
+                    $roomId = (int) $guest['room_id'];
+                    if ($roomId > 0) {
+                        $roomRecord = $roomManager->find($roomId);
+                        if (is_array($roomRecord)) {
+                            $roomParts = [];
+                            if (!empty($roomRecord['room_number'])) {
+                                $roomParts[] = 'Zimmer ' . trim((string) $roomRecord['room_number']);
+                            }
+                            if (!empty($roomRecord['category_id']) && $categoryManager instanceof RoomCategoryManager) {
+                                $categoryRecord = $categoryManager->find((int) $roomRecord['category_id']);
+                                if (is_array($categoryRecord) && !empty($categoryRecord['name'])) {
+                                    $roomParts[] = trim((string) $categoryRecord['name']);
+                                }
+                            }
+                            $reservationRoomLabel = implode(' · ', array_values(array_filter($roomParts, static fn ($value) => $value !== '')));
+                        }
+                    }
+                }
+
+                $companyName = '';
+                $companyPayload = null;
+                if (!empty($guest['company_id']) && $companyManager instanceof CompanyManager) {
+                    $companyRecord = $companyManager->find((int) $guest['company_id']);
+                    if (is_array($companyRecord)) {
+                        $companyName = isset($companyRecord['name']) ? (string) $companyRecord['name'] : '';
+                        $companyPayload = [
+                            'name' => $companyName,
+                            'address_lines' => $buildAddressLines($companyRecord),
+                            'tax_id' => isset($companyRecord['tax_id']) ? (string) $companyRecord['tax_id'] : '',
+                            'contact' => [
+                                'email' => isset($companyRecord['email']) ? (string) $companyRecord['email'] : '',
+                                'phone' => isset($companyRecord['phone']) ? (string) $companyRecord['phone'] : '',
+                            ],
+                        ];
+                    }
+                }
+
+                if ($companyPayload === null && !empty($guest['company_name'])) {
+                    $companyName = (string) $guest['company_name'];
+                }
+
+                $guestFullNameParts = array_filter([
+                    isset($guest['first_name']) ? trim((string) $guest['first_name']) : '',
+                    isset($guest['last_name']) ? trim((string) $guest['last_name']) : '',
+                ], static fn ($value) => $value !== '');
+                $guestFullName = $guestFullNameParts !== [] ? implode(' ', $guestFullNameParts) : ('Gast #' . $guestId);
+
+                $guestDetails = [
+                    'salutation' => isset($guest['salutation']) ? (string) $guest['salutation'] : '',
+                    'first_name' => isset($guest['first_name']) ? (string) $guest['first_name'] : '',
+                    'last_name' => isset($guest['last_name']) ? (string) $guest['last_name'] : '',
+                    'name' => $guestFullName,
+                    'date_of_birth' => isset($guest['date_of_birth']) ? (string) $guest['date_of_birth'] : null,
+                    'nationality' => isset($guest['nationality']) ? (string) $guest['nationality'] : '',
+                    'document' => [
+                        'type' => isset($guest['document_type']) ? (string) $guest['document_type'] : '',
+                        'number' => isset($guest['document_number']) ? (string) $guest['document_number'] : '',
+                    ],
+                    'address_lines' => $buildAddressLines($guest),
+                    'contact' => [
+                        'email' => isset($guest['email']) ? (string) $guest['email'] : '',
+                        'phone' => isset($guest['phone']) ? (string) $guest['phone'] : '',
+                    ],
+                    'notes' => isset($guest['notes']) ? (string) $guest['notes'] : '',
+                ];
+
+                $purpose = isset($guest['purpose_of_stay']) && (string) $guest['purpose_of_stay'] === 'geschäftlich' ? 'geschäftlich' : 'privat';
+
+                $stayDetails = [
+                    'arrival_date' => $arrivalDate !== null && $arrivalDate !== '' ? (string) $arrivalDate : null,
+                    'departure_date' => $departureDate !== null && $departureDate !== '' ? (string) $departureDate : null,
+                    'arrival_date_formatted' => $formatDateLabel($arrivalDate),
+                    'departure_date_formatted' => $formatDateLabel($departureDate),
+                    'nights' => $calculateNightCount($arrivalDate, $departureDate),
+                    'purpose' => $purpose,
+                    'purpose_label' => $purpose === 'geschäftlich' ? 'Geschäftlich' : 'Privat',
+                    'room_label' => $reservationRoomLabel,
+                    'reservation_number' => $reservationNumber,
+                ];
+
+                $details = [
+                    'guest' => $guestDetails,
+                    'stay' => $stayDetails,
+                    'company' => $companyPayload,
+                    'notes' => isset($guest['notes']) ? (string) $guest['notes'] : '',
+                ];
+
+                $renderer = new MeldescheinPdfRenderer();
+                $form = $meldescheinManager->createForm([
+                    'guest_id' => $guestId,
+                    'guest_name' => $guestFullName,
+                    'arrival_date' => $arrivalDate,
+                    'departure_date' => $departureDate,
+                    'issued_at' => date('Y-m-d'),
+                    'purpose_of_stay' => $purpose,
+                    'company_name' => $companyName,
+                    'room_label' => $reservationRoomLabel,
+                    'reservation_id' => $reservationId,
+                    'details' => $details,
+                    'notes' => isset($guest['notes']) ? (string) $guest['notes'] : '',
+                ], static function (array $payload) use ($renderer): string {
+                    return $renderer->render($payload);
+                });
+
+                $formNumber = isset($form['form_number']) ? (string) $form['form_number'] : 'Meldeschein';
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Meldeschein %s wurde erstellt.', htmlspecialchars($formNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=meldeschein');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'meldeschein_delete':
+            $activeSection = 'meldeschein';
+
+            if (!$meldescheinManager instanceof MeldescheinManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Meldescheinverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $meldescheinId = (int) ($_POST['id'] ?? 0);
+            if ($meldescheinId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Meldeschein konnte nicht gelöscht werden, da keine gültige ID übermittelt wurde.',
+                ];
+                break;
+            }
+
+            try {
+                $form = $meldescheinManager->find($meldescheinId);
+                if ($form === null) {
+                    throw new RuntimeException('Der ausgewählte Meldeschein wurde nicht gefunden.');
+                }
+
+                $pdfPath = isset($form['pdf_path']) ? (string) $form['pdf_path'] : '';
+                if ($pdfPath !== '') {
+                    $absolutePath = realpath(__DIR__ . '/../' . ltrim($pdfPath, '/'));
+                    if ($absolutePath !== false && is_file($absolutePath)) {
+                        @unlink($absolutePath);
+                    }
+                }
+
+                $meldescheinManager->delete($meldescheinId);
+
+                $formNumber = isset($form['form_number']) ? (string) $form['form_number'] : ('#' . $meldescheinId);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Meldeschein %s wurde gelöscht.', htmlspecialchars($formNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=meldeschein');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
         case 'guest_create':
         case 'guest_update':
             $activeSection = 'guests';
@@ -5872,6 +6237,224 @@ if ($pdo !== null) {
     }
 }
 
+$meldescheinReservationMap = [];
+if ($reservations !== []) {
+    foreach ($reservations as $reservation) {
+        if (!is_array($reservation)) {
+            continue;
+        }
+
+        $reservationId = isset($reservation['id']) ? (int) $reservation['id'] : 0;
+        if ($reservationId <= 0) {
+            continue;
+        }
+
+        $mainGuestId = isset($reservation['guest_id']) ? (int) $reservation['guest_id'] : 0;
+        if ($mainGuestId > 0) {
+            if (!isset($meldescheinReservationMap[$mainGuestId])) {
+                $meldescheinReservationMap[$mainGuestId] = [];
+            }
+            $meldescheinReservationMap[$mainGuestId][] = $reservation;
+        }
+
+        $items = isset($reservation['items']) && is_array($reservation['items']) ? $reservation['items'] : [];
+        foreach ($items as $item) {
+            if (!is_array($item) || !isset($item['primary_guest_id'])) {
+                continue;
+            }
+
+            $primaryGuestId = (int) $item['primary_guest_id'];
+            if ($primaryGuestId <= 0) {
+                continue;
+            }
+
+            if (!isset($meldescheinReservationMap[$primaryGuestId])) {
+                $meldescheinReservationMap[$primaryGuestId] = [];
+            }
+
+            $meldescheinReservationMap[$primaryGuestId][] = $reservation;
+        }
+    }
+}
+
+$selectLatestReservationForGuest = static function (array $reservationList): ?array {
+    if ($reservationList === []) {
+        return null;
+    }
+
+    $latest = null;
+    $latestArrival = null;
+
+    foreach ($reservationList as $reservation) {
+        if (!is_array($reservation)) {
+            continue;
+        }
+
+        $arrivalValue = isset($reservation['arrival_date']) ? (string) $reservation['arrival_date'] : '';
+        $arrivalDate = null;
+        if ($arrivalValue !== '') {
+            try {
+                $arrivalDate = new DateTimeImmutable($arrivalValue);
+            } catch (Throwable $exception) {
+                $arrivalDate = null;
+            }
+        }
+
+        if ($latest === null) {
+            $latest = $reservation;
+            $latestArrival = $arrivalDate;
+            continue;
+        }
+
+        if ($arrivalDate instanceof DateTimeImmutable) {
+            if (!($latestArrival instanceof DateTimeImmutable) || $arrivalDate > $latestArrival) {
+                $latest = $reservation;
+                $latestArrival = $arrivalDate;
+            }
+            continue;
+        }
+
+        if (!($latestArrival instanceof DateTimeImmutable)) {
+            $currentCreated = isset($reservation['created_at']) ? (string) $reservation['created_at'] : '';
+            $latestCreated = isset($latest['created_at']) ? (string) $latest['created_at'] : '';
+
+            if ($currentCreated > $latestCreated) {
+                $latest = $reservation;
+            }
+        }
+    }
+
+    return $latest;
+};
+
+if ($meldescheinManager instanceof MeldescheinManager) {
+    $meldescheine = $meldescheinManager->listForms();
+}
+
+$meldescheinCandidates = [];
+foreach ($guests as $guest) {
+    if (!is_array($guest) || !isset($guest['id'])) {
+        continue;
+    }
+
+    $guestId = (int) $guest['id'];
+    if ($guestId <= 0) {
+        continue;
+    }
+
+    $nameParts = array_filter([
+        isset($guest['first_name']) ? trim((string) $guest['first_name']) : '',
+        isset($guest['last_name']) ? trim((string) $guest['last_name']) : '',
+    ], static fn ($value) => $value !== '');
+    $fullName = $nameParts !== [] ? implode(' ', $nameParts) : ('Gast #' . $guestId);
+
+    $arrivalDate = isset($guest['arrival_date']) ? (string) $guest['arrival_date'] : null;
+    $departureDate = isset($guest['departure_date']) ? (string) $guest['departure_date'] : null;
+
+    $reservationCandidates = $meldescheinReservationMap[$guestId] ?? [];
+    $latestReservation = $reservationCandidates !== [] ? $selectLatestReservationForGuest($reservationCandidates) : null;
+    $candidateReservationId = null;
+    $candidateReservationNumber = '';
+    $candidateRoomLabel = '';
+
+    if (is_array($latestReservation)) {
+        $candidateReservationId = isset($latestReservation['id']) ? (int) $latestReservation['id'] : null;
+        if (!empty($latestReservation['arrival_date'])) {
+            $arrivalDate = (string) $latestReservation['arrival_date'];
+        }
+        if (!empty($latestReservation['departure_date'])) {
+            $departureDate = (string) $latestReservation['departure_date'];
+        }
+        $candidateReservationNumber = isset($latestReservation['reservation_number']) ? (string) $latestReservation['reservation_number'] : '';
+
+        $items = isset($latestReservation['items']) && is_array($latestReservation['items']) ? $latestReservation['items'] : [];
+        $matchedItem = null;
+        foreach ($items as $item) {
+            if ((int) ($item['primary_guest_id'] ?? 0) === $guestId) {
+                $matchedItem = $item;
+                break;
+            }
+        }
+        if ($matchedItem === null && $items !== []) {
+            $matchedItem = $items[0];
+        }
+
+        if (is_array($matchedItem)) {
+            if (!empty($matchedItem['arrival_date'])) {
+                $arrivalDate = (string) $matchedItem['arrival_date'];
+            }
+            if (!empty($matchedItem['departure_date'])) {
+                $departureDate = (string) $matchedItem['departure_date'];
+            }
+
+            $roomParts = [];
+            if (!empty($matchedItem['room_number'])) {
+                $roomParts[] = 'Zimmer ' . trim((string) $matchedItem['room_number']);
+            }
+            if (!empty($matchedItem['category_name'])) {
+                $roomParts[] = trim((string) $matchedItem['category_name']);
+            }
+            $candidateRoomLabel = implode(' · ', array_values(array_filter($roomParts, static fn ($value) => $value !== '')));
+        }
+    }
+
+    if ($candidateRoomLabel === '' && isset($guest['room_id']) && $guest['room_id'] !== null) {
+        $guestRoomId = (int) $guest['room_id'];
+        if ($guestRoomId > 0 && isset($roomLookup[$guestRoomId])) {
+            $room = $roomLookup[$guestRoomId];
+            $roomParts = [];
+            if (!empty($room['number'])) {
+                $roomParts[] = 'Zimmer ' . trim((string) $room['number']);
+            }
+            if (!empty($room['category_name'])) {
+                $roomParts[] = trim((string) $room['category_name']);
+            }
+            $candidateRoomLabel = implode(' · ', array_values(array_filter($roomParts, static fn ($value) => $value !== '')));
+        }
+    }
+
+    $purpose = isset($guest['purpose_of_stay']) && (string) $guest['purpose_of_stay'] === 'geschäftlich' ? 'geschäftlich' : 'privat';
+
+    $requiredFields = [
+        'date_of_birth' => 'Geburtsdatum',
+        'nationality' => 'Staatsangehörigkeit',
+        'address_street' => 'Straße',
+        'address_city' => 'Ort',
+        'address_country' => 'Land',
+        'document_type' => 'Ausweisart',
+        'document_number' => 'Ausweisnummer',
+    ];
+
+    $missingFields = [];
+    foreach ($requiredFields as $field => $label) {
+        if (empty($guest[$field])) {
+            $missingFields[] = $label;
+        }
+    }
+
+    $hasStayWindow = ($arrivalDate !== null && $arrivalDate !== '') || ($departureDate !== null && $departureDate !== '');
+    $isReady = $missingFields === [] && $hasStayWindow;
+
+    $arrivalLabel = $formatDateLabel($arrivalDate);
+    $departureLabel = $formatDateLabel($departureDate);
+    $companyName = isset($guest['company_name']) ? (string) $guest['company_name'] : '';
+
+    $meldescheinCandidates[] = [
+        'guest_id' => $guestId,
+        'guest_name' => $fullName,
+        'arrival_label' => $arrivalLabel !== null ? $arrivalLabel : ($arrivalDate !== null ? (string) $arrivalDate : '—'),
+        'departure_label' => $departureLabel !== null ? $departureLabel : ($departureDate !== null ? (string) $departureDate : '—'),
+        'purpose_label' => $purpose === 'geschäftlich' ? 'Geschäftlich' : 'Privat',
+        'purpose' => $purpose,
+        'company_name' => $companyName,
+        'room_label' => $candidateRoomLabel !== '' ? $candidateRoomLabel : '—',
+        'missing_fields' => $missingFields,
+        'ready' => $isReady,
+        'reservation_id' => $candidateReservationId,
+        'reservation_number' => $candidateReservationNumber,
+    ];
+}
+
 if ($pdo !== null && isset($_GET['editDocument']) && $documentFormData['id'] === null) {
     $documentId = (int) $_GET['editDocument'];
 
@@ -7038,6 +7621,7 @@ if ($activeSection === 'reservations') {
               </button>
               <ul class="dropdown-menu dropdown-menu-end quick-action-menu" aria-labelledby="quickActionMenu">
                 <li><a class="dropdown-item" href="index.php?section=reservations&amp;openReservationModal=1">Neue Reservierung</a></li>
+                <li><a class="dropdown-item" href="index.php?section=meldeschein">Meldeschein erstellen</a></li>
                 <li><a class="dropdown-item" href="index.php?section=guests#guest-meldeschein">Meldeschein vorbereiten</a></li>
                 <li><a class="dropdown-item" href="index.php?section=guests#guest-form">Neuen Gast anlegen</a></li>
               </ul>
@@ -9830,6 +10414,218 @@ if ($activeSection === 'reservations') {
                     <h3 class="h6 text-uppercase text-muted">Letzte Aktualisierung</h3>
                     <pre class="small mb-0 bg-transparent border-0 p-0"><?= htmlspecialchars(implode("\n", $updateOutput)) ?></pre>
                   </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php endif; ?>
+
+      <?php if ($activeSection === 'meldeschein'): ?>
+      <section id="meldeschein" class="app-section active">
+        <div class="row g-4">
+          <div class="col-12 col-xxl-7">
+            <div class="card module-card" id="meldeschein-overview" data-section="meldeschein">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Meldescheine</h2>
+                  <p class="text-muted mb-0">Erstellte Meldescheine verwalten und als PDF herunterladen.</p>
+                </div>
+                <span class="badge text-bg-primary">PDF-Archiv</span>
+              </div>
+              <div class="card-body">
+                <?php if ($meldescheine === []): ?>
+                  <p class="text-muted mb-0">Es wurden noch keine Meldescheine erstellt. Nutzen Sie die Übersicht rechts, um einen neuen Meldeschein zu generieren.</p>
+                <?php else: ?>
+                  <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                      <thead class="table-light">
+                        <tr>
+                          <th>Nummer</th>
+                          <th>Gast</th>
+                          <th>Aufenthalt</th>
+                          <th>Reisezweck</th>
+                          <th>Firma</th>
+                          <th>Ausgestellt</th>
+                          <th class="text-end">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($meldescheine as $form): ?>
+                          <?php
+                            if (!is_array($form) || !isset($form['id'])) {
+                                continue;
+                            }
+
+                            $formId = (int) $form['id'];
+                            if ($formId <= 0) {
+                                continue;
+                            }
+
+                            $formNumber = isset($form['form_number']) && $form['form_number'] !== '' ? (string) $form['form_number'] : ('MS-' . $formId);
+                            $guestName = isset($form['guest_name']) && $form['guest_name'] !== '' ? (string) $form['guest_name'] : ('Gast #' . $formId);
+                            $arrivalDate = isset($form['arrival_date']) ? (string) $form['arrival_date'] : null;
+                            $departureDate = isset($form['departure_date']) ? (string) $form['departure_date'] : null;
+                            $arrivalLabel = $formatDateLabel($arrivalDate);
+                            if ($arrivalLabel === null) {
+                                $arrivalLabel = $arrivalDate !== null && $arrivalDate !== '' ? (string) $arrivalDate : '—';
+                            }
+                            $departureLabel = $formatDateLabel($departureDate);
+                            if ($departureLabel === null) {
+                                $departureLabel = $departureDate !== null && $departureDate !== '' ? (string) $departureDate : '—';
+                            }
+                            $nightCount = $calculateNightCount($arrivalDate, $departureDate);
+                            $purpose = isset($form['purpose_of_stay']) && (string) $form['purpose_of_stay'] === 'geschäftlich' ? 'Geschäftlich' : 'Privat';
+                            $companyName = isset($form['company_name']) && $form['company_name'] !== '' ? (string) $form['company_name'] : '—';
+                            $issuedDate = isset($form['issued_date']) ? (string) $form['issued_date'] : null;
+                            $issuedLabel = $formatDateLabel($issuedDate);
+                            if ($issuedLabel === null) {
+                                $issuedLabel = $issuedDate !== null && $issuedDate !== '' ? (string) $issuedDate : '—';
+                            }
+                            $roomLabel = isset($form['room_label']) && $form['room_label'] !== '' ? (string) $form['room_label'] : '';
+                            $formDetails = isset($form['details']) && is_array($form['details']) ? $form['details'] : [];
+                            $formStayDetails = isset($formDetails['stay']) && is_array($formDetails['stay']) ? $formDetails['stay'] : [];
+                            $reservationNumber = isset($formStayDetails['reservation_number']) ? (string) $formStayDetails['reservation_number'] : '';
+                            $downloadUrl = 'index.php?section=meldeschein&downloadMeldeschein=' . $formId;
+                            $pdfPath = isset($form['pdf_path']) ? (string) $form['pdf_path'] : '';
+                          ?>
+                          <tr>
+                            <td>
+                              <div class="fw-semibold"><?= htmlspecialchars($formNumber) ?></div>
+                              <?php if ($reservationNumber !== ''): ?>
+                                <div class="small text-muted">Reservierung <?= htmlspecialchars($reservationNumber) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td><?= htmlspecialchars($guestName) ?></td>
+                            <td>
+                              <div><?= htmlspecialchars($arrivalLabel) ?> – <?= htmlspecialchars($departureLabel) ?></div>
+                              <?php if ($nightCount !== null): ?>
+                                <div class="small text-muted">Nächte: <?= (int) $nightCount ?></div>
+                              <?php endif; ?>
+                              <?php if ($roomLabel !== ''): ?>
+                                <div class="small text-muted"><?= htmlspecialchars($roomLabel) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td><?= htmlspecialchars($purpose) ?></td>
+                            <td><?= htmlspecialchars($companyName) ?></td>
+                            <td><?= htmlspecialchars($issuedLabel) ?></td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                <?php if ($pdfPath !== ''): ?>
+                                  <a class="btn btn-outline-primary btn-sm" href="<?= htmlspecialchars($downloadUrl) ?>" target="_blank" rel="noopener">Download</a>
+                                <?php else: ?>
+                                  <button type="button" class="btn btn-outline-secondary btn-sm" disabled>Kein PDF</button>
+                                <?php endif; ?>
+                                <form method="post" onsubmit="return confirm('Meldeschein wirklich löschen?');">
+                                  <input type="hidden" name="form" value="meldeschein_delete">
+                                  <input type="hidden" name="id" value="<?= $formId ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                                </form>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xxl-5">
+            <div class="card module-card" id="meldeschein-candidates" data-section="meldeschein">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Meldeschein erstellen</h2>
+                  <p class="text-muted mb-0">Vervollständigte Gästedaten prüfen und Meldeschein starten.</p>
+                </div>
+                <span class="badge text-bg-success">Bereitstellung</span>
+              </div>
+              <div class="card-body">
+                <?php if ($meldescheinCandidates === []): ?>
+                  <p class="text-muted mb-0">Keine Gäste vorhanden. Legen Sie zunächst Gäste an, um Meldescheine zu erzeugen.</p>
+                <?php else: ?>
+                  <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                      <thead class="table-light">
+                        <tr>
+                          <th>Gast</th>
+                          <th>Aufenthalt</th>
+                          <th>Status</th>
+                          <th class="text-end">Aktion</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($meldescheinCandidates as $candidate): ?>
+                          <?php
+                            if (!is_array($candidate) || !isset($candidate['guest_id'])) {
+                                continue;
+                            }
+
+                            $candidateGuestId = (int) $candidate['guest_id'];
+                            if ($candidateGuestId <= 0) {
+                                continue;
+                            }
+
+                            $candidateReady = !empty($candidate['ready']);
+                            $candidateGuestName = isset($candidate['guest_name']) ? (string) $candidate['guest_name'] : ('Gast #' . $candidateGuestId);
+                            $candidateArrival = isset($candidate['arrival_label']) ? (string) $candidate['arrival_label'] : '—';
+                            $candidateDeparture = isset($candidate['departure_label']) ? (string) $candidate['departure_label'] : '—';
+                            $candidatePurposeLabel = isset($candidate['purpose_label']) && $candidate['purpose_label'] !== '' ? (string) $candidate['purpose_label'] : '—';
+                            $candidateCompany = isset($candidate['company_name']) && $candidate['company_name'] !== '' ? (string) $candidate['company_name'] : null;
+                            $candidateRoom = isset($candidate['room_label']) ? (string) $candidate['room_label'] : '—';
+                            $candidateReservationNumber = isset($candidate['reservation_number']) ? (string) $candidate['reservation_number'] : '';
+                            $missingFields = isset($candidate['missing_fields']) && is_array($candidate['missing_fields']) ? $candidate['missing_fields'] : [];
+                            $missingFieldLabels = array_map(static fn ($field): string => (string) $field, $missingFields);
+                            $statusBadgeClass = $candidateReady ? 'text-bg-success' : 'text-bg-warning';
+                            $statusLabel = $candidateReady ? 'bereit' : 'Angaben fehlen';
+                            if ($candidateReady) {
+                                $statusMessage = 'Alle Pflichtfelder sind ausgefüllt.';
+                            } elseif ($missingFieldLabels !== []) {
+                                $statusMessage = 'Fehlende Angaben: ' . implode(', ', $missingFieldLabels);
+                            } else {
+                                $statusMessage = 'Aufenthaltszeitraum unvollständig.';
+                            }
+                          ?>
+                          <tr>
+                            <td>
+                              <div class="fw-semibold"><?= htmlspecialchars($candidateGuestName) ?></div>
+                              <div class="small text-muted">Reisezweck: <?= htmlspecialchars($candidatePurposeLabel) ?></div>
+                              <?php if ($candidateCompany !== null && $candidateCompany !== ''): ?>
+                                <div class="small text-muted">Firma: <?= htmlspecialchars($candidateCompany) ?></div>
+                              <?php endif; ?>
+                              <div class="small text-muted">Zimmer: <?= htmlspecialchars($candidateRoom) ?></div>
+                              <?php if ($candidateReservationNumber !== ''): ?>
+                                <div class="small text-muted">Reservierung <?= htmlspecialchars($candidateReservationNumber) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td>
+                              <div><?= htmlspecialchars($candidateArrival) ?> – <?= htmlspecialchars($candidateDeparture) ?></div>
+                            </td>
+                            <td>
+                              <span class="badge <?= $statusBadgeClass ?> text-uppercase"><?= htmlspecialchars($statusLabel) ?></span>
+                              <div class="small text-muted"><?= htmlspecialchars($statusMessage) ?></div>
+                            </td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editGuest=<?= $candidateGuestId ?>">Bearbeiten</a>
+                                <form method="post">
+                                  <input type="hidden" name="form" value="meldeschein_create">
+                                  <input type="hidden" name="guest_id" value="<?= $candidateGuestId ?>">
+                                  <?php if (!empty($candidate['reservation_id'])): ?>
+                                    <input type="hidden" name="reservation_id" value="<?= (int) $candidate['reservation_id'] ?>">
+                                  <?php endif; ?>
+                                  <button type="submit" class="btn btn-primary btn-sm" <?= $candidateReady ? '' : 'disabled' ?>>Meldeschein</button>
+                                </form>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                  <p class="small text-muted mb-0 mt-3">Hinweis: Für Meldescheine werden vollständige Gastdaten inklusive Adresse, Ausweisdaten und Aufenthaltszeitraum benötigt.</p>
                 <?php endif; ?>
               </div>
             </div>
