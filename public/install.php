@@ -354,6 +354,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_install_meldescheine_reservation (reservation_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $meldescheinColumns = [];
+                foreach ($pdo->query('SHOW COLUMNS FROM `meldescheine`') as $column) {
+                    if (isset($column['Field'])) {
+                        $meldescheinColumns[] = $column['Field'];
+                    }
+                }
+
+                if (!in_array('guest_signature_path', $meldescheinColumns, true)) {
+                    $pdo->exec('ALTER TABLE `meldescheine` ADD COLUMN guest_signature_path VARCHAR(255) NULL AFTER pdf_path');
+                }
+
+                if (!in_array('guest_signed_at', $meldescheinColumns, true)) {
+                    $pdo->exec('ALTER TABLE `meldescheine` ADD COLUMN guest_signed_at DATETIME NULL AFTER guest_signature_path');
+                }
+
+                if (!in_array('signature_token', $meldescheinColumns, true)) {
+                    $pdo->exec('ALTER TABLE `meldescheine` ADD COLUMN signature_token VARCHAR(191) NULL AFTER guest_signed_at');
+                }
+
+                if (!in_array('signature_token_expires_at', $meldescheinColumns, true)) {
+                    $pdo->exec('ALTER TABLE `meldescheine` ADD COLUMN signature_token_expires_at DATETIME NULL AFTER signature_token');
+                }
+
+                if (!in_array('signature_token_created_at', $meldescheinColumns, true)) {
+                    $pdo->exec('ALTER TABLE `meldescheine` ADD COLUMN signature_token_created_at DATETIME NULL AFTER signature_token_expires_at');
+                }
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS reservation_items (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     reservation_id INT UNSIGNED NOT NULL,
