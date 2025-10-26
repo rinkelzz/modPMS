@@ -225,6 +225,10 @@ $documentTemplateFormData = [
     'body_html' => '',
 ];
 $invoiceLogoPath = '';
+$mailFromAddress = '';
+$mailReplyToAddress = '';
+$mailFromAddressFormValue = '';
+$mailReplyToAddressFormValue = '';
 $reservationFormDefaults = $reservationFormData;
 $reservationFormMode = 'create';
 $isEditingReservation = false;
@@ -706,11 +710,22 @@ if ($settingsManager instanceof SettingManager) {
         }
     }
 
+    $mailSettings = $settingsManager->getMany(['mail_from_address', 'mail_reply_to_address']);
+    if (isset($mailSettings['mail_from_address'])) {
+        $mailFromAddress = (string) $mailSettings['mail_from_address'];
+    }
+    if (isset($mailSettings['mail_reply_to_address'])) {
+        $mailReplyToAddress = (string) $mailSettings['mail_reply_to_address'];
+    }
+
     $storedInvoiceLogo = $settingsManager->get('invoice_logo_path', '');
     if ($storedInvoiceLogo !== null && $storedInvoiceLogo !== '') {
         $invoiceLogoPath = $storedInvoiceLogo;
     }
 }
+
+$mailFromAddressFormValue = $mailFromAddress;
+$mailReplyToAddressFormValue = $mailReplyToAddress;
 
 $reservationStatusFormColors = $reservationStatusColors;
 $reservationStatusMeta = [];
@@ -1598,6 +1613,53 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             ];
 
             header('Location: index.php?section=settings');
+            exit;
+
+        case 'settings_mail':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Einstellungen konnte nicht hergestellt werden.',
+                ];
+                break;
+            }
+
+            $fromInput = trim((string) ($_POST['mail_from_address'] ?? ''));
+            $replyToInput = trim((string) ($_POST['mail_reply_to_address'] ?? ''));
+
+            $mailFromAddressFormValue = $fromInput;
+            $mailReplyToAddressFormValue = $replyToInput;
+
+            if ($fromInput !== '' && !filter_var($fromInput, FILTER_VALIDATE_EMAIL)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie eine gültige E-Mail-Adresse für den Absender ein oder lassen Sie das Feld leer.',
+                ];
+                break;
+            }
+
+            if ($replyToInput !== '' && !filter_var($replyToInput, FILTER_VALIDATE_EMAIL)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie eine gültige Antwortadresse ein oder lassen Sie das Feld leer.',
+                ];
+                break;
+            }
+
+            $settingsManager->set('mail_from_address', $fromInput);
+            $settingsManager->set('mail_reply_to_address', $replyToInput);
+
+            $mailFromAddress = $fromInput;
+            $mailReplyToAddress = $replyToInput;
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'E-Mail-Einstellungen wurden gespeichert.',
+            ];
+
+            header('Location: index.php?section=settings#mail-settings');
             exit;
 
         case 'settings_invoice_logo':
@@ -3976,7 +4038,17 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         $mailLines[] = $appName;
 
                         $mailBody = implode("\n", $mailLines);
-                        $mailHeaders = "Content-Type: text/plain; charset=utf-8\r\n" . "Content-Transfer-Encoding: 8bit\r\n";
+                        $mailHeaderLines = [
+                            'Content-Type: text/plain; charset=utf-8',
+                            'Content-Transfer-Encoding: 8bit',
+                        ];
+                        if ($mailFromAddress !== '') {
+                            $mailHeaderLines[] = 'From: ' . str_replace(["\r", "\n"], '', $mailFromAddress);
+                        }
+                        if ($mailReplyToAddress !== '') {
+                            $mailHeaderLines[] = 'Reply-To: ' . str_replace(["\r", "\n"], '', $mailReplyToAddress);
+                        }
+                        $mailHeaders = implode("\r\n", $mailHeaderLines) . "\r\n";
 
                         if (function_exists('mail')) {
                             $mailSent = @mail($emailRaw, $mailSubject, $mailBody, $mailHeaders);
@@ -10555,6 +10627,51 @@ if ($activeSection === 'reservations') {
                     <?php endif; ?>
                   </div>
                 </div>
+              <?php endif; ?>
+            </div>
+          </div>
+          <div class="card module-card mt-4" id="mail-settings">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+              <div>
+                <h2 class="h5 mb-1">E-Mail Versand</h2>
+                <p class="text-muted mb-0">Absender- und Antwortadresse für automatische Benachrichtigungen festlegen.</p>
+              </div>
+              <span class="badge text-bg-info">Kommunikation</span>
+            </div>
+            <div class="card-body">
+              <?php if (!$settingsAvailable): ?>
+                <p class="text-muted mb-0">E-Mail-Einstellungen stehen nach erfolgreicher Datenbankverbindung zur Verfügung.</p>
+              <?php else: ?>
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="settings_mail">
+                  <div class="col-12 col-lg-6">
+                    <label for="mail-from-address" class="form-label">Absenderadresse</label>
+                    <input
+                      type="email"
+                      class="form-control"
+                      id="mail-from-address"
+                      name="mail_from_address"
+                      value="<?= htmlspecialchars($mailFromAddressFormValue) ?>"
+                      placeholder="kontakt@ihrhotel.de"
+                    >
+                    <div class="form-text">Leer lassen, um die Server-Standardadresse zu verwenden.</div>
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="mail-reply-to-address" class="form-label">Antwortadresse</label>
+                    <input
+                      type="email"
+                      class="form-control"
+                      id="mail-reply-to-address"
+                      name="mail_reply_to_address"
+                      value="<?= htmlspecialchars($mailReplyToAddressFormValue) ?>"
+                      placeholder="rezeption@ihrhotel.de"
+                    >
+                    <div class="form-text">Optional. Wird als Reply-To für Signatur-E-Mails gesetzt.</div>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end gap-2">
+                    <button type="submit" class="btn btn-outline-primary">E-Mail-Einstellungen speichern</button>
+                  </div>
+                </form>
               <?php endif; ?>
             </div>
           </div>
