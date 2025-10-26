@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.9.0',
+    'version' => '1.14.0',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',
@@ -27,6 +27,10 @@ return [
         'guests' => [
             'title' => 'Gästeverwaltung',
             'description' => 'Stammdaten für Gäste und Firmen inkl. Meldeschein-relevanter Felder.'
+        ],
+        'meldeschein' => [
+            'title' => 'Meldescheine',
+            'description' => 'Meldescheine vorbereiten, erstellen, per Link digital unterschreiben lassen und als PDF archivieren.'
         ],
         'rooms' => [
             'title' => 'Zimmerkategorien',

@@ -6,8 +6,11 @@ use ModPMS\Calendar;
 use ModPMS\CompanyManager;
 use ModPMS\DocumentManager;
 use ModPMS\DocumentPdfRenderer;
+use ModPMS\EmailLogManager;
 use ModPMS\Database;
 use ModPMS\GuestManager;
+use ModPMS\MeldescheinManager;
+use ModPMS\MeldescheinPdfRenderer;
 use ModPMS\RateManager;
 use ModPMS\ReservationManager;
 use ModPMS\TaxCategoryManager;
@@ -16,7 +19,6 @@ use ModPMS\RoomCategoryManager;
 use ModPMS\RoomManager;
 use ModPMS\SystemUpdater;
 use ModPMS\UserManager;
-use RuntimeException;
 
 require_once __DIR__ . '/../src/Database.php';
 require_once __DIR__ . '/../src/CompanyManager.php';
@@ -34,6 +36,9 @@ require_once __DIR__ . '/../src/TaxCategoryManager.php';
 require_once __DIR__ . '/../src/ArticleManager.php';
 require_once __DIR__ . '/../src/DocumentManager.php';
 require_once __DIR__ . '/../src/DocumentPdfRenderer.php';
+require_once __DIR__ . '/../src/EmailLogManager.php';
+require_once __DIR__ . '/../src/MeldescheinManager.php';
+require_once __DIR__ . '/../src/MeldescheinPdfRenderer.php';
 
 session_start();
 
@@ -57,6 +62,12 @@ $alert = null;
 if (isset($_SESSION['alert'])) {
     $alert = $_SESSION['alert'];
     unset($_SESSION['alert']);
+}
+
+$signatureInviteResult = null;
+if (isset($_SESSION['signature_invite_result']) && is_array($_SESSION['signature_invite_result'])) {
+    $signatureInviteResult = $_SESSION['signature_invite_result'];
+    unset($_SESSION['signature_invite_result']);
 }
 
 $updateOutput = null;
@@ -168,6 +179,10 @@ $documentStatusBadges = [
     DocumentManager::STATUS_FINALIZED => 'text-bg-success',
     DocumentManager::STATUS_CORRECTED => 'text-bg-warning text-dark',
 ];
+$emailLogManager = null;
+$meldescheinManager = null;
+$meldescheine = [];
+$meldescheinCandidates = [];
 $documentFormData = [
     'id' => null,
     'type' => DocumentManager::TYPE_INVOICE,
@@ -213,6 +228,11 @@ $documentTemplateFormData = [
     'body_html' => '',
 ];
 $invoiceLogoPath = '';
+$mailFromAddress = '';
+$mailReplyToAddress = '';
+$mailFromAddressFormValue = '';
+$mailReplyToAddressFormValue = '';
+$mailLogEntries = [];
 $reservationFormDefaults = $reservationFormData;
 $reservationFormMode = 'create';
 $isEditingReservation = false;
@@ -314,6 +334,7 @@ $navItems = [
     'categories' => 'Kategorien',
     'rooms' => 'Zimmer',
     'guests' => 'Gäste',
+    'meldeschein' => 'Meldescheine',
     'users' => 'Benutzer',
     'settings' => 'Einstellungen',
     'updates' => 'Updates',
@@ -580,7 +601,9 @@ try {
     $userManager = new UserManager($pdo);
     $reservationManager = new ReservationManager($pdo);
     $settingsManager = new SettingManager($pdo);
+    $emailLogManager = new EmailLogManager($pdo);
     $documentManager = new DocumentManager($pdo, $settingsManager);
+    $meldescheinManager = new MeldescheinManager($pdo, $settingsManager);
     $backupManager = new BackupManager($pdo);
     $rateManager = new RateManager($pdo);
     $taxCategoryManager = new TaxCategoryManager($pdo);
@@ -619,6 +642,61 @@ if ($documentManager instanceof DocumentManager && isset($_GET['downloadDocument
     exit;
 }
 
+$activeMeldescheinDownload = isset($_GET['downloadMeldeschein']);
+if ($meldescheinManager instanceof MeldescheinManager && $activeMeldescheinDownload) {
+    $downloadMeldescheinId = (int) $_GET['downloadMeldeschein'];
+
+    if ($downloadMeldescheinId > 0) {
+        $meldescheinToDownload = $meldescheinManager->find($downloadMeldescheinId);
+
+        if ($meldescheinToDownload !== null) {
+            $pdfPath = isset($meldescheinToDownload['pdf_path']) ? (string) $meldescheinToDownload['pdf_path'] : '';
+            if ($pdfPath !== '') {
+                $absolutePath = realpath(__DIR__ . '/../' . ltrim($pdfPath, '/'));
+                if ($absolutePath !== false && is_readable($absolutePath)) {
+                    header('Content-Type: application/pdf');
+                    header('Content-Disposition: inline; filename="' . basename($absolutePath) . '"');
+                    header('Content-Length: ' . (string) filesize($absolutePath));
+                    readfile($absolutePath);
+                    exit;
+                }
+            }
+        }
+    }
+
+    $_SESSION['alert'] = [
+        'type' => 'warning',
+        'message' => 'Der angeforderte Meldeschein konnte nicht heruntergeladen werden.',
+    ];
+
+    header('Location: index.php?section=meldeschein');
+    exit;
+}
+
+$activeMeldescheinSignatureId = null;
+$activeMeldescheinSignature = null;
+if ($meldescheinManager instanceof MeldescheinManager && isset($_GET['signMeldeschein'])) {
+    $activeMeldescheinSignatureId = (int) $_GET['signMeldeschein'];
+
+    if ($activeMeldescheinSignatureId > 0) {
+        $activeMeldescheinSignature = $meldescheinManager->find($activeMeldescheinSignatureId);
+
+        if ($activeMeldescheinSignature === null && $alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Der ausgewählte Meldeschein konnte nicht geladen werden.',
+            ];
+        }
+        $activeSection = 'meldeschein';
+    } elseif ($alert === null) {
+        $alert = [
+            'type' => 'warning',
+            'message' => 'Es wurde keine gültige Meldeschein-ID angegeben.',
+        ];
+        $activeSection = 'meldeschein';
+    }
+}
+
 $settingsAvailable = $settingsManager instanceof SettingManager && $pdo !== null;
 
 if ($settingsManager instanceof SettingManager) {
@@ -637,9 +715,29 @@ if ($settingsManager instanceof SettingManager) {
         }
     }
 
+    $mailSettings = $settingsManager->getMany(['mail_from_address', 'mail_reply_to_address']);
+    if (isset($mailSettings['mail_from_address'])) {
+        $mailFromAddress = (string) $mailSettings['mail_from_address'];
+    }
+    if (isset($mailSettings['mail_reply_to_address'])) {
+        $mailReplyToAddress = (string) $mailSettings['mail_reply_to_address'];
+    }
+
     $storedInvoiceLogo = $settingsManager->get('invoice_logo_path', '');
     if ($storedInvoiceLogo !== null && $storedInvoiceLogo !== '') {
         $invoiceLogoPath = $storedInvoiceLogo;
+    }
+}
+
+$mailFromAddressFormValue = $mailFromAddress;
+$mailReplyToAddressFormValue = $mailReplyToAddress;
+
+if ($emailLogManager instanceof EmailLogManager) {
+    try {
+        $mailLogEntries = $emailLogManager->recent(50);
+    } catch (Throwable $exception) {
+        $mailLogEntries = [];
+        error_log('Unable to fetch email logs: ' . $exception->getMessage());
     }
 }
 
@@ -781,6 +879,101 @@ $formatCurrencyWithCode = static function (?float $value, string $currency): str
     }
 
     return number_format($value, 2, ',', '.') . ' ' . $normalizedCurrency;
+};
+
+$formatDateLabel = static function (?string $value): ?string {
+    if ($value === null || $value === '') {
+        return null;
+    }
+
+    try {
+        return (new DateTimeImmutable($value))->format('d.m.Y');
+    } catch (Throwable $exception) {
+        return null;
+    }
+};
+
+$signatureInviteBaseUrl = (static function (): string {
+    $scriptName = isset($_SERVER['SCRIPT_NAME']) ? (string) $_SERVER['SCRIPT_NAME'] : '';
+    $directory = str_replace('\\', '/', dirname($scriptName));
+    if ($directory === '.' || $directory === '\\' || $directory === '/') {
+        $directory = '';
+    }
+    $directory = $directory !== '' ? '/' . ltrim($directory, '/') : '';
+
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? (string) $_SERVER['HTTP_HOST']
+        : (isset($_SERVER['SERVER_NAME']) ? (string) $_SERVER['SERVER_NAME'] : '');
+
+    $scheme = 'http';
+    if (
+        (isset($_SERVER['HTTPS']) && ($_SERVER['HTTPS'] === 'on' || $_SERVER['HTTPS'] === '1'))
+        || (isset($_SERVER['SERVER_PORT']) && (string) $_SERVER['SERVER_PORT'] === '443')
+    ) {
+        $scheme = 'https';
+    }
+
+    if ($host === '') {
+        $relativeBase = ltrim($directory . '/meldeschein-signature.php', '/');
+
+        return $relativeBase !== '' ? '/' . $relativeBase : 'meldeschein-signature.php';
+    }
+
+    return sprintf('%s://%s%s/meldeschein-signature.php', $scheme, $host, $directory);
+})();
+
+$buildSignatureInviteUrl = static function (string $token) use ($signatureInviteBaseUrl): string {
+    $base = $signatureInviteBaseUrl !== '' ? $signatureInviteBaseUrl : 'meldeschein-signature.php';
+    $separator = str_contains($base, '?') ? '&' : '?';
+
+    return $base . $separator . 'token=' . rawurlencode($token);
+};
+
+$calculateNightCount = static function (?string $arrival, ?string $departure): ?int {
+    if ($arrival === null || $arrival === '' || $departure === null || $departure === '') {
+        return null;
+    }
+
+    try {
+        $arrivalDate = new DateTimeImmutable($arrival);
+        $departureDate = new DateTimeImmutable($departure);
+    } catch (Throwable $exception) {
+        return null;
+    }
+
+    $diff = $arrivalDate->diff($departureDate);
+    if ($diff->invert === 1) {
+        return null;
+    }
+
+    $nights = (int) $diff->days;
+
+    return $nights > 0 ? $nights : 1;
+};
+
+$buildAddressLines = static function (array $data, string $streetKey = 'address_street', string $postalKey = 'address_postal_code', string $cityKey = 'address_city', string $countryKey = 'address_country'): array {
+    $lines = [];
+
+    if (!empty($data[$streetKey])) {
+        $lines[] = trim((string) $data[$streetKey]);
+    }
+
+    $cityParts = [];
+    if (!empty($data[$postalKey])) {
+        $cityParts[] = trim((string) $data[$postalKey]);
+    }
+    if (!empty($data[$cityKey])) {
+        $cityParts[] = trim((string) $data[$cityKey]);
+    }
+    if ($cityParts !== []) {
+        $lines[] = implode(' ', $cityParts);
+    }
+
+    if (!empty($data[$countryKey])) {
+        $lines[] = trim((string) $data[$countryKey]);
+    }
+
+    return array_values(array_filter($lines, static fn ($value) => $value !== ''));
 };
 
 $overnightVatRate = 7.0;
@@ -1434,6 +1627,82 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             ];
 
             header('Location: index.php?section=settings');
+            exit;
+
+        case 'settings_mail':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Einstellungen konnte nicht hergestellt werden.',
+                ];
+                break;
+            }
+
+            $fromInput = trim((string) ($_POST['mail_from_address'] ?? ''));
+            $replyToInput = trim((string) ($_POST['mail_reply_to_address'] ?? ''));
+
+            $mailFromAddressFormValue = $fromInput;
+            $mailReplyToAddressFormValue = $replyToInput;
+
+            if ($fromInput !== '' && !filter_var($fromInput, FILTER_VALIDATE_EMAIL)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie eine gültige E-Mail-Adresse für den Absender ein oder lassen Sie das Feld leer.',
+                ];
+                break;
+            }
+
+            if ($replyToInput !== '' && !filter_var($replyToInput, FILTER_VALIDATE_EMAIL)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie eine gültige Antwortadresse ein oder lassen Sie das Feld leer.',
+                ];
+                break;
+            }
+
+            $settingsManager->set('mail_from_address', $fromInput);
+            $settingsManager->set('mail_reply_to_address', $replyToInput);
+
+            $mailFromAddress = $fromInput;
+            $mailReplyToAddress = $replyToInput;
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'E-Mail-Einstellungen wurden gespeichert.',
+            ];
+
+            header('Location: index.php?section=settings#mail-settings');
+            exit;
+
+        case 'settings_mail_log_clear':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$emailLogManager instanceof EmailLogManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Das E-Mail-Protokoll steht derzeit nicht zur Verfügung.',
+                ];
+                break;
+            }
+
+            try {
+                $emailLogManager->clear();
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Das E-Mail-Protokoll wurde geleert.',
+                ];
+            } catch (Throwable $exception) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Das E-Mail-Protokoll konnte nicht geleert werden: '
+                        . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            header('Location: index.php?section=settings#mail-log');
             exit;
 
         case 'settings_invoice_logo':
@@ -3523,6 +3792,550 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             header('Location: index.php?section=rooms');
             exit;
+
+        case 'meldeschein_create':
+            $activeSection = 'meldeschein';
+
+            if (!$meldescheinManager instanceof MeldescheinManager || !$guestManager instanceof GuestManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Meldescheinverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $guestId = (int) ($_POST['guest_id'] ?? 0);
+            if ($guestId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Meldeschein konnte nicht erstellt werden, da kein Gast angegeben wurde.',
+                ];
+                break;
+            }
+
+            try {
+                $guest = $guestManager->find($guestId);
+                if ($guest === null) {
+                    throw new RuntimeException('Der ausgewählte Gast wurde nicht gefunden.');
+                }
+
+                $reservationIdInput = isset($_POST['reservation_id']) ? (int) $_POST['reservation_id'] : 0;
+                $reservationDetails = null;
+
+                if ($reservationIdInput > 0 && $reservationManager instanceof ReservationManager) {
+                    $reservationDetails = $reservationManager->find($reservationIdInput);
+                }
+
+                if ($reservationDetails === null && $reservationManager instanceof ReservationManager) {
+                    $latestReservation = $reservationManager->latestForGuest($guestId);
+                    if ($latestReservation !== null && isset($latestReservation['id'])) {
+                        $reservationDetails = $reservationManager->find((int) $latestReservation['id']);
+                    }
+                }
+
+                $reservationId = null;
+                $reservationNumber = '';
+                $reservationRoomLabel = '';
+                $reservationArrival = null;
+                $reservationDeparture = null;
+
+                if (is_array($reservationDetails)) {
+                    $reservationId = isset($reservationDetails['id']) ? (int) $reservationDetails['id'] : null;
+                    $reservationNumber = isset($reservationDetails['reservation_number']) ? (string) $reservationDetails['reservation_number'] : '';
+                    if (!empty($reservationDetails['arrival_date'])) {
+                        $reservationArrival = (string) $reservationDetails['arrival_date'];
+                    }
+                    if (!empty($reservationDetails['departure_date'])) {
+                        $reservationDeparture = (string) $reservationDetails['departure_date'];
+                    }
+
+                    $items = isset($reservationDetails['items']) && is_array($reservationDetails['items']) ? $reservationDetails['items'] : [];
+                    $matchedItem = null;
+                    foreach ($items as $item) {
+                        if ((int) ($item['primary_guest_id'] ?? 0) === $guestId) {
+                            $matchedItem = $item;
+                            break;
+                        }
+                    }
+                    if ($matchedItem === null && $items !== []) {
+                        $matchedItem = $items[0];
+                    }
+
+                    if (is_array($matchedItem)) {
+                        if (!empty($matchedItem['arrival_date'])) {
+                            $reservationArrival = (string) $matchedItem['arrival_date'];
+                        }
+                        if (!empty($matchedItem['departure_date'])) {
+                            $reservationDeparture = (string) $matchedItem['departure_date'];
+                        }
+
+                        $roomParts = [];
+                        if (!empty($matchedItem['room_number'])) {
+                            $roomParts[] = 'Zimmer ' . trim((string) $matchedItem['room_number']);
+                        }
+                        if (!empty($matchedItem['category_name'])) {
+                            $roomParts[] = trim((string) $matchedItem['category_name']);
+                        }
+                        $reservationRoomLabel = implode(' · ', array_values(array_filter($roomParts, static fn ($value) => $value !== '')));
+                    }
+                }
+
+                $arrivalDate = $reservationArrival !== null ? $reservationArrival : ($guest['arrival_date'] ?? null);
+                $departureDate = $reservationDeparture !== null ? $reservationDeparture : ($guest['departure_date'] ?? null);
+
+                if ($reservationRoomLabel === '' && isset($guest['room_id']) && $guest['room_id'] !== null && $roomManager instanceof RoomManager) {
+                    $roomId = (int) $guest['room_id'];
+                    if ($roomId > 0) {
+                        $roomRecord = $roomManager->find($roomId);
+                        if (is_array($roomRecord)) {
+                            $roomParts = [];
+                            if (!empty($roomRecord['room_number'])) {
+                                $roomParts[] = 'Zimmer ' . trim((string) $roomRecord['room_number']);
+                            }
+                            if (!empty($roomRecord['category_id']) && $categoryManager instanceof RoomCategoryManager) {
+                                $categoryRecord = $categoryManager->find((int) $roomRecord['category_id']);
+                                if (is_array($categoryRecord) && !empty($categoryRecord['name'])) {
+                                    $roomParts[] = trim((string) $categoryRecord['name']);
+                                }
+                            }
+                            $reservationRoomLabel = implode(' · ', array_values(array_filter($roomParts, static fn ($value) => $value !== '')));
+                        }
+                    }
+                }
+
+                $companyName = '';
+                $companyPayload = null;
+                if (!empty($guest['company_id']) && $companyManager instanceof CompanyManager) {
+                    $companyRecord = $companyManager->find((int) $guest['company_id']);
+                    if (is_array($companyRecord)) {
+                        $companyName = isset($companyRecord['name']) ? (string) $companyRecord['name'] : '';
+                        $companyPayload = [
+                            'name' => $companyName,
+                            'address_lines' => $buildAddressLines($companyRecord),
+                            'tax_id' => isset($companyRecord['tax_id']) ? (string) $companyRecord['tax_id'] : '',
+                            'contact' => [
+                                'email' => isset($companyRecord['email']) ? (string) $companyRecord['email'] : '',
+                                'phone' => isset($companyRecord['phone']) ? (string) $companyRecord['phone'] : '',
+                            ],
+                        ];
+                    }
+                }
+
+                if ($companyPayload === null && !empty($guest['company_name'])) {
+                    $companyName = (string) $guest['company_name'];
+                }
+
+                $guestFullNameParts = array_filter([
+                    isset($guest['first_name']) ? trim((string) $guest['first_name']) : '',
+                    isset($guest['last_name']) ? trim((string) $guest['last_name']) : '',
+                ], static fn ($value) => $value !== '');
+                $guestFullName = $guestFullNameParts !== [] ? implode(' ', $guestFullNameParts) : ('Gast #' . $guestId);
+
+                $guestDetails = [
+                    'salutation' => isset($guest['salutation']) ? (string) $guest['salutation'] : '',
+                    'first_name' => isset($guest['first_name']) ? (string) $guest['first_name'] : '',
+                    'last_name' => isset($guest['last_name']) ? (string) $guest['last_name'] : '',
+                    'name' => $guestFullName,
+                    'date_of_birth' => isset($guest['date_of_birth']) ? (string) $guest['date_of_birth'] : null,
+                    'nationality' => isset($guest['nationality']) ? (string) $guest['nationality'] : '',
+                    'document' => [
+                        'type' => isset($guest['document_type']) ? (string) $guest['document_type'] : '',
+                        'number' => isset($guest['document_number']) ? (string) $guest['document_number'] : '',
+                    ],
+                    'address_lines' => $buildAddressLines($guest),
+                    'contact' => [
+                        'email' => isset($guest['email']) ? (string) $guest['email'] : '',
+                        'phone' => isset($guest['phone']) ? (string) $guest['phone'] : '',
+                    ],
+                    'notes' => isset($guest['notes']) ? (string) $guest['notes'] : '',
+                ];
+
+                $purpose = isset($guest['purpose_of_stay']) && (string) $guest['purpose_of_stay'] === 'geschäftlich' ? 'geschäftlich' : 'privat';
+
+                $stayDetails = [
+                    'arrival_date' => $arrivalDate !== null && $arrivalDate !== '' ? (string) $arrivalDate : null,
+                    'departure_date' => $departureDate !== null && $departureDate !== '' ? (string) $departureDate : null,
+                    'arrival_date_formatted' => $formatDateLabel($arrivalDate),
+                    'departure_date_formatted' => $formatDateLabel($departureDate),
+                    'nights' => $calculateNightCount($arrivalDate, $departureDate),
+                    'purpose' => $purpose,
+                    'purpose_label' => $purpose === 'geschäftlich' ? 'Geschäftlich' : 'Privat',
+                    'room_label' => $reservationRoomLabel,
+                    'reservation_number' => $reservationNumber,
+                ];
+
+                $details = [
+                    'guest' => $guestDetails,
+                    'stay' => $stayDetails,
+                    'company' => $companyPayload,
+                    'notes' => isset($guest['notes']) ? (string) $guest['notes'] : '',
+                ];
+
+                $renderer = new MeldescheinPdfRenderer();
+                $form = $meldescheinManager->createForm([
+                    'guest_id' => $guestId,
+                    'guest_name' => $guestFullName,
+                    'arrival_date' => $arrivalDate,
+                    'departure_date' => $departureDate,
+                    'issued_at' => date('Y-m-d'),
+                    'purpose_of_stay' => $purpose,
+                    'company_name' => $companyName,
+                    'room_label' => $reservationRoomLabel,
+                    'reservation_id' => $reservationId,
+                    'details' => $details,
+                    'notes' => isset($guest['notes']) ? (string) $guest['notes'] : '',
+                ], static function (array $payload) use ($renderer): string {
+                    return $renderer->render($payload);
+                });
+
+                $formNumber = isset($form['form_number']) ? (string) $form['form_number'] : 'Meldeschein';
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Meldeschein %s wurde erstellt.', htmlspecialchars($formNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=meldeschein');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'meldeschein_signature_invite':
+            $activeSection = 'meldeschein';
+
+            if (!$meldescheinManager instanceof MeldescheinManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Meldescheinverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $inviteFormId = (int) ($_POST['id'] ?? 0);
+            $validHours = isset($_POST['valid_hours']) ? (int) $_POST['valid_hours'] : 72;
+            if ($validHours <= 0) {
+                $validHours = 72;
+            }
+
+            if ($inviteFormId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Signatur-Link konnte nicht erzeugt werden, da keine Meldeschein-ID übermittelt wurde.',
+                ];
+                break;
+            }
+
+            $emailRaw = trim((string) ($_POST['email'] ?? ''));
+            $emailValid = $emailRaw !== '' && filter_var($emailRaw, FILTER_VALIDATE_EMAIL);
+
+            try {
+                $form = $meldescheinManager->createSignatureInvite($inviteFormId, $validHours);
+                $token = isset($form['signature_token']) ? (string) $form['signature_token'] : '';
+
+                if ($token === '') {
+                    throw new RuntimeException('Der Signatur-Link konnte nicht erzeugt werden.');
+                }
+
+                $inviteLink = $buildSignatureInviteUrl($token);
+                $expiresAtRaw = isset($form['signature_token_expires_at']) ? (string) $form['signature_token_expires_at'] : null;
+                $expiresAtLabel = null;
+                if ($expiresAtRaw !== null && $expiresAtRaw !== '') {
+                    try {
+                        $expiresAtLabel = (new DateTimeImmutable($expiresAtRaw))->format('d.m.Y H:i');
+                    } catch (Throwable $exception) {
+                        $expiresAtLabel = null;
+                    }
+                }
+
+                $emailStatus = 'skipped';
+                $mailSent = false;
+                $mailErrorMessage = null;
+                $mailSubject = '';
+                $mailBody = '';
+                $mailHeaders = '';
+
+                if ($emailRaw !== '') {
+                    $mailSubject = sprintf(
+                        'Meldeschein %s unterschreiben',
+                        isset($form['form_number']) && $form['form_number'] !== ''
+                            ? (string) $form['form_number']
+                            : ('#' . $inviteFormId)
+                    );
+                    $guestNameForMail = isset($form['guest_name']) ? (string) $form['guest_name'] : '';
+                    $appName = isset($config['name']) ? (string) $config['name'] : 'Ihre Unterkunft';
+                    $mailLines = [
+                        'Guten Tag' . ($guestNameForMail !== '' ? ' ' . $guestNameForMail : '') . ',',
+                        '',
+                        'bitte unterschreiben Sie Ihren Meldeschein digital über den folgenden Link:',
+                        $inviteLink,
+                    ];
+                    if ($expiresAtLabel !== null) {
+                        $mailLines[] = '';
+                        $mailLines[] = 'Der Link ist gültig bis ' . $expiresAtLabel . '.';
+                    }
+                    $mailLines[] = '';
+                    $mailLines[] = 'Vielen Dank!';
+                    $mailLines[] = $appName;
+
+                    $mailBody = implode("\n", $mailLines);
+                    $mailHeaderLines = [
+                        'Content-Type: text/plain; charset=utf-8',
+                        'Content-Transfer-Encoding: 8bit',
+                    ];
+                    if ($mailFromAddress !== '') {
+                        $mailHeaderLines[] = 'From: ' . str_replace(["\r", "\n"], '', $mailFromAddress);
+                    }
+                    if ($mailReplyToAddress !== '') {
+                        $mailHeaderLines[] = 'Reply-To: ' . str_replace(["\r", "\n"], '', $mailReplyToAddress);
+                    }
+                    $mailHeaders = implode("\r\n", $mailHeaderLines) . "\r\n";
+
+                    if ($emailValid) {
+                        $envelopeFrom = '';
+                        if ($mailFromAddress !== '') {
+                            $envelopeCandidate = $mailFromAddress;
+                            if (preg_match('/<([^>]+)>/', $envelopeCandidate, $matches)) {
+                                $envelopeCandidate = $matches[1];
+                            }
+                            $envelopeCandidate = trim(str_replace(["\r", "\n"], '', $envelopeCandidate));
+                            if ($envelopeCandidate !== '' && filter_var($envelopeCandidate, FILTER_VALIDATE_EMAIL)) {
+                                $envelopeFrom = $envelopeCandidate;
+                            }
+                        }
+
+                        if (!function_exists('mail')) {
+                            $mailErrorMessage = 'Die PHP-Funktion mail() ist auf diesem Server nicht verfügbar.';
+                        } else {
+                            $mailAdditionalParameters = $envelopeFrom !== '' ? ('-f' . $envelopeFrom) : '';
+                            $mailErrorMessage = null;
+                            set_error_handler(static function (int $severity, string $message) use (&$mailErrorMessage): bool {
+                                $mailErrorMessage = $message;
+                                return true;
+                            });
+                            try {
+                                if ($mailAdditionalParameters !== '') {
+                                    $mailSent = mail($emailRaw, $mailSubject, $mailBody, $mailHeaders, $mailAdditionalParameters);
+                                } else {
+                                    $mailSent = mail($emailRaw, $mailSubject, $mailBody, $mailHeaders);
+                                }
+                            } catch (Throwable $mailException) {
+                                $mailSent = false;
+                                $mailErrorMessage = $mailException->getMessage();
+                            } finally {
+                                restore_error_handler();
+                            }
+
+                            if (!$mailSent && $mailErrorMessage === null) {
+                                $mailErrorMessage = 'mail() lieferte keine Erfolgsbestätigung.';
+                            }
+                        }
+
+                        $emailStatus = $mailSent ? 'sent' : 'failed';
+                    } else {
+                        $emailStatus = 'invalid';
+                        $mailErrorMessage = 'Die E-Mail-Adresse ist ungültig.';
+                    }
+
+                    if ($emailLogManager instanceof EmailLogManager) {
+                        $context = [
+                            'form_id' => $inviteFormId,
+                            'form_number' => isset($form['form_number']) ? (string) $form['form_number'] : null,
+                            'guest_name' => isset($form['guest_name']) ? (string) $form['guest_name'] : null,
+                            'token_suffix' => $token !== '' ? substr($token, -8) : null,
+                            'expires_at' => $expiresAtRaw,
+                        ];
+
+                        $emailLogManager->log(
+                            $emailRaw,
+                            $mailSubject,
+                            $mailBody,
+                            $mailHeaders,
+                            $emailStatus,
+                            $mailErrorMessage,
+                            array_filter($context, static fn ($value) => $value !== null && $value !== '')
+                        );
+                    }
+                }
+
+                $alertType = 'success';
+                $alertMessage = 'Signatur-Link wurde erstellt.';
+
+                if ($emailStatus === 'sent') {
+                    $alertMessage = sprintf(
+                        'Signatur-Link wurde an <strong>%s</strong> gesendet.',
+                        htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8')
+                    );
+                } elseif ($emailStatus === 'invalid') {
+                    $alertType = 'warning';
+                    $alertMessage = sprintf(
+                        'Signatur-Link erstellt. Die E-Mail-Adresse <strong>%s</strong> ist ungültig.',
+                        htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8')
+                    );
+                } elseif ($emailStatus === 'failed') {
+                    $alertType = 'warning';
+                    $alertMessage = sprintf(
+                        'Signatur-Link erstellt, aber die E-Mail an <strong>%s</strong> konnte nicht versendet werden.',
+                        htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8')
+                    );
+                    if ($mailErrorMessage !== null && $mailErrorMessage !== '') {
+                        $alertMessage .= '<br><small class="text-danger">Fehler: '
+                            . htmlspecialchars($mailErrorMessage, ENT_QUOTES, 'UTF-8')
+                            . '</small>';
+                    }
+                }
+
+                $_SESSION['alert'] = [
+                    'type' => $alertType,
+                    'message' => $alertMessage,
+                ];
+
+                $_SESSION['signature_invite_result'] = [
+                    'form_id' => $inviteFormId,
+                    'link' => $inviteLink,
+                    'token' => $token,
+                    'expires_at' => $expiresAtRaw,
+                    'expires_label' => $expiresAtLabel,
+                    'valid_hours' => $validHours,
+                    'email' => $emailRaw,
+                    'email_status' => $emailStatus,
+                    'email_error' => $mailErrorMessage,
+                ];
+
+                header('Location: index.php?section=meldeschein&signMeldeschein=' . $inviteFormId);
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+                $activeMeldescheinSignatureId = $inviteFormId;
+                $activeMeldescheinSignature = $meldescheinManager->find($inviteFormId);
+            }
+
+            break;
+
+        case 'meldeschein_capture_signature':
+            $activeSection = 'meldeschein';
+
+            if (!$meldescheinManager instanceof MeldescheinManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Meldescheinverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $signatureFormId = (int) ($_POST['id'] ?? 0);
+            $signatureData = trim((string) ($_POST['signature_data'] ?? ''));
+
+            if ($signatureFormId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Unterschrift konnte nicht gespeichert werden, da keine gültige Meldeschein-ID übermittelt wurde.',
+                ];
+                $activeMeldescheinSignatureId = $signatureFormId;
+                break;
+            }
+
+            if ($signatureData === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte erfassen Sie die Gast-Unterschrift, bevor Sie sie speichern.',
+                ];
+                $activeMeldescheinSignatureId = $signatureFormId;
+                $activeMeldescheinSignature = $meldescheinManager->find($signatureFormId);
+                break;
+            }
+
+            try {
+                $renderer = new MeldescheinPdfRenderer();
+                $form = $meldescheinManager->saveGuestSignature(
+                    $signatureFormId,
+                    $signatureData,
+                    static function (array $payload) use ($renderer): string {
+                        return $renderer->render($payload);
+                    }
+                );
+
+                $formNumber = isset($form['form_number']) ? (string) $form['form_number'] : ('#' . $signatureFormId);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Unterschrift für Meldeschein %s wurde gespeichert.', htmlspecialchars($formNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=meldeschein');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+                $activeMeldescheinSignatureId = $signatureFormId;
+                $activeMeldescheinSignature = $meldescheinManager->find($signatureFormId);
+            }
+
+            break;
+
+        case 'meldeschein_delete':
+            $activeSection = 'meldeschein';
+
+            if (!$meldescheinManager instanceof MeldescheinManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Meldescheinverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $meldescheinId = (int) ($_POST['id'] ?? 0);
+            if ($meldescheinId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Meldeschein konnte nicht gelöscht werden, da keine gültige ID übermittelt wurde.',
+                ];
+                break;
+            }
+
+            try {
+                $form = $meldescheinManager->find($meldescheinId);
+                if ($form === null) {
+                    throw new RuntimeException('Der ausgewählte Meldeschein wurde nicht gefunden.');
+                }
+
+                $pdfPath = isset($form['pdf_path']) ? (string) $form['pdf_path'] : '';
+                if ($pdfPath !== '') {
+                    $absolutePath = realpath(__DIR__ . '/../' . ltrim($pdfPath, '/'));
+                    if ($absolutePath !== false && is_file($absolutePath)) {
+                        @unlink($absolutePath);
+                    }
+                }
+
+                $meldescheinManager->delete($meldescheinId);
+
+                $formNumber = isset($form['form_number']) ? (string) $form['form_number'] : ('#' . $meldescheinId);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Meldeschein %s wurde gelöscht.', htmlspecialchars($formNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=meldeschein');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
 
         case 'guest_create':
         case 'guest_update':
@@ -5872,6 +6685,224 @@ if ($pdo !== null) {
     }
 }
 
+$meldescheinReservationMap = [];
+if ($reservations !== []) {
+    foreach ($reservations as $reservation) {
+        if (!is_array($reservation)) {
+            continue;
+        }
+
+        $reservationId = isset($reservation['id']) ? (int) $reservation['id'] : 0;
+        if ($reservationId <= 0) {
+            continue;
+        }
+
+        $mainGuestId = isset($reservation['guest_id']) ? (int) $reservation['guest_id'] : 0;
+        if ($mainGuestId > 0) {
+            if (!isset($meldescheinReservationMap[$mainGuestId])) {
+                $meldescheinReservationMap[$mainGuestId] = [];
+            }
+            $meldescheinReservationMap[$mainGuestId][] = $reservation;
+        }
+
+        $items = isset($reservation['items']) && is_array($reservation['items']) ? $reservation['items'] : [];
+        foreach ($items as $item) {
+            if (!is_array($item) || !isset($item['primary_guest_id'])) {
+                continue;
+            }
+
+            $primaryGuestId = (int) $item['primary_guest_id'];
+            if ($primaryGuestId <= 0) {
+                continue;
+            }
+
+            if (!isset($meldescheinReservationMap[$primaryGuestId])) {
+                $meldescheinReservationMap[$primaryGuestId] = [];
+            }
+
+            $meldescheinReservationMap[$primaryGuestId][] = $reservation;
+        }
+    }
+}
+
+$selectLatestReservationForGuest = static function (array $reservationList): ?array {
+    if ($reservationList === []) {
+        return null;
+    }
+
+    $latest = null;
+    $latestArrival = null;
+
+    foreach ($reservationList as $reservation) {
+        if (!is_array($reservation)) {
+            continue;
+        }
+
+        $arrivalValue = isset($reservation['arrival_date']) ? (string) $reservation['arrival_date'] : '';
+        $arrivalDate = null;
+        if ($arrivalValue !== '') {
+            try {
+                $arrivalDate = new DateTimeImmutable($arrivalValue);
+            } catch (Throwable $exception) {
+                $arrivalDate = null;
+            }
+        }
+
+        if ($latest === null) {
+            $latest = $reservation;
+            $latestArrival = $arrivalDate;
+            continue;
+        }
+
+        if ($arrivalDate instanceof DateTimeImmutable) {
+            if (!($latestArrival instanceof DateTimeImmutable) || $arrivalDate > $latestArrival) {
+                $latest = $reservation;
+                $latestArrival = $arrivalDate;
+            }
+            continue;
+        }
+
+        if (!($latestArrival instanceof DateTimeImmutable)) {
+            $currentCreated = isset($reservation['created_at']) ? (string) $reservation['created_at'] : '';
+            $latestCreated = isset($latest['created_at']) ? (string) $latest['created_at'] : '';
+
+            if ($currentCreated > $latestCreated) {
+                $latest = $reservation;
+            }
+        }
+    }
+
+    return $latest;
+};
+
+if ($meldescheinManager instanceof MeldescheinManager) {
+    $meldescheine = $meldescheinManager->listForms();
+}
+
+$meldescheinCandidates = [];
+foreach ($guests as $guest) {
+    if (!is_array($guest) || !isset($guest['id'])) {
+        continue;
+    }
+
+    $guestId = (int) $guest['id'];
+    if ($guestId <= 0) {
+        continue;
+    }
+
+    $nameParts = array_filter([
+        isset($guest['first_name']) ? trim((string) $guest['first_name']) : '',
+        isset($guest['last_name']) ? trim((string) $guest['last_name']) : '',
+    ], static fn ($value) => $value !== '');
+    $fullName = $nameParts !== [] ? implode(' ', $nameParts) : ('Gast #' . $guestId);
+
+    $arrivalDate = isset($guest['arrival_date']) ? (string) $guest['arrival_date'] : null;
+    $departureDate = isset($guest['departure_date']) ? (string) $guest['departure_date'] : null;
+
+    $reservationCandidates = $meldescheinReservationMap[$guestId] ?? [];
+    $latestReservation = $reservationCandidates !== [] ? $selectLatestReservationForGuest($reservationCandidates) : null;
+    $candidateReservationId = null;
+    $candidateReservationNumber = '';
+    $candidateRoomLabel = '';
+
+    if (is_array($latestReservation)) {
+        $candidateReservationId = isset($latestReservation['id']) ? (int) $latestReservation['id'] : null;
+        if (!empty($latestReservation['arrival_date'])) {
+            $arrivalDate = (string) $latestReservation['arrival_date'];
+        }
+        if (!empty($latestReservation['departure_date'])) {
+            $departureDate = (string) $latestReservation['departure_date'];
+        }
+        $candidateReservationNumber = isset($latestReservation['reservation_number']) ? (string) $latestReservation['reservation_number'] : '';
+
+        $items = isset($latestReservation['items']) && is_array($latestReservation['items']) ? $latestReservation['items'] : [];
+        $matchedItem = null;
+        foreach ($items as $item) {
+            if ((int) ($item['primary_guest_id'] ?? 0) === $guestId) {
+                $matchedItem = $item;
+                break;
+            }
+        }
+        if ($matchedItem === null && $items !== []) {
+            $matchedItem = $items[0];
+        }
+
+        if (is_array($matchedItem)) {
+            if (!empty($matchedItem['arrival_date'])) {
+                $arrivalDate = (string) $matchedItem['arrival_date'];
+            }
+            if (!empty($matchedItem['departure_date'])) {
+                $departureDate = (string) $matchedItem['departure_date'];
+            }
+
+            $roomParts = [];
+            if (!empty($matchedItem['room_number'])) {
+                $roomParts[] = 'Zimmer ' . trim((string) $matchedItem['room_number']);
+            }
+            if (!empty($matchedItem['category_name'])) {
+                $roomParts[] = trim((string) $matchedItem['category_name']);
+            }
+            $candidateRoomLabel = implode(' · ', array_values(array_filter($roomParts, static fn ($value) => $value !== '')));
+        }
+    }
+
+    if ($candidateRoomLabel === '' && isset($guest['room_id']) && $guest['room_id'] !== null) {
+        $guestRoomId = (int) $guest['room_id'];
+        if ($guestRoomId > 0 && isset($roomLookup[$guestRoomId])) {
+            $room = $roomLookup[$guestRoomId];
+            $roomParts = [];
+            if (!empty($room['number'])) {
+                $roomParts[] = 'Zimmer ' . trim((string) $room['number']);
+            }
+            if (!empty($room['category_name'])) {
+                $roomParts[] = trim((string) $room['category_name']);
+            }
+            $candidateRoomLabel = implode(' · ', array_values(array_filter($roomParts, static fn ($value) => $value !== '')));
+        }
+    }
+
+    $purpose = isset($guest['purpose_of_stay']) && (string) $guest['purpose_of_stay'] === 'geschäftlich' ? 'geschäftlich' : 'privat';
+
+    $requiredFields = [
+        'date_of_birth' => 'Geburtsdatum',
+        'nationality' => 'Staatsangehörigkeit',
+        'address_street' => 'Straße',
+        'address_city' => 'Ort',
+        'address_country' => 'Land',
+        'document_type' => 'Ausweisart',
+        'document_number' => 'Ausweisnummer',
+    ];
+
+    $missingFields = [];
+    foreach ($requiredFields as $field => $label) {
+        if (empty($guest[$field])) {
+            $missingFields[] = $label;
+        }
+    }
+
+    $hasStayWindow = ($arrivalDate !== null && $arrivalDate !== '') || ($departureDate !== null && $departureDate !== '');
+    $isReady = $missingFields === [] && $hasStayWindow;
+
+    $arrivalLabel = $formatDateLabel($arrivalDate);
+    $departureLabel = $formatDateLabel($departureDate);
+    $companyName = isset($guest['company_name']) ? (string) $guest['company_name'] : '';
+
+    $meldescheinCandidates[] = [
+        'guest_id' => $guestId,
+        'guest_name' => $fullName,
+        'arrival_label' => $arrivalLabel !== null ? $arrivalLabel : ($arrivalDate !== null ? (string) $arrivalDate : '—'),
+        'departure_label' => $departureLabel !== null ? $departureLabel : ($departureDate !== null ? (string) $departureDate : '—'),
+        'purpose_label' => $purpose === 'geschäftlich' ? 'Geschäftlich' : 'Privat',
+        'purpose' => $purpose,
+        'company_name' => $companyName,
+        'room_label' => $candidateRoomLabel !== '' ? $candidateRoomLabel : '—',
+        'missing_fields' => $missingFields,
+        'ready' => $isReady,
+        'reservation_id' => $candidateReservationId,
+        'reservation_number' => $candidateReservationNumber,
+    ];
+}
+
 if ($pdo !== null && isset($_GET['editDocument']) && $documentFormData['id'] === null) {
     $documentId = (int) $_GET['editDocument'];
 
@@ -7038,6 +8069,7 @@ if ($activeSection === 'reservations') {
               </button>
               <ul class="dropdown-menu dropdown-menu-end quick-action-menu" aria-labelledby="quickActionMenu">
                 <li><a class="dropdown-item" href="index.php?section=reservations&amp;openReservationModal=1">Neue Reservierung</a></li>
+                <li><a class="dropdown-item" href="index.php?section=meldeschein">Meldeschein erstellen</a></li>
                 <li><a class="dropdown-item" href="index.php?section=guests#guest-meldeschein">Meldeschein vorbereiten</a></li>
                 <li><a class="dropdown-item" href="index.php?section=guests#guest-form">Neuen Gast anlegen</a></li>
               </ul>
@@ -9707,6 +10739,171 @@ if ($activeSection === 'reservations') {
               <?php endif; ?>
             </div>
           </div>
+          <div class="card module-card mt-4" id="mail-settings">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+              <div>
+                <h2 class="h5 mb-1">E-Mail Versand</h2>
+                <p class="text-muted mb-0">Absender- und Antwortadresse für automatische Benachrichtigungen festlegen.</p>
+              </div>
+              <span class="badge text-bg-info">Kommunikation</span>
+            </div>
+            <div class="card-body">
+              <?php if (!$settingsAvailable): ?>
+                <p class="text-muted mb-0">E-Mail-Einstellungen stehen nach erfolgreicher Datenbankverbindung zur Verfügung.</p>
+              <?php else: ?>
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="settings_mail">
+                  <div class="col-12 col-lg-6">
+                    <label for="mail-from-address" class="form-label">Absenderadresse</label>
+                    <input
+                      type="email"
+                      class="form-control"
+                      id="mail-from-address"
+                      name="mail_from_address"
+                      value="<?= htmlspecialchars($mailFromAddressFormValue) ?>"
+                      placeholder="kontakt@ihrhotel.de"
+                    >
+                    <div class="form-text">Leer lassen, um die Server-Standardadresse zu verwenden.</div>
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="mail-reply-to-address" class="form-label">Antwortadresse</label>
+                    <input
+                      type="email"
+                      class="form-control"
+                      id="mail-reply-to-address"
+                      name="mail_reply_to_address"
+                      value="<?= htmlspecialchars($mailReplyToAddressFormValue) ?>"
+                      placeholder="rezeption@ihrhotel.de"
+                    >
+                    <div class="form-text">Optional. Wird als Reply-To für Signatur-E-Mails gesetzt.</div>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end gap-2">
+                    <button type="submit" class="btn btn-outline-primary">E-Mail-Einstellungen speichern</button>
+                  </div>
+                </form>
+              <?php endif; ?>
+            </div>
+          </div>
+          <div class="card module-card mt-4" id="mail-log">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+              <div>
+                <h2 class="h5 mb-1">E-Mail-Protokoll</h2>
+                <p class="text-muted mb-0">Nachverfolgen, wann Signatur-E-Mails versendet oder abgelehnt wurden.</p>
+              </div>
+              <span class="badge text-bg-secondary">Protokoll</span>
+            </div>
+            <div class="card-body">
+              <?php if (!$settingsAvailable): ?>
+                <p class="text-muted mb-0">Das Protokoll steht nach erfolgreicher Datenbankverbindung zur Verfügung.</p>
+              <?php elseif ($mailLogEntries === []): ?>
+                <p class="text-muted mb-0">Es wurden noch keine E-Mails protokolliert.</p>
+              <?php else: ?>
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                  <div class="text-muted small">Es werden die letzten <?= count($mailLogEntries) ?> Einträge angezeigt.</div>
+                  <form method="post" onsubmit="return confirm('E-Mail-Protokoll wirklich leeren?');">
+                    <input type="hidden" name="form" value="settings_mail_log_clear">
+                    <button type="submit" class="btn btn-outline-danger btn-sm">Protokoll leeren</button>
+                  </form>
+                </div>
+                <div class="table-responsive">
+                  <table class="table table-sm align-middle mb-0">
+                    <thead>
+                      <tr>
+                        <th scope="col">Zeitpunkt</th>
+                        <th scope="col">Empfänger</th>
+                        <th scope="col">Betreff</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <?php
+                        $mailLogStatusMeta = [
+                            'sent' => ['label' => 'Versendet', 'badge' => 'text-bg-success'],
+                            'failed' => ['label' => 'Fehlgeschlagen', 'badge' => 'text-bg-danger'],
+                            'invalid' => ['label' => 'Ungültig', 'badge' => 'text-bg-warning text-dark'],
+                            'skipped' => ['label' => 'Übersprungen', 'badge' => 'text-bg-secondary'],
+                        ];
+                      ?>
+                      <?php foreach ($mailLogEntries as $mailLogEntry): ?>
+                        <?php
+                          $logCreatedAtRaw = isset($mailLogEntry['created_at']) && $mailLogEntry['created_at'] !== null
+                              ? (string) $mailLogEntry['created_at']
+                              : '';
+                          $logCreatedLabel = '—';
+                          if ($logCreatedAtRaw !== '') {
+                              try {
+                                  $logCreatedLabel = (new DateTimeImmutable($logCreatedAtRaw))->format('d.m.Y H:i');
+                              } catch (Throwable $exception) {
+                                  $logCreatedLabel = $logCreatedAtRaw;
+                              }
+                          }
+                          $logRecipient = isset($mailLogEntry['recipient']) ? (string) $mailLogEntry['recipient'] : '';
+                          $logSubject = isset($mailLogEntry['subject']) ? (string) $mailLogEntry['subject'] : '';
+                          $logStatusKey = strtolower((string) ($mailLogEntry['status'] ?? 'unknown'));
+                          $logStatusMeta = $mailLogStatusMeta[$logStatusKey] ?? [
+                              'label' => ucfirst($logStatusKey !== '' ? $logStatusKey : 'Unbekannt'),
+                              'badge' => 'text-bg-secondary',
+                          ];
+                          $logError = isset($mailLogEntry['error_message']) && $mailLogEntry['error_message'] !== null
+                              ? (string) $mailLogEntry['error_message']
+                              : '';
+                          $logContext = isset($mailLogEntry['context']) && is_array($mailLogEntry['context'])
+                              ? $mailLogEntry['context']
+                              : [];
+                          $logFormNumber = isset($logContext['form_number']) ? (string) $logContext['form_number'] : '';
+                          $logGuestName = isset($logContext['guest_name']) ? (string) $logContext['guest_name'] : '';
+                          $logFormId = isset($logContext['form_id']) ? (int) $logContext['form_id'] : null;
+                          $logTokenSuffix = isset($logContext['token_suffix']) ? (string) $logContext['token_suffix'] : '';
+                          $logExpiresRaw = isset($logContext['expires_at']) ? (string) $logContext['expires_at'] : '';
+                          $logExpiresLabel = '';
+                          if ($logExpiresRaw !== '') {
+                              try {
+                                  $logExpiresLabel = (new DateTimeImmutable($logExpiresRaw))->format('d.m.Y H:i');
+                              } catch (Throwable $exception) {
+                                  $logExpiresLabel = $logExpiresRaw;
+                              }
+                          }
+                        ?>
+                        <tr>
+                          <td class="text-nowrap"><?= htmlspecialchars($logCreatedLabel) ?></td>
+                          <td>
+                            <div><?= htmlspecialchars($logRecipient) ?></div>
+                            <?php if ($logGuestName !== ''): ?>
+                              <div class="text-muted small">Gast: <?= htmlspecialchars($logGuestName) ?></div>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <div class="fw-semibold"><?= htmlspecialchars($logSubject) ?></div>
+                            <?php if ($logFormNumber !== ''): ?>
+                              <div class="text-muted small">Meldeschein: <?= htmlspecialchars($logFormNumber) ?></div>
+                            <?php endif; ?>
+                            <?php if ($logFormId !== null): ?>
+                              <div class="text-muted small">ID: <?= $logFormId ?></div>
+                            <?php endif; ?>
+                          </td>
+                          <td class="text-nowrap">
+                            <span class="badge <?= $logStatusMeta['badge'] ?>"><?= htmlspecialchars($logStatusMeta['label']) ?></span>
+                            <?php if ($logTokenSuffix !== ''): ?>
+                              <div class="text-muted small">Token …<?= htmlspecialchars($logTokenSuffix) ?></div>
+                            <?php endif; ?>
+                          </td>
+                          <td>
+                            <?php if ($logError !== ''): ?>
+                              <div class="text-danger small">Fehler: <?= htmlspecialchars($logError) ?></div>
+                            <?php endif; ?>
+                            <?php if ($logExpiresLabel !== ''): ?>
+                              <div class="text-muted small">Gültig bis <?= htmlspecialchars($logExpiresLabel) ?></div>
+                            <?php endif; ?>
+                          </td>
+                        </tr>
+                      <?php endforeach; ?>
+                    </tbody>
+                  </table>
+                </div>
+              <?php endif; ?>
+            </div>
+          </div>
           <div class="card module-card mt-4" id="cache-tools">
             <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
               <div>
@@ -9830,6 +11027,533 @@ if ($activeSection === 'reservations') {
                     <h3 class="h6 text-uppercase text-muted">Letzte Aktualisierung</h3>
                     <pre class="small mb-0 bg-transparent border-0 p-0"><?= htmlspecialchars(implode("\n", $updateOutput)) ?></pre>
                   </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php endif; ?>
+
+      <?php if ($activeSection === 'meldeschein'): ?>
+      <section id="meldeschein" class="app-section active">
+        <div class="row g-4">
+          <div class="col-12 col-xxl-7">
+            <div class="card module-card" id="meldeschein-overview" data-section="meldeschein">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Meldescheine</h2>
+                  <p class="text-muted mb-0">Erstellte Meldescheine verwalten und als PDF herunterladen.</p>
+                </div>
+                <span class="badge text-bg-primary">PDF-Archiv</span>
+              </div>
+              <div class="card-body">
+                <?php if ($meldescheine === []): ?>
+                  <p class="text-muted mb-0">Es wurden noch keine Meldescheine erstellt. Nutzen Sie die Übersicht rechts, um einen neuen Meldeschein zu generieren.</p>
+                <?php else: ?>
+                  <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                      <thead class="table-light">
+                        <tr>
+                          <th>Nummer</th>
+                          <th>Gast</th>
+                          <th>Aufenthalt</th>
+                          <th>Reisezweck</th>
+                          <th>Firma</th>
+                          <th>Ausgestellt</th>
+                          <th>Unterschrift</th>
+                          <th class="text-end">Aktionen</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($meldescheine as $form): ?>
+                          <?php
+                            if (!is_array($form) || !isset($form['id'])) {
+                                continue;
+                            }
+
+                            $formId = (int) $form['id'];
+                            if ($formId <= 0) {
+                                continue;
+                            }
+
+                            $formNumber = isset($form['form_number']) && $form['form_number'] !== '' ? (string) $form['form_number'] : ('MS-' . $formId);
+                            $guestName = isset($form['guest_name']) && $form['guest_name'] !== '' ? (string) $form['guest_name'] : ('Gast #' . $formId);
+                            $arrivalDate = isset($form['arrival_date']) ? (string) $form['arrival_date'] : null;
+                            $departureDate = isset($form['departure_date']) ? (string) $form['departure_date'] : null;
+                            $arrivalLabel = $formatDateLabel($arrivalDate);
+                            if ($arrivalLabel === null) {
+                                $arrivalLabel = $arrivalDate !== null && $arrivalDate !== '' ? (string) $arrivalDate : '—';
+                            }
+                            $departureLabel = $formatDateLabel($departureDate);
+                            if ($departureLabel === null) {
+                                $departureLabel = $departureDate !== null && $departureDate !== '' ? (string) $departureDate : '—';
+                            }
+                            $nightCount = $calculateNightCount($arrivalDate, $departureDate);
+                            $purpose = isset($form['purpose_of_stay']) && (string) $form['purpose_of_stay'] === 'geschäftlich' ? 'Geschäftlich' : 'Privat';
+                            $companyName = isset($form['company_name']) && $form['company_name'] !== '' ? (string) $form['company_name'] : '—';
+                            $issuedDate = isset($form['issued_date']) ? (string) $form['issued_date'] : null;
+                            $issuedLabel = $formatDateLabel($issuedDate);
+                            if ($issuedLabel === null) {
+                                $issuedLabel = $issuedDate !== null && $issuedDate !== '' ? (string) $issuedDate : '—';
+                            }
+                            $roomLabel = isset($form['room_label']) && $form['room_label'] !== '' ? (string) $form['room_label'] : '';
+                            $formDetails = isset($form['details']) && is_array($form['details']) ? $form['details'] : [];
+                            $formStayDetails = isset($formDetails['stay']) && is_array($formDetails['stay']) ? $formDetails['stay'] : [];
+                            $reservationNumber = isset($formStayDetails['reservation_number']) ? (string) $formStayDetails['reservation_number'] : '';
+                            $downloadUrl = 'index.php?section=meldeschein&downloadMeldeschein=' . $formId;
+                            $pdfPath = isset($form['pdf_path']) ? (string) $form['pdf_path'] : '';
+                            $guestSignaturePath = isset($form['guest_signature_path']) && $form['guest_signature_path'] !== null
+                                ? (string) $form['guest_signature_path']
+                                : '';
+                            $guestSignedAtRaw = isset($form['guest_signed_at']) && $form['guest_signed_at'] !== null
+                                ? (string) $form['guest_signed_at']
+                                : null;
+                            $signatureToken = isset($form['signature_token']) && $form['signature_token'] !== null
+                                ? (string) $form['signature_token']
+                                : '';
+                            $signatureTokenExpiresRaw = isset($form['signature_token_expires_at']) && $form['signature_token_expires_at'] !== null
+                                ? (string) $form['signature_token_expires_at']
+                                : null;
+                            $signatureTokenCreatedRaw = isset($form['signature_token_created_at']) && $form['signature_token_created_at'] !== null
+                                ? (string) $form['signature_token_created_at']
+                                : null;
+                            $signatureTokenExpiresLabel = null;
+                            $signatureTokenExpired = false;
+                            if ($signatureTokenExpiresRaw !== null && $signatureTokenExpiresRaw !== '') {
+                                try {
+                                    $signatureTokenExpiresDate = new DateTimeImmutable($signatureTokenExpiresRaw);
+                                    $signatureTokenExpiresLabel = $signatureTokenExpiresDate->format('d.m.Y H:i');
+                                    $signatureTokenExpired = $signatureTokenExpiresDate < new DateTimeImmutable('now');
+                                } catch (Throwable $exception) {
+                                    $signatureTokenExpiresLabel = null;
+                                }
+                            }
+                            $signatureStatusLabel = $guestSignaturePath !== '' ? 'vorhanden' : 'offen';
+                            $signatureStatusClass = $guestSignaturePath !== '' ? 'text-bg-success' : 'text-bg-warning';
+                            $signatureTimestampLabel = null;
+                            if ($guestSignedAtRaw !== null && $guestSignedAtRaw !== '') {
+                                try {
+                                    $signatureTimestampLabel = (new DateTimeImmutable($guestSignedAtRaw))->format('d.m.Y H:i');
+                                } catch (Throwable $exception) {
+                                    $signatureTimestampLabel = null;
+                                }
+                            }
+                            $signatureUrl = 'index.php?section=meldeschein&signMeldeschein=' . $formId;
+                            $signatureButtonClass = $guestSignaturePath !== '' ? 'btn btn-outline-secondary btn-sm' : 'btn btn-primary btn-sm';
+                            if ($activeMeldescheinSignatureId !== null && (int) $activeMeldescheinSignatureId === $formId) {
+                                $signatureButtonClass = 'btn btn-secondary btn-sm';
+                            }
+                            $signatureButtonLabel = $guestSignaturePath !== '' ? 'Unterschrift' : 'Unterschreiben';
+                            if ($activeMeldescheinSignatureId !== null && (int) $activeMeldescheinSignatureId === $formId) {
+                                $signatureButtonLabel = 'Unterschrift erfassen';
+                            }
+                            $rowIsActive = $activeMeldescheinSignatureId !== null && (int) $activeMeldescheinSignatureId === $formId;
+                          ?>
+                          <tr<?= $rowIsActive ? ' class="table-active"' : '' ?>>
+                            <td>
+                              <div class="fw-semibold"><?= htmlspecialchars($formNumber) ?></div>
+                              <?php if ($reservationNumber !== ''): ?>
+                                <div class="small text-muted">Reservierung <?= htmlspecialchars($reservationNumber) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td><?= htmlspecialchars($guestName) ?></td>
+                            <td>
+                              <div><?= htmlspecialchars($arrivalLabel) ?> – <?= htmlspecialchars($departureLabel) ?></div>
+                              <?php if ($nightCount !== null): ?>
+                                <div class="small text-muted">Nächte: <?= (int) $nightCount ?></div>
+                              <?php endif; ?>
+                              <?php if ($roomLabel !== ''): ?>
+                                <div class="small text-muted"><?= htmlspecialchars($roomLabel) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td><?= htmlspecialchars($purpose) ?></td>
+                            <td><?= htmlspecialchars($companyName) ?></td>
+                            <td><?= htmlspecialchars($issuedLabel) ?></td>
+                            <td>
+                              <span class="badge <?= $signatureStatusClass ?> text-uppercase"><?= htmlspecialchars($signatureStatusLabel) ?></span>
+                              <?php if ($signatureTimestampLabel !== null): ?>
+                                <div class="small text-muted"><?= htmlspecialchars($signatureTimestampLabel) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                <a class="<?= $signatureButtonClass ?>" href="<?= htmlspecialchars($signatureUrl) ?>"><?= htmlspecialchars($signatureButtonLabel) ?></a>
+                                <?php if ($pdfPath !== ''): ?>
+                                  <a class="btn btn-outline-primary btn-sm" href="<?= htmlspecialchars($downloadUrl) ?>" target="_blank" rel="noopener">Download</a>
+                                <?php else: ?>
+                                  <button type="button" class="btn btn-outline-secondary btn-sm" disabled>Kein PDF</button>
+                                <?php endif; ?>
+                                <form method="post" onsubmit="return confirm('Meldeschein wirklich löschen?');">
+                                  <input type="hidden" name="form" value="meldeschein_delete">
+                                  <input type="hidden" name="id" value="<?= $formId ?>">
+                                  <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
+                                </form>
+                              </div>
+                              <?php if ($signatureToken !== ''): ?>
+                                <div class="small text-muted mt-2 text-start text-lg-end">
+                                  Signatur-Link <?= $signatureTokenExpired ? 'abgelaufen' : 'aktiv' ?>
+                                  <?php if ($signatureTokenExpiresLabel !== null): ?>
+                                    (bis <?= htmlspecialchars($signatureTokenExpiresLabel) ?>)
+                                  <?php endif; ?>
+                                </div>
+                              <?php endif; ?>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xxl-5">
+            <?php if (is_array($activeMeldescheinSignature) && isset($activeMeldescheinSignature['id'])): ?>
+              <?php
+                $signatureFormId = (int) ($activeMeldescheinSignature['id'] ?? 0);
+                $signatureFormNumber = isset($activeMeldescheinSignature['form_number']) && $activeMeldescheinSignature['form_number'] !== ''
+                    ? (string) $activeMeldescheinSignature['form_number']
+                    : ('MS-' . $signatureFormId);
+                $signatureGuestName = isset($activeMeldescheinSignature['guest_name']) && $activeMeldescheinSignature['guest_name'] !== ''
+                    ? (string) $activeMeldescheinSignature['guest_name']
+                    : 'Gast';
+                $signatureArrival = isset($activeMeldescheinSignature['arrival_date']) ? (string) $activeMeldescheinSignature['arrival_date'] : null;
+                $signatureDeparture = isset($activeMeldescheinSignature['departure_date']) ? (string) $activeMeldescheinSignature['departure_date'] : null;
+                $signatureArrivalLabel = $formatDateLabel($signatureArrival);
+                if ($signatureArrivalLabel === null) {
+                    $signatureArrivalLabel = $signatureArrival !== null && $signatureArrival !== '' ? (string) $signatureArrival : '—';
+                }
+                $signatureDepartureLabel = $formatDateLabel($signatureDeparture);
+                if ($signatureDepartureLabel === null) {
+                    $signatureDepartureLabel = $signatureDeparture !== null && $signatureDeparture !== '' ? (string) $signatureDeparture : '—';
+                }
+                $signaturePurpose = isset($activeMeldescheinSignature['purpose_of_stay']) && (string) $activeMeldescheinSignature['purpose_of_stay'] === 'geschäftlich'
+                    ? 'Geschäftlich'
+                    : 'Privat';
+                $signatureCompany = isset($activeMeldescheinSignature['company_name']) && $activeMeldescheinSignature['company_name'] !== ''
+                    ? (string) $activeMeldescheinSignature['company_name']
+                    : '—';
+                $signatureRoom = isset($activeMeldescheinSignature['room_label']) && $activeMeldescheinSignature['room_label'] !== ''
+                    ? (string) $activeMeldescheinSignature['room_label']
+                    : '—';
+                $signatureDetails = isset($activeMeldescheinSignature['details']) && is_array($activeMeldescheinSignature['details'])
+                    ? $activeMeldescheinSignature['details']
+                    : [];
+                $signatureStayDetails = isset($signatureDetails['stay']) && is_array($signatureDetails['stay']) ? $signatureDetails['stay'] : [];
+                $signatureReservationNumber = isset($signatureStayDetails['reservation_number']) ? (string) $signatureStayDetails['reservation_number'] : '';
+                $signatureExistingPath = isset($activeMeldescheinSignature['guest_signature_path']) && $activeMeldescheinSignature['guest_signature_path'] !== null
+                    ? (string) $activeMeldescheinSignature['guest_signature_path']
+                    : '';
+                $signatureExistingAtRaw = isset($activeMeldescheinSignature['guest_signed_at']) && $activeMeldescheinSignature['guest_signed_at'] !== null
+                    ? (string) $activeMeldescheinSignature['guest_signed_at']
+                    : null;
+                $signatureExistingAtLabel = null;
+                if ($signatureExistingAtRaw !== null && $signatureExistingAtRaw !== '') {
+                    try {
+                        $signatureExistingAtLabel = (new DateTimeImmutable($signatureExistingAtRaw))->format('d.m.Y H:i');
+                    } catch (Throwable $exception) {
+                        $signatureExistingAtLabel = null;
+                    }
+                }
+                $signatureInviteToken = isset($activeMeldescheinSignature['signature_token']) && $activeMeldescheinSignature['signature_token'] !== null
+                    ? (string) $activeMeldescheinSignature['signature_token']
+                    : '';
+                $signatureInviteLink = $signatureInviteToken !== '' ? $buildSignatureInviteUrl($signatureInviteToken) : '';
+                $signatureInviteExpiresRaw = isset($activeMeldescheinSignature['signature_token_expires_at']) && $activeMeldescheinSignature['signature_token_expires_at'] !== null
+                    ? (string) $activeMeldescheinSignature['signature_token_expires_at']
+                    : null;
+                $signatureInviteCreatedRaw = isset($activeMeldescheinSignature['signature_token_created_at']) && $activeMeldescheinSignature['signature_token_created_at'] !== null
+                    ? (string) $activeMeldescheinSignature['signature_token_created_at']
+                    : null;
+                $signatureInviteExpiresLabel = null;
+                $signatureInviteCreatedLabel = null;
+                $signatureInviteExpired = false;
+                if ($signatureInviteExpiresRaw !== null && $signatureInviteExpiresRaw !== '') {
+                    try {
+                        $signatureInviteExpiresDate = new DateTimeImmutable($signatureInviteExpiresRaw);
+                        $signatureInviteExpiresLabel = $signatureInviteExpiresDate->format('d.m.Y H:i');
+                        $signatureInviteExpired = $signatureInviteExpiresDate < new DateTimeImmutable('now');
+                    } catch (Throwable $exception) {
+                        $signatureInviteExpiresLabel = null;
+                    }
+                }
+                if ($signatureInviteCreatedRaw !== null && $signatureInviteCreatedRaw !== '') {
+                    try {
+                        $signatureInviteCreatedLabel = (new DateTimeImmutable($signatureInviteCreatedRaw))->format('d.m.Y H:i');
+                    } catch (Throwable $exception) {
+                        $signatureInviteCreatedLabel = null;
+                    }
+                }
+                $signatureInviteGuestEmail = '';
+                if (isset($signatureDetails['guest']) && is_array($signatureDetails['guest'])) {
+                    $signatureGuestContact = isset($signatureDetails['guest']['contact']) && is_array($signatureDetails['guest']['contact'])
+                        ? $signatureDetails['guest']['contact']
+                        : [];
+                    if (isset($signatureGuestContact['email']) && $signatureGuestContact['email'] !== '') {
+                        $signatureInviteGuestEmail = (string) $signatureGuestContact['email'];
+                    }
+                }
+                $signatureInviteSelectedHours = 72;
+                $signatureInviteFeedbackStatus = '';
+                $signatureInviteFeedbackMessage = '';
+                $signatureInviteFeedbackError = '';
+                $signatureInviteFeedbackMatches = is_array($signatureInviteResult)
+                    && isset($signatureInviteResult['form_id'])
+                    && (int) $signatureInviteResult['form_id'] === $signatureFormId;
+                if ($signatureInviteFeedbackMatches) {
+                    if (isset($signatureInviteResult['link']) && $signatureInviteResult['link'] !== '') {
+                        $signatureInviteLink = (string) $signatureInviteResult['link'];
+                    }
+                    if (isset($signatureInviteResult['expires_at']) && $signatureInviteResult['expires_at'] !== null) {
+                        $signatureInviteExpiresRaw = (string) $signatureInviteResult['expires_at'];
+                        if ($signatureInviteExpiresRaw !== '') {
+                            try {
+                                $signatureInviteExpiresDate = new DateTimeImmutable($signatureInviteExpiresRaw);
+                                $signatureInviteExpiresLabel = $signatureInviteExpiresDate->format('d.m.Y H:i');
+                                $signatureInviteExpired = $signatureInviteExpiresDate < new DateTimeImmutable('now');
+                            } catch (Throwable $exception) {
+                                $signatureInviteExpiresLabel = $signatureInviteResult['expires_label'] ?? $signatureInviteExpiresLabel;
+                            }
+                        }
+                    }
+                    if (isset($signatureInviteResult['expires_label']) && $signatureInviteResult['expires_label'] !== '') {
+                        $signatureInviteExpiresLabel = (string) $signatureInviteResult['expires_label'];
+                    }
+                    if (isset($signatureInviteResult['email']) && $signatureInviteResult['email'] !== '') {
+                        $signatureInviteGuestEmail = (string) $signatureInviteResult['email'];
+                    }
+                    if (isset($signatureInviteResult['valid_hours'])) {
+                        $signatureInviteSelectedHours = max(1, (int) $signatureInviteResult['valid_hours']);
+                    }
+                    $signatureInviteFeedbackStatus = isset($signatureInviteResult['email_status'])
+                        ? (string) $signatureInviteResult['email_status']
+                        : '';
+                    if (isset($signatureInviteResult['email_error']) && $signatureInviteResult['email_error'] !== null && $signatureInviteResult['email_error'] !== '') {
+                        $signatureInviteFeedbackError = (string) $signatureInviteResult['email_error'];
+                    }
+                    if ($signatureInviteFeedbackStatus === 'invalid') {
+                        $signatureInviteFeedbackMessage = 'Die angegebene E-Mail-Adresse konnte nicht verwendet werden. Bitte prüfen Sie die Eingabe.';
+                        if ($signatureInviteFeedbackError !== '') {
+                            $signatureInviteFeedbackMessage .= ' Fehler: ' . $signatureInviteFeedbackError;
+                        }
+                    } elseif ($signatureInviteFeedbackStatus === 'failed') {
+                        $signatureInviteFeedbackMessage = 'Der Link wurde erstellt, die E-Mail konnte jedoch nicht zugestellt werden.';
+                        if ($signatureInviteFeedbackError !== '') {
+                            $signatureInviteFeedbackMessage .= ' Fehler: ' . $signatureInviteFeedbackError;
+                        }
+                    } elseif ($signatureInviteFeedbackStatus === 'sent') {
+                        $signatureInviteFeedbackMessage = 'Der Signatur-Link wurde per E-Mail versendet.';
+                    }
+                }
+                $signatureInviteValidityOptions = [
+                    24 => '24 Stunden',
+                    48 => '48 Stunden',
+                    72 => '3 Tage',
+                    168 => '7 Tage',
+                ];
+                if (!array_key_exists($signatureInviteSelectedHours, $signatureInviteValidityOptions)) {
+                    $signatureInviteSelectedHours = 72;
+                }
+                $signatureStatusBadge = $signatureExistingPath !== '' ? 'text-bg-success' : 'text-bg-warning';
+                $signatureStatusText = $signatureExistingPath !== '' ? 'Unterschrift vorhanden' : 'Unterschrift offen';
+              ?>
+              <div class="card module-card mb-4" id="meldeschein-signature" data-section="meldeschein">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                  <div>
+                    <h2 class="h5 mb-1">Digitale Gast-Unterschrift</h2>
+                    <p class="text-muted mb-0">Meldeschein <?= htmlspecialchars($signatureFormNumber) ?> für <?= htmlspecialchars($signatureGuestName) ?>.</p>
+                  </div>
+                  <span class="badge <?= $signatureStatusBadge ?> text-uppercase"><?= htmlspecialchars($signatureStatusText) ?></span>
+                </div>
+                <div class="card-body">
+                  <dl class="row small mb-3">
+                    <dt class="col-sm-4">Aufenthalt</dt>
+                    <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureArrivalLabel) ?> – <?= htmlspecialchars($signatureDepartureLabel) ?></dd>
+                    <dt class="col-sm-4">Reisezweck</dt>
+                    <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signaturePurpose) ?></dd>
+                    <dt class="col-sm-4">Zimmer</dt>
+                    <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureRoom) ?></dd>
+                    <dt class="col-sm-4">Firma</dt>
+                    <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureCompany) ?></dd>
+                    <?php if ($signatureReservationNumber !== ''): ?>
+                      <dt class="col-sm-4">Reservierung</dt>
+                      <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureReservationNumber) ?></dd>
+                    <?php endif; ?>
+                    <?php if ($signatureExistingAtLabel !== null): ?>
+                      <dt class="col-sm-4">Zuletzt signiert</dt>
+                      <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureExistingAtLabel) ?></dd>
+                    <?php endif; ?>
+                  </dl>
+                  <div class="border rounded-3 p-3 mb-4 bg-body-tertiary">
+                    <h3 class="h6 mb-3">Signatur-Link teilen</h3>
+                    <form method="post" class="row g-3 align-items-end">
+                      <input type="hidden" name="form" value="meldeschein_signature_invite">
+                      <input type="hidden" name="id" value="<?= $signatureFormId ?>">
+                      <div class="col-12 col-lg-5">
+                        <label for="signature-invite-email" class="form-label">E-Mail-Adresse des Gastes</label>
+                        <input type="email" class="form-control" id="signature-invite-email" name="email" value="<?= htmlspecialchars($signatureInviteGuestEmail) ?>" placeholder="gast@example.com">
+                        <div class="form-text">Optional: Link direkt per E-Mail versenden.</div>
+                      </div>
+                      <div class="col-6 col-lg-3 col-xl-2">
+                        <label for="signature-invite-validity" class="form-label">Gültigkeit</label>
+                        <select class="form-select" id="signature-invite-validity" name="valid_hours">
+                          <?php foreach ($signatureInviteValidityOptions as $hours => $label): ?>
+                            <option value="<?= $hours ?>"<?= (int) $signatureInviteSelectedHours === (int) $hours ? ' selected' : '' ?>><?= htmlspecialchars($label) ?></option>
+                          <?php endforeach; ?>
+                        </select>
+                      </div>
+                      <div class="col-12 col-lg-4 col-xl-3">
+                        <label class="form-label d-none d-lg-block">&nbsp;</label>
+                        <button type="submit" class="btn btn-outline-primary w-100">Link generieren</button>
+                      </div>
+                    </form>
+                    <?php if ($signatureInviteFeedbackMatches && $signatureInviteFeedbackMessage !== ''): ?>
+                      <div class="small mt-2 <?= $signatureInviteFeedbackStatus === 'sent' ? 'text-success' : 'text-warning' ?>"><?= htmlspecialchars($signatureInviteFeedbackMessage) ?></div>
+                    <?php endif; ?>
+                    <?php if ($signatureInviteLink !== ''): ?>
+                      <div class="mt-3">
+                        <label for="signature-link" class="form-label">Aktiver Signatur-Link</label>
+                        <div class="d-flex flex-column flex-lg-row gap-2 align-items-stretch">
+                          <input type="text" class="form-control" id="signature-link" value="<?= htmlspecialchars($signatureInviteLink) ?>" readonly>
+                          <button type="button" class="btn btn-outline-secondary flex-shrink-0" id="signature-link-copy" data-link="<?= htmlspecialchars($signatureInviteLink) ?>">Link kopieren</button>
+                        </div>
+                        <div class="small text-muted mt-2">
+                          <?php if ($signatureInviteExpired): ?>
+                            Link abgelaufen<?php if ($signatureInviteExpiresLabel !== null): ?> (gültig war bis <?= htmlspecialchars($signatureInviteExpiresLabel) ?>)<?php endif; ?>. Erstellen Sie bei Bedarf einen neuen Link.
+                          <?php else: ?>
+                            <?php if ($signatureInviteExpiresLabel !== null): ?>
+                              Link gültig bis <?= htmlspecialchars($signatureInviteExpiresLabel) ?>.
+                            <?php else: ?>
+                              Link ist aktiv.
+                            <?php endif; ?>
+                          <?php endif; ?>
+                        </div>
+                        <?php if ($signatureInviteCreatedLabel !== null): ?>
+                          <div class="small text-muted mt-1">Zuletzt erzeugt am <?= htmlspecialchars($signatureInviteCreatedLabel) ?>.</div>
+                        <?php endif; ?>
+                        <div class="small mt-2 d-none" id="signature-link-feedback"></div>
+                      </div>
+                    <?php else: ?>
+                      <p class="text-muted small mb-0">Noch kein Signatur-Link vorhanden. Erzeugen Sie einen Link und senden Sie ihn dem Gast für die digitale Unterschrift.</p>
+                    <?php endif; ?>
+                  </div>
+                  <?php if ($signatureExistingPath !== ''): ?>
+                    <div class="alert alert-info small" role="status">
+                      Es ist bereits eine digitale Unterschrift gespeichert. Eine neue Unterschrift ersetzt die vorhandene Version.
+                    </div>
+                  <?php endif; ?>
+                  <form method="post" id="signature-form">
+                    <input type="hidden" name="form" value="meldeschein_capture_signature">
+                    <input type="hidden" name="id" value="<?= $signatureFormId ?>">
+                    <input type="hidden" name="signature_data" id="signature-data">
+                    <div class="mb-3">
+                      <canvas id="signature-pad" width="900" height="260" class="w-100 border border-secondary-subtle rounded" aria-label="Unterschriftsfeld"></canvas>
+                      <div class="form-text">Unterschrift direkt auf einem Tablet oder Touch-Gerät erfassen. Mit „Zurücksetzen“ wird das Feld geleert.</div>
+                      <div class="text-danger small mt-2 d-none" id="signature-error"></div>
+                      <noscript><div class="text-danger small mt-2">Bitte JavaScript aktivieren, um die digitale Unterschrift zu erfassen.</div></noscript>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                      <button type="button" class="btn btn-outline-secondary" id="signature-clear">Zurücksetzen</button>
+                      <button type="submit" class="btn btn-primary">Unterschrift speichern</button>
+                      <a class="btn btn-link text-decoration-none" href="index.php?section=meldeschein">Abbrechen</a>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            <?php endif; ?>
+            <div class="card module-card" id="meldeschein-candidates" data-section="meldeschein">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                <div>
+                  <h2 class="h5 mb-1">Meldeschein erstellen</h2>
+                  <p class="text-muted mb-0">Vervollständigte Gästedaten prüfen und Meldeschein starten.</p>
+                </div>
+                <span class="badge text-bg-success">Bereitstellung</span>
+              </div>
+              <div class="card-body">
+                <?php if ($meldescheinCandidates === []): ?>
+                  <p class="text-muted mb-0">Keine Gäste vorhanden. Legen Sie zunächst Gäste an, um Meldescheine zu erzeugen.</p>
+                <?php else: ?>
+                  <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                      <thead class="table-light">
+                        <tr>
+                          <th>Gast</th>
+                          <th>Aufenthalt</th>
+                          <th>Status</th>
+                          <th class="text-end">Aktion</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <?php foreach ($meldescheinCandidates as $candidate): ?>
+                          <?php
+                            if (!is_array($candidate) || !isset($candidate['guest_id'])) {
+                                continue;
+                            }
+
+                            $candidateGuestId = (int) $candidate['guest_id'];
+                            if ($candidateGuestId <= 0) {
+                                continue;
+                            }
+
+                            $candidateReady = !empty($candidate['ready']);
+                            $candidateGuestName = isset($candidate['guest_name']) ? (string) $candidate['guest_name'] : ('Gast #' . $candidateGuestId);
+                            $candidateArrival = isset($candidate['arrival_label']) ? (string) $candidate['arrival_label'] : '—';
+                            $candidateDeparture = isset($candidate['departure_label']) ? (string) $candidate['departure_label'] : '—';
+                            $candidatePurposeLabel = isset($candidate['purpose_label']) && $candidate['purpose_label'] !== '' ? (string) $candidate['purpose_label'] : '—';
+                            $candidateCompany = isset($candidate['company_name']) && $candidate['company_name'] !== '' ? (string) $candidate['company_name'] : null;
+                            $candidateRoom = isset($candidate['room_label']) ? (string) $candidate['room_label'] : '—';
+                            $candidateReservationNumber = isset($candidate['reservation_number']) ? (string) $candidate['reservation_number'] : '';
+                            $missingFields = isset($candidate['missing_fields']) && is_array($candidate['missing_fields']) ? $candidate['missing_fields'] : [];
+                            $missingFieldLabels = array_map(static fn ($field): string => (string) $field, $missingFields);
+                            $statusBadgeClass = $candidateReady ? 'text-bg-success' : 'text-bg-warning';
+                            $statusLabel = $candidateReady ? 'bereit' : 'Angaben fehlen';
+                            if ($candidateReady) {
+                                $statusMessage = 'Alle Pflichtfelder sind ausgefüllt.';
+                            } elseif ($missingFieldLabels !== []) {
+                                $statusMessage = 'Fehlende Angaben: ' . implode(', ', $missingFieldLabels);
+                            } else {
+                                $statusMessage = 'Aufenthaltszeitraum unvollständig.';
+                            }
+                          ?>
+                          <tr>
+                            <td>
+                              <div class="fw-semibold"><?= htmlspecialchars($candidateGuestName) ?></div>
+                              <div class="small text-muted">Reisezweck: <?= htmlspecialchars($candidatePurposeLabel) ?></div>
+                              <?php if ($candidateCompany !== null && $candidateCompany !== ''): ?>
+                                <div class="small text-muted">Firma: <?= htmlspecialchars($candidateCompany) ?></div>
+                              <?php endif; ?>
+                              <div class="small text-muted">Zimmer: <?= htmlspecialchars($candidateRoom) ?></div>
+                              <?php if ($candidateReservationNumber !== ''): ?>
+                                <div class="small text-muted">Reservierung <?= htmlspecialchars($candidateReservationNumber) ?></div>
+                              <?php endif; ?>
+                            </td>
+                            <td>
+                              <div><?= htmlspecialchars($candidateArrival) ?> – <?= htmlspecialchars($candidateDeparture) ?></div>
+                            </td>
+                            <td>
+                              <span class="badge <?= $statusBadgeClass ?> text-uppercase"><?= htmlspecialchars($statusLabel) ?></span>
+                              <div class="small text-muted"><?= htmlspecialchars($statusMessage) ?></div>
+                            </td>
+                            <td class="text-end">
+                              <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=guests&editGuest=<?= $candidateGuestId ?>">Bearbeiten</a>
+                                <form method="post">
+                                  <input type="hidden" name="form" value="meldeschein_create">
+                                  <input type="hidden" name="guest_id" value="<?= $candidateGuestId ?>">
+                                  <?php if (!empty($candidate['reservation_id'])): ?>
+                                    <input type="hidden" name="reservation_id" value="<?= (int) $candidate['reservation_id'] ?>">
+                                  <?php endif; ?>
+                                  <button type="submit" class="btn btn-primary btn-sm" <?= $candidateReady ? '' : 'disabled' ?>>Meldeschein</button>
+                                </form>
+                              </div>
+                            </td>
+                          </tr>
+                        <?php endforeach; ?>
+                      </tbody>
+                    </table>
+                  </div>
+                  <p class="small text-muted mb-0 mt-3">Hinweis: Für Meldescheine werden vollständige Gastdaten inklusive Adresse, Ausweisdaten und Aufenthaltszeitraum benötigt.</p>
                 <?php endif; ?>
               </div>
             </div>
@@ -13207,6 +14931,224 @@ if ($activeSection === 'reservations') {
           }
         });
 
+        function setupSignatureInviteCopy() {
+          var copyButton = document.getElementById('signature-link-copy');
+          var linkInput = document.getElementById('signature-link');
+          var feedback = document.getElementById('signature-link-feedback');
+
+          if (!copyButton || !linkInput) {
+            return;
+          }
+
+          function showFeedback(message, isSuccess) {
+            if (!feedback) {
+              return;
+            }
+
+            feedback.textContent = message;
+            feedback.classList.remove('d-none');
+            feedback.classList.toggle('text-success', !!isSuccess);
+            feedback.classList.toggle('text-danger', !isSuccess);
+          }
+
+          copyButton.addEventListener('click', function (event) {
+            event.preventDefault();
+
+            var value = linkInput.value || copyButton.getAttribute('data-link') || '';
+            if (!value) {
+              showFeedback('Kein Link zum Kopieren vorhanden.', false);
+              return;
+            }
+
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(value).then(function () {
+                showFeedback('Link wurde in die Zwischenablage kopiert.', true);
+              }).catch(function () {
+                showFeedback('Kopieren nicht möglich. Bitte Link manuell markieren.', false);
+              });
+              return;
+            }
+
+            try {
+              linkInput.focus();
+              linkInput.select();
+              var successful = document.execCommand('copy');
+              if (successful) {
+                showFeedback('Link wurde in die Zwischenablage kopiert.', true);
+              } else {
+                showFeedback('Kopieren nicht möglich. Bitte Link manuell markieren.', false);
+              }
+            } catch (error) {
+              showFeedback('Kopieren nicht möglich. Bitte Link manuell markieren.', false);
+            }
+          });
+        }
+
+        function setupSignaturePad() {
+          var canvas = document.getElementById('signature-pad');
+          var form = document.getElementById('signature-form');
+          var dataInput = document.getElementById('signature-data');
+          var clearButton = document.getElementById('signature-clear');
+          var errorHint = document.getElementById('signature-error');
+
+          if (!canvas || !form || !dataInput) {
+            return;
+          }
+
+          var context = canvas.getContext('2d');
+          if (!context) {
+            if (errorHint) {
+              errorHint.textContent = 'Ihr Browser unterstützt keine digitale Unterschrift.';
+              errorHint.classList.remove('d-none');
+            }
+            canvas.classList.add('d-none');
+            return;
+          }
+
+          canvas.style.touchAction = 'none';
+
+          var scaleRatio = 1;
+          var drawing = false;
+          var hasSignature = false;
+
+          function clearError() {
+            if (errorHint) {
+              errorHint.textContent = '';
+              errorHint.classList.add('d-none');
+            }
+          }
+
+          function applyStyle() {
+            context.strokeStyle = '#111827';
+            context.lineWidth = 2;
+            context.lineCap = 'round';
+            context.lineJoin = 'round';
+          }
+
+          function resetCanvasBackground() {
+            context.setTransform(1, 0, 0, 1, 0, 0);
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.setTransform(scaleRatio, 0, 0, scaleRatio, 0, 0);
+            var width = canvas.width / scaleRatio;
+            var height = canvas.height / scaleRatio;
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, width, height);
+            applyStyle();
+          }
+
+          function resizeCanvas() {
+            var rect = canvas.getBoundingClientRect();
+            scaleRatio = Math.max(window.devicePixelRatio || 1, 1);
+            canvas.width = Math.max(rect.width, 1) * scaleRatio;
+            canvas.height = Math.max(rect.height, 1) * scaleRatio;
+            resetCanvasBackground();
+            hasSignature = false;
+            dataInput.value = '';
+          }
+
+          resizeCanvas();
+
+          function getPoint(event) {
+            var rect = canvas.getBoundingClientRect();
+            return {
+              x: event.clientX - rect.left,
+              y: event.clientY - rect.top
+            };
+          }
+
+          function stopDrawing(event) {
+            if (!drawing) {
+              return;
+            }
+
+            drawing = false;
+
+            if (event && typeof canvas.releasePointerCapture === 'function') {
+              try {
+                canvas.releasePointerCapture(event.pointerId);
+              } catch (error) {
+                // Ignore capture release errors.
+              }
+            }
+          }
+
+          canvas.addEventListener('pointerdown', function (event) {
+            event.preventDefault();
+            clearError();
+            drawing = true;
+
+            if (typeof canvas.setPointerCapture === 'function') {
+              try {
+                canvas.setPointerCapture(event.pointerId);
+              } catch (error) {
+                // Ignore capture errors.
+              }
+            }
+
+            var point = getPoint(event);
+            context.beginPath();
+            context.moveTo(point.x, point.y);
+          });
+
+          canvas.addEventListener('pointermove', function (event) {
+            if (!drawing) {
+              return;
+            }
+
+            event.preventDefault();
+            var point = getPoint(event);
+            context.lineTo(point.x, point.y);
+            context.stroke();
+            hasSignature = true;
+          });
+
+          canvas.addEventListener('pointerup', stopDrawing);
+          canvas.addEventListener('pointerleave', stopDrawing);
+          canvas.addEventListener('pointercancel', stopDrawing);
+
+          if (clearButton) {
+            clearButton.addEventListener('click', function (event) {
+              event.preventDefault();
+              resizeCanvas();
+              clearError();
+            });
+          }
+
+          form.addEventListener('submit', function (event) {
+            clearError();
+
+            if (!hasSignature) {
+              event.preventDefault();
+              if (errorHint) {
+                errorHint.textContent = 'Bitte erfassen Sie eine Unterschrift im Feld.';
+                errorHint.classList.remove('d-none');
+              }
+              return;
+            }
+
+            try {
+              dataInput.value = canvas.toDataURL('image/png');
+            } catch (error) {
+              event.preventDefault();
+              if (errorHint) {
+                errorHint.textContent = 'Die Unterschrift konnte nicht verarbeitet werden.';
+                errorHint.classList.remove('d-none');
+              }
+            }
+          });
+
+          window.addEventListener('resize', function () {
+            var wasSigned = hasSignature;
+            resizeCanvas();
+            if (wasSigned && errorHint) {
+              errorHint.textContent = 'Bitte erfassen Sie die Unterschrift nach der Größenänderung erneut.';
+              errorHint.classList.remove('d-none');
+            }
+          });
+        }
+
+        setupSignatureInviteCopy();
+        setupSignaturePad();
         setupReservationFormModal();
         setupReservationCategoryRepeater();
         setupReservationPricing();
