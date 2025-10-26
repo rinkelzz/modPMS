@@ -62,6 +62,12 @@ if (isset($_SESSION['alert'])) {
     unset($_SESSION['alert']);
 }
 
+$signatureInviteResult = null;
+if (isset($_SESSION['signature_invite_result']) && is_array($_SESSION['signature_invite_result'])) {
+    $signatureInviteResult = $_SESSION['signature_invite_result'];
+    unset($_SESSION['signature_invite_result']);
+}
+
 $updateOutput = null;
 if (isset($_SESSION['update_output']) && is_array($_SESSION['update_output'])) {
     $updateOutput = $_SESSION['update_output'];
@@ -856,6 +862,42 @@ $formatDateLabel = static function (?string $value): ?string {
     } catch (Throwable $exception) {
         return null;
     }
+};
+
+$signatureInviteBaseUrl = (static function (): string {
+    $scriptName = isset($_SERVER['SCRIPT_NAME']) ? (string) $_SERVER['SCRIPT_NAME'] : '';
+    $directory = str_replace('\\', '/', dirname($scriptName));
+    if ($directory === '.' || $directory === '\\' || $directory === '/') {
+        $directory = '';
+    }
+    $directory = $directory !== '' ? '/' . ltrim($directory, '/') : '';
+
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? (string) $_SERVER['HTTP_HOST']
+        : (isset($_SERVER['SERVER_NAME']) ? (string) $_SERVER['SERVER_NAME'] : '');
+
+    $scheme = 'http';
+    if (
+        (isset($_SERVER['HTTPS']) && ($_SERVER['HTTPS'] === 'on' || $_SERVER['HTTPS'] === '1'))
+        || (isset($_SERVER['SERVER_PORT']) && (string) $_SERVER['SERVER_PORT'] === '443')
+    ) {
+        $scheme = 'https';
+    }
+
+    if ($host === '') {
+        $relativeBase = ltrim($directory . '/meldeschein-signature.php', '/');
+
+        return $relativeBase !== '' ? '/' . $relativeBase : 'meldeschein-signature.php';
+    }
+
+    return sprintf('%s://%s%s/meldeschein-signature.php', $scheme, $host, $directory);
+})();
+
+$buildSignatureInviteUrl = static function (string $token) use ($signatureInviteBaseUrl): string {
+    $base = $signatureInviteBaseUrl !== '' ? $signatureInviteBaseUrl : 'meldeschein-signature.php';
+    $separator = str_contains($base, '?') ? '&' : '?';
+
+    return $base . $separator . 'token=' . rawurlencode($token);
 };
 
 $calculateNightCount = static function (?string $arrival, ?string $departure): ?int {
@@ -3855,6 +3897,144 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     'type' => 'danger',
                     'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
                 ];
+            }
+
+            break;
+
+        case 'meldeschein_signature_invite':
+            $activeSection = 'meldeschein';
+
+            if (!$meldescheinManager instanceof MeldescheinManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Meldescheinverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $inviteFormId = (int) ($_POST['id'] ?? 0);
+            $validHours = isset($_POST['valid_hours']) ? (int) $_POST['valid_hours'] : 72;
+            if ($validHours <= 0) {
+                $validHours = 72;
+            }
+
+            if ($inviteFormId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Signatur-Link konnte nicht erzeugt werden, da keine Meldeschein-ID übermittelt wurde.',
+                ];
+                break;
+            }
+
+            $emailRaw = trim((string) ($_POST['email'] ?? ''));
+            $emailValid = $emailRaw !== '' && filter_var($emailRaw, FILTER_VALIDATE_EMAIL);
+
+            try {
+                $form = $meldescheinManager->createSignatureInvite($inviteFormId, $validHours);
+                $token = isset($form['signature_token']) ? (string) $form['signature_token'] : '';
+
+                if ($token === '') {
+                    throw new RuntimeException('Der Signatur-Link konnte nicht erzeugt werden.');
+                }
+
+                $inviteLink = $buildSignatureInviteUrl($token);
+                $expiresAtRaw = isset($form['signature_token_expires_at']) ? (string) $form['signature_token_expires_at'] : null;
+                $expiresAtLabel = null;
+                if ($expiresAtRaw !== null && $expiresAtRaw !== '') {
+                    try {
+                        $expiresAtLabel = (new DateTimeImmutable($expiresAtRaw))->format('d.m.Y H:i');
+                    } catch (Throwable $exception) {
+                        $expiresAtLabel = null;
+                    }
+                }
+
+                $emailStatus = 'skipped';
+                $mailSent = false;
+
+                if ($emailRaw !== '') {
+                    if ($emailValid) {
+                        $mailSubject = sprintf(
+                            'Meldeschein %s unterschreiben',
+                            isset($form['form_number']) && $form['form_number'] !== ''
+                                ? (string) $form['form_number']
+                                : ('#' . $inviteFormId)
+                        );
+                        $guestNameForMail = isset($form['guest_name']) ? (string) $form['guest_name'] : '';
+                        $appName = isset($config['name']) ? (string) $config['name'] : 'Ihre Unterkunft';
+                        $mailLines = [
+                            'Guten Tag' . ($guestNameForMail !== '' ? ' ' . $guestNameForMail : '') . ',',
+                            '',
+                            'bitte unterschreiben Sie Ihren Meldeschein digital über den folgenden Link:',
+                            $inviteLink,
+                        ];
+                        if ($expiresAtLabel !== null) {
+                            $mailLines[] = '';
+                            $mailLines[] = 'Der Link ist gültig bis ' . $expiresAtLabel . '.';
+                        }
+                        $mailLines[] = '';
+                        $mailLines[] = 'Vielen Dank!';
+                        $mailLines[] = $appName;
+
+                        $mailBody = implode("\n", $mailLines);
+                        $mailHeaders = "Content-Type: text/plain; charset=utf-8\r\n" . "Content-Transfer-Encoding: 8bit\r\n";
+
+                        if (function_exists('mail')) {
+                            $mailSent = @mail($emailRaw, $mailSubject, $mailBody, $mailHeaders);
+                        }
+
+                        $emailStatus = $mailSent ? 'sent' : 'failed';
+                    } else {
+                        $emailStatus = 'invalid';
+                    }
+                }
+
+                $alertType = 'success';
+                $alertMessage = 'Signatur-Link wurde erstellt.';
+
+                if ($emailStatus === 'sent') {
+                    $alertMessage = sprintf(
+                        'Signatur-Link wurde an <strong>%s</strong> gesendet.',
+                        htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8')
+                    );
+                } elseif ($emailStatus === 'invalid') {
+                    $alertType = 'warning';
+                    $alertMessage = sprintf(
+                        'Signatur-Link erstellt. Die E-Mail-Adresse <strong>%s</strong> ist ungültig.',
+                        htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8')
+                    );
+                } elseif ($emailStatus === 'failed') {
+                    $alertType = 'warning';
+                    $alertMessage = sprintf(
+                        'Signatur-Link erstellt, aber die E-Mail an <strong>%s</strong> konnte nicht versendet werden.',
+                        htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8')
+                    );
+                }
+
+                $_SESSION['alert'] = [
+                    'type' => $alertType,
+                    'message' => $alertMessage,
+                ];
+
+                $_SESSION['signature_invite_result'] = [
+                    'form_id' => $inviteFormId,
+                    'link' => $inviteLink,
+                    'token' => $token,
+                    'expires_at' => $expiresAtRaw,
+                    'expires_label' => $expiresAtLabel,
+                    'valid_hours' => $validHours,
+                    'email' => $emailRaw,
+                    'email_status' => $emailStatus,
+                ];
+
+                header('Location: index.php?section=meldeschein&signMeldeschein=' . $inviteFormId);
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+                $activeMeldescheinSignatureId = $inviteFormId;
+                $activeMeldescheinSignature = $meldescheinManager->find($inviteFormId);
             }
 
             break;
@@ -10583,6 +10763,26 @@ if ($activeSection === 'reservations') {
                             $guestSignedAtRaw = isset($form['guest_signed_at']) && $form['guest_signed_at'] !== null
                                 ? (string) $form['guest_signed_at']
                                 : null;
+                            $signatureToken = isset($form['signature_token']) && $form['signature_token'] !== null
+                                ? (string) $form['signature_token']
+                                : '';
+                            $signatureTokenExpiresRaw = isset($form['signature_token_expires_at']) && $form['signature_token_expires_at'] !== null
+                                ? (string) $form['signature_token_expires_at']
+                                : null;
+                            $signatureTokenCreatedRaw = isset($form['signature_token_created_at']) && $form['signature_token_created_at'] !== null
+                                ? (string) $form['signature_token_created_at']
+                                : null;
+                            $signatureTokenExpiresLabel = null;
+                            $signatureTokenExpired = false;
+                            if ($signatureTokenExpiresRaw !== null && $signatureTokenExpiresRaw !== '') {
+                                try {
+                                    $signatureTokenExpiresDate = new DateTimeImmutable($signatureTokenExpiresRaw);
+                                    $signatureTokenExpiresLabel = $signatureTokenExpiresDate->format('d.m.Y H:i');
+                                    $signatureTokenExpired = $signatureTokenExpiresDate < new DateTimeImmutable('now');
+                                } catch (Throwable $exception) {
+                                    $signatureTokenExpiresLabel = null;
+                                }
+                            }
                             $signatureStatusLabel = $guestSignaturePath !== '' ? 'vorhanden' : 'offen';
                             $signatureStatusClass = $guestSignaturePath !== '' ? 'text-bg-success' : 'text-bg-warning';
                             $signatureTimestampLabel = null;
@@ -10644,6 +10844,14 @@ if ($activeSection === 'reservations') {
                                   <button type="submit" class="btn btn-outline-danger btn-sm">Löschen</button>
                                 </form>
                               </div>
+                              <?php if ($signatureToken !== ''): ?>
+                                <div class="small text-muted mt-2 text-start text-lg-end">
+                                  Signatur-Link <?= $signatureTokenExpired ? 'abgelaufen' : 'aktiv' ?>
+                                  <?php if ($signatureTokenExpiresLabel !== null): ?>
+                                    (bis <?= htmlspecialchars($signatureTokenExpiresLabel) ?>)
+                                  <?php endif; ?>
+                                </div>
+                              <?php endif; ?>
                             </td>
                           </tr>
                         <?php endforeach; ?>
@@ -10702,6 +10910,95 @@ if ($activeSection === 'reservations') {
                         $signatureExistingAtLabel = null;
                     }
                 }
+                $signatureInviteToken = isset($activeMeldescheinSignature['signature_token']) && $activeMeldescheinSignature['signature_token'] !== null
+                    ? (string) $activeMeldescheinSignature['signature_token']
+                    : '';
+                $signatureInviteLink = $signatureInviteToken !== '' ? $buildSignatureInviteUrl($signatureInviteToken) : '';
+                $signatureInviteExpiresRaw = isset($activeMeldescheinSignature['signature_token_expires_at']) && $activeMeldescheinSignature['signature_token_expires_at'] !== null
+                    ? (string) $activeMeldescheinSignature['signature_token_expires_at']
+                    : null;
+                $signatureInviteCreatedRaw = isset($activeMeldescheinSignature['signature_token_created_at']) && $activeMeldescheinSignature['signature_token_created_at'] !== null
+                    ? (string) $activeMeldescheinSignature['signature_token_created_at']
+                    : null;
+                $signatureInviteExpiresLabel = null;
+                $signatureInviteCreatedLabel = null;
+                $signatureInviteExpired = false;
+                if ($signatureInviteExpiresRaw !== null && $signatureInviteExpiresRaw !== '') {
+                    try {
+                        $signatureInviteExpiresDate = new DateTimeImmutable($signatureInviteExpiresRaw);
+                        $signatureInviteExpiresLabel = $signatureInviteExpiresDate->format('d.m.Y H:i');
+                        $signatureInviteExpired = $signatureInviteExpiresDate < new DateTimeImmutable('now');
+                    } catch (Throwable $exception) {
+                        $signatureInviteExpiresLabel = null;
+                    }
+                }
+                if ($signatureInviteCreatedRaw !== null && $signatureInviteCreatedRaw !== '') {
+                    try {
+                        $signatureInviteCreatedLabel = (new DateTimeImmutable($signatureInviteCreatedRaw))->format('d.m.Y H:i');
+                    } catch (Throwable $exception) {
+                        $signatureInviteCreatedLabel = null;
+                    }
+                }
+                $signatureInviteGuestEmail = '';
+                if (isset($signatureDetails['guest']) && is_array($signatureDetails['guest'])) {
+                    $signatureGuestContact = isset($signatureDetails['guest']['contact']) && is_array($signatureDetails['guest']['contact'])
+                        ? $signatureDetails['guest']['contact']
+                        : [];
+                    if (isset($signatureGuestContact['email']) && $signatureGuestContact['email'] !== '') {
+                        $signatureInviteGuestEmail = (string) $signatureGuestContact['email'];
+                    }
+                }
+                $signatureInviteSelectedHours = 72;
+                $signatureInviteFeedbackStatus = '';
+                $signatureInviteFeedbackMessage = '';
+                $signatureInviteFeedbackMatches = is_array($signatureInviteResult)
+                    && isset($signatureInviteResult['form_id'])
+                    && (int) $signatureInviteResult['form_id'] === $signatureFormId;
+                if ($signatureInviteFeedbackMatches) {
+                    if (isset($signatureInviteResult['link']) && $signatureInviteResult['link'] !== '') {
+                        $signatureInviteLink = (string) $signatureInviteResult['link'];
+                    }
+                    if (isset($signatureInviteResult['expires_at']) && $signatureInviteResult['expires_at'] !== null) {
+                        $signatureInviteExpiresRaw = (string) $signatureInviteResult['expires_at'];
+                        if ($signatureInviteExpiresRaw !== '') {
+                            try {
+                                $signatureInviteExpiresDate = new DateTimeImmutable($signatureInviteExpiresRaw);
+                                $signatureInviteExpiresLabel = $signatureInviteExpiresDate->format('d.m.Y H:i');
+                                $signatureInviteExpired = $signatureInviteExpiresDate < new DateTimeImmutable('now');
+                            } catch (Throwable $exception) {
+                                $signatureInviteExpiresLabel = $signatureInviteResult['expires_label'] ?? $signatureInviteExpiresLabel;
+                            }
+                        }
+                    }
+                    if (isset($signatureInviteResult['expires_label']) && $signatureInviteResult['expires_label'] !== '') {
+                        $signatureInviteExpiresLabel = (string) $signatureInviteResult['expires_label'];
+                    }
+                    if (isset($signatureInviteResult['email']) && $signatureInviteResult['email'] !== '') {
+                        $signatureInviteGuestEmail = (string) $signatureInviteResult['email'];
+                    }
+                    if (isset($signatureInviteResult['valid_hours'])) {
+                        $signatureInviteSelectedHours = max(1, (int) $signatureInviteResult['valid_hours']);
+                    }
+                    $signatureInviteFeedbackStatus = isset($signatureInviteResult['email_status'])
+                        ? (string) $signatureInviteResult['email_status']
+                        : '';
+                    if ($signatureInviteFeedbackStatus === 'invalid') {
+                        $signatureInviteFeedbackMessage = 'Die angegebene E-Mail-Adresse konnte nicht verwendet werden. Bitte prüfen Sie die Eingabe.';
+                    } elseif ($signatureInviteFeedbackStatus === 'failed') {
+                        $signatureInviteFeedbackMessage = 'Der Link wurde erstellt, die E-Mail konnte jedoch nicht zugestellt werden.';
+                    } elseif ($signatureInviteFeedbackStatus === 'sent') {
+                        $signatureInviteFeedbackMessage = 'Der Signatur-Link wurde per E-Mail versendet.';
+                    }
+                }
+                $signatureInviteValidityOptions = [
+                    24 => '24 Stunden',
+                    48 => '48 Stunden',
+                    72 => '3 Tage',
+                    168 => '7 Tage',
+                ];
+                if (!array_key_exists($signatureInviteSelectedHours, $signatureInviteValidityOptions)) {
+                    $signatureInviteSelectedHours = 72;
+                }
                 $signatureStatusBadge = $signatureExistingPath !== '' ? 'text-bg-success' : 'text-bg-warning';
                 $signatureStatusText = $signatureExistingPath !== '' ? 'Unterschrift vorhanden' : 'Unterschrift offen';
               ?>
@@ -10732,6 +11029,59 @@ if ($activeSection === 'reservations') {
                       <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureExistingAtLabel) ?></dd>
                     <?php endif; ?>
                   </dl>
+                  <div class="border rounded-3 p-3 mb-4 bg-body-tertiary">
+                    <h3 class="h6 mb-3">Signatur-Link teilen</h3>
+                    <form method="post" class="row g-3 align-items-end">
+                      <input type="hidden" name="form" value="meldeschein_signature_invite">
+                      <input type="hidden" name="id" value="<?= $signatureFormId ?>">
+                      <div class="col-12 col-lg-5">
+                        <label for="signature-invite-email" class="form-label">E-Mail-Adresse des Gastes</label>
+                        <input type="email" class="form-control" id="signature-invite-email" name="email" value="<?= htmlspecialchars($signatureInviteGuestEmail) ?>" placeholder="gast@example.com">
+                        <div class="form-text">Optional: Link direkt per E-Mail versenden.</div>
+                      </div>
+                      <div class="col-6 col-lg-3 col-xl-2">
+                        <label for="signature-invite-validity" class="form-label">Gültigkeit</label>
+                        <select class="form-select" id="signature-invite-validity" name="valid_hours">
+                          <?php foreach ($signatureInviteValidityOptions as $hours => $label): ?>
+                            <option value="<?= $hours ?>"<?= (int) $signatureInviteSelectedHours === (int) $hours ? ' selected' : '' ?>><?= htmlspecialchars($label) ?></option>
+                          <?php endforeach; ?>
+                        </select>
+                      </div>
+                      <div class="col-12 col-lg-4 col-xl-3">
+                        <label class="form-label d-none d-lg-block">&nbsp;</label>
+                        <button type="submit" class="btn btn-outline-primary w-100">Link generieren</button>
+                      </div>
+                    </form>
+                    <?php if ($signatureInviteFeedbackMatches && $signatureInviteFeedbackMessage !== ''): ?>
+                      <div class="small mt-2 <?= $signatureInviteFeedbackStatus === 'sent' ? 'text-success' : 'text-warning' ?>"><?= htmlspecialchars($signatureInviteFeedbackMessage) ?></div>
+                    <?php endif; ?>
+                    <?php if ($signatureInviteLink !== ''): ?>
+                      <div class="mt-3">
+                        <label for="signature-link" class="form-label">Aktiver Signatur-Link</label>
+                        <div class="d-flex flex-column flex-lg-row gap-2 align-items-stretch">
+                          <input type="text" class="form-control" id="signature-link" value="<?= htmlspecialchars($signatureInviteLink) ?>" readonly>
+                          <button type="button" class="btn btn-outline-secondary flex-shrink-0" id="signature-link-copy" data-link="<?= htmlspecialchars($signatureInviteLink) ?>">Link kopieren</button>
+                        </div>
+                        <div class="small text-muted mt-2">
+                          <?php if ($signatureInviteExpired): ?>
+                            Link abgelaufen<?php if ($signatureInviteExpiresLabel !== null): ?> (gültig war bis <?= htmlspecialchars($signatureInviteExpiresLabel) ?>)<?php endif; ?>. Erstellen Sie bei Bedarf einen neuen Link.
+                          <?php else: ?>
+                            <?php if ($signatureInviteExpiresLabel !== null): ?>
+                              Link gültig bis <?= htmlspecialchars($signatureInviteExpiresLabel) ?>.
+                            <?php else: ?>
+                              Link ist aktiv.
+                            <?php endif; ?>
+                          <?php endif; ?>
+                        </div>
+                        <?php if ($signatureInviteCreatedLabel !== null): ?>
+                          <div class="small text-muted mt-1">Zuletzt erzeugt am <?= htmlspecialchars($signatureInviteCreatedLabel) ?>.</div>
+                        <?php endif; ?>
+                        <div class="small mt-2 d-none" id="signature-link-feedback"></div>
+                      </div>
+                    <?php else: ?>
+                      <p class="text-muted small mb-0">Noch kein Signatur-Link vorhanden. Erzeugen Sie einen Link und senden Sie ihn dem Gast für die digitale Unterschrift.</p>
+                    <?php endif; ?>
+                  </div>
                   <?php if ($signatureExistingPath !== ''): ?>
                     <div class="alert alert-info small" role="status">
                       Es ist bereits eine digitale Unterschrift gespeichert. Eine neue Unterschrift ersetzt die vorhandene Version.
@@ -14225,6 +14575,59 @@ if ($activeSection === 'reservations') {
           }
         });
 
+        function setupSignatureInviteCopy() {
+          var copyButton = document.getElementById('signature-link-copy');
+          var linkInput = document.getElementById('signature-link');
+          var feedback = document.getElementById('signature-link-feedback');
+
+          if (!copyButton || !linkInput) {
+            return;
+          }
+
+          function showFeedback(message, isSuccess) {
+            if (!feedback) {
+              return;
+            }
+
+            feedback.textContent = message;
+            feedback.classList.remove('d-none');
+            feedback.classList.toggle('text-success', !!isSuccess);
+            feedback.classList.toggle('text-danger', !isSuccess);
+          }
+
+          copyButton.addEventListener('click', function (event) {
+            event.preventDefault();
+
+            var value = linkInput.value || copyButton.getAttribute('data-link') || '';
+            if (!value) {
+              showFeedback('Kein Link zum Kopieren vorhanden.', false);
+              return;
+            }
+
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(value).then(function () {
+                showFeedback('Link wurde in die Zwischenablage kopiert.', true);
+              }).catch(function () {
+                showFeedback('Kopieren nicht möglich. Bitte Link manuell markieren.', false);
+              });
+              return;
+            }
+
+            try {
+              linkInput.focus();
+              linkInput.select();
+              var successful = document.execCommand('copy');
+              if (successful) {
+                showFeedback('Link wurde in die Zwischenablage kopiert.', true);
+              } else {
+                showFeedback('Kopieren nicht möglich. Bitte Link manuell markieren.', false);
+              }
+            } catch (error) {
+              showFeedback('Kopieren nicht möglich. Bitte Link manuell markieren.', false);
+            }
+          });
+        }
+
         function setupSignaturePad() {
           var canvas = document.getElementById('signature-pad');
           var form = document.getElementById('signature-form');
@@ -14388,6 +14791,7 @@ if ($activeSection === 'reservations') {
           });
         }
 
+        setupSignatureInviteCopy();
         setupSignaturePad();
         setupReservationFormModal();
         setupReservationCategoryRepeater();

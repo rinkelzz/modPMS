@@ -60,6 +60,9 @@ class MeldescheinManager
         $this->ensureColumn('details_json', 'ALTER TABLE meldescheine ADD COLUMN details_json LONGTEXT NULL AFTER pdf_path');
         $this->ensureColumn('guest_signature_path', 'ALTER TABLE meldescheine ADD COLUMN guest_signature_path VARCHAR(255) NULL AFTER pdf_path');
         $this->ensureColumn('guest_signed_at', 'ALTER TABLE meldescheine ADD COLUMN guest_signed_at DATETIME NULL AFTER guest_signature_path');
+        $this->ensureColumn('signature_token', 'ALTER TABLE meldescheine ADD COLUMN signature_token VARCHAR(191) NULL AFTER guest_signed_at');
+        $this->ensureColumn('signature_token_expires_at', 'ALTER TABLE meldescheine ADD COLUMN signature_token_expires_at DATETIME NULL AFTER signature_token');
+        $this->ensureColumn('signature_token_created_at', 'ALTER TABLE meldescheine ADD COLUMN signature_token_created_at DATETIME NULL AFTER signature_token_expires_at');
     }
 
     /**
@@ -131,7 +134,18 @@ class MeldescheinManager
             $details['signature'] = [
                 'guest_signature_path' => null,
                 'guest_signed_at' => null,
+                'signature_token' => null,
+                'signature_token_expires_at' => null,
+                'signature_token_created_at' => null,
             ];
+        } else {
+            $details['signature'] = array_merge([
+                'guest_signature_path' => null,
+                'guest_signed_at' => null,
+                'signature_token' => null,
+                'signature_token_expires_at' => null,
+                'signature_token_created_at' => null,
+            ], $details['signature']);
         }
 
         $formNumber = $this->generateFormNumber();
@@ -146,6 +160,9 @@ class MeldescheinManager
         $details['room_label'] = $roomLabel;
         $details['guest_signature_path'] = null;
         $details['guest_signed_at'] = null;
+        $details['signature_token'] = null;
+        $details['signature_token_expires_at'] = null;
+        $details['signature_token_created_at'] = null;
 
         $pdfPath = $pdfGenerator($details);
         if (!is_string($pdfPath) || $pdfPath === '') {
@@ -210,8 +227,14 @@ class MeldescheinManager
 
         $details['signature']['guest_signature_path'] = $signaturePath;
         $details['signature']['guest_signed_at'] = $signedAt;
+        $details['signature']['signature_token'] = null;
+        $details['signature']['signature_token_expires_at'] = null;
+        $details['signature']['signature_token_created_at'] = null;
         $details['guest_signature_path'] = $signaturePath;
         $details['guest_signed_at'] = $signedAt;
+        $details['signature_token'] = null;
+        $details['signature_token_expires_at'] = null;
+        $details['signature_token_created_at'] = null;
         $details['form_number'] = $formNumber;
         $details['issued_date'] = $form['issued_date'] ?? null;
         $details['guest_name'] = $form['guest_name'] ?? null;
@@ -233,6 +256,9 @@ class MeldescheinManager
                 'UPDATE meldescheine '
                 . 'SET guest_signature_path = :guest_signature_path, '
                 . 'guest_signed_at = :guest_signed_at, '
+                . 'signature_token = NULL, '
+                . 'signature_token_expires_at = NULL, '
+                . 'signature_token_created_at = NULL, '
                 . 'pdf_path = :pdf_path, '
                 . 'details_json = :details_json, '
                 . 'updated_at = NOW() '
@@ -257,6 +283,117 @@ class MeldescheinManager
         }
 
         return $this->find($formId);
+    }
+
+    public function createSignatureInvite(int $formId, int $validHours = 72): array
+    {
+        if ($formId <= 0) {
+            throw new RuntimeException('Der ausgewählte Meldeschein ist ungültig.');
+        }
+
+        $form = $this->find($formId);
+        if ($form === null) {
+            throw new RuntimeException('Der Meldeschein wurde nicht gefunden.');
+        }
+
+        $normalizedHours = max(1, min($validHours, 24 * 14));
+
+        try {
+            $token = bin2hex(random_bytes(32));
+        } catch (Throwable $exception) {
+            $token = bin2hex(hash('sha256', uniqid((string) $formId, true), true));
+        }
+
+        $now = new DateTimeImmutable('now');
+        $expiresAt = $now->modify(sprintf('+%d hours', $normalizedHours));
+        $expiresAtValue = $expiresAt->format('Y-m-d H:i:s');
+        $createdAtValue = $now->format('Y-m-d H:i:s');
+
+        $details = isset($form['details']) && is_array($form['details']) ? $form['details'] : [];
+        if (!isset($details['signature']) || !is_array($details['signature'])) {
+            $details['signature'] = [];
+        }
+
+        $details['signature']['signature_token'] = $token;
+        $details['signature']['signature_token_expires_at'] = $expiresAtValue;
+        $details['signature']['signature_token_created_at'] = $createdAtValue;
+        $details['signature']['guest_signature_path'] = $form['guest_signature_path'] ?? null;
+        $details['signature']['guest_signed_at'] = $form['guest_signed_at'] ?? null;
+        $details['signature_token'] = $token;
+        $details['signature_token_expires_at'] = $expiresAtValue;
+        $details['signature_token_created_at'] = $createdAtValue;
+        $details['guest_signature_path'] = $form['guest_signature_path'] ?? null;
+        $details['guest_signed_at'] = $form['guest_signed_at'] ?? null;
+        $details['form_number'] = $form['form_number'] ?? null;
+        $details['issued_date'] = $form['issued_date'] ?? null;
+        $details['guest_name'] = $form['guest_name'] ?? null;
+        $details['arrival_date'] = $form['arrival_date'] ?? null;
+        $details['departure_date'] = $form['departure_date'] ?? null;
+        $details['purpose_of_stay'] = $form['purpose_of_stay'] ?? null;
+        $details['company_name'] = $form['company_name'] ?? null;
+        $details['room_label'] = $form['room_label'] ?? null;
+
+        $snapshot = $this->encodeSnapshot($details);
+
+        $stmt = $this->pdo->prepare(
+            'UPDATE meldescheine '
+            . 'SET signature_token = :signature_token, '
+            . 'signature_token_expires_at = :signature_token_expires_at, '
+            . 'signature_token_created_at = :signature_token_created_at, '
+            . 'details_json = :details_json, '
+            . 'updated_at = NOW() '
+            . 'WHERE id = :id'
+        );
+
+        $stmt->execute([
+            'signature_token' => $token,
+            'signature_token_expires_at' => $expiresAtValue,
+            'signature_token_created_at' => $createdAtValue,
+            'details_json' => $snapshot,
+            'id' => $formId,
+        ]);
+
+        return $this->find($formId);
+    }
+
+    public function findBySignatureToken(string $token, bool $includeExpired = false): ?array
+    {
+        $normalized = trim($token);
+        if ($normalized === '') {
+            return null;
+        }
+
+        $stmt = $this->pdo->prepare('SELECT * FROM meldescheine WHERE signature_token = :token LIMIT 1');
+        $stmt->execute(['token' => $normalized]);
+        $record = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!is_array($record)) {
+            return null;
+        }
+
+        $form = $this->mapRecord($record);
+
+        if ($includeExpired) {
+            return $form;
+        }
+
+        $expiresAtRaw = isset($form['signature_token_expires_at']) ? (string) $form['signature_token_expires_at'] : '';
+        if ($expiresAtRaw === '') {
+            return $form;
+        }
+
+        try {
+            $expiresAt = new DateTimeImmutable($expiresAtRaw);
+        } catch (Throwable $exception) {
+            return null;
+        }
+
+        $now = new DateTimeImmutable('now');
+        if ($expiresAt < $now) {
+            return null;
+        }
+
+        return $form;
     }
 
     public function delete(int $id): void
@@ -297,6 +434,15 @@ class MeldescheinManager
             : null;
         $record['guest_signed_at'] = isset($record['guest_signed_at']) && $record['guest_signed_at'] !== null
             ? (string) $record['guest_signed_at']
+            : null;
+        $record['signature_token'] = isset($record['signature_token']) && $record['signature_token'] !== null
+            ? (string) $record['signature_token']
+            : null;
+        $record['signature_token_expires_at'] = isset($record['signature_token_expires_at']) && $record['signature_token_expires_at'] !== null
+            ? (string) $record['signature_token_expires_at']
+            : null;
+        $record['signature_token_created_at'] = isset($record['signature_token_created_at']) && $record['signature_token_created_at'] !== null
+            ? (string) $record['signature_token_created_at']
             : null;
         $record['details'] = [];
 
