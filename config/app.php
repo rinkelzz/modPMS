@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.10.0',
+    'version' => '1.11.0',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',
@@ -30,7 +30,7 @@ return [
         ],
         'meldeschein' => [
             'title' => 'Meldescheine',
-            'description' => 'Meldescheine vorbereiten, erstellen und als PDF archivieren.'
+            'description' => 'Meldescheine vorbereiten, erstellen, digital unterschreiben und als PDF archivieren.'
         ],
         'rooms' => [
             'title' => 'Zimmerkategorien',

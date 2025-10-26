@@ -658,6 +658,30 @@ if ($meldescheinManager instanceof MeldescheinManager && $activeMeldescheinDownl
     exit;
 }
 
+$activeMeldescheinSignatureId = null;
+$activeMeldescheinSignature = null;
+if ($meldescheinManager instanceof MeldescheinManager && isset($_GET['signMeldeschein'])) {
+    $activeMeldescheinSignatureId = (int) $_GET['signMeldeschein'];
+
+    if ($activeMeldescheinSignatureId > 0) {
+        $activeMeldescheinSignature = $meldescheinManager->find($activeMeldescheinSignatureId);
+
+        if ($activeMeldescheinSignature === null && $alert === null) {
+            $alert = [
+                'type' => 'warning',
+                'message' => 'Der ausgewählte Meldeschein konnte nicht geladen werden.',
+            ];
+        }
+        $activeSection = 'meldeschein';
+    } elseif ($alert === null) {
+        $alert = [
+            'type' => 'warning',
+            'message' => 'Es wurde keine gültige Meldeschein-ID angegeben.',
+        ];
+        $activeSection = 'meldeschein';
+    }
+}
+
 $settingsAvailable = $settingsManager instanceof SettingManager && $pdo !== null;
 
 if ($settingsManager instanceof SettingManager) {
@@ -3831,6 +3855,69 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     'type' => 'danger',
                     'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
                 ];
+            }
+
+            break;
+
+        case 'meldeschein_capture_signature':
+            $activeSection = 'meldeschein';
+
+            if (!$meldescheinManager instanceof MeldescheinManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Meldescheinverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $signatureFormId = (int) ($_POST['id'] ?? 0);
+            $signatureData = trim((string) ($_POST['signature_data'] ?? ''));
+
+            if ($signatureFormId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Unterschrift konnte nicht gespeichert werden, da keine gültige Meldeschein-ID übermittelt wurde.',
+                ];
+                $activeMeldescheinSignatureId = $signatureFormId;
+                break;
+            }
+
+            if ($signatureData === '') {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte erfassen Sie die Gast-Unterschrift, bevor Sie sie speichern.',
+                ];
+                $activeMeldescheinSignatureId = $signatureFormId;
+                $activeMeldescheinSignature = $meldescheinManager->find($signatureFormId);
+                break;
+            }
+
+            try {
+                $renderer = new MeldescheinPdfRenderer();
+                $form = $meldescheinManager->saveGuestSignature(
+                    $signatureFormId,
+                    $signatureData,
+                    static function (array $payload) use ($renderer): string {
+                        return $renderer->render($payload);
+                    }
+                );
+
+                $formNumber = isset($form['form_number']) ? (string) $form['form_number'] : ('#' . $signatureFormId);
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf('Unterschrift für Meldeschein %s wurde gespeichert.', htmlspecialchars($formNumber, ENT_QUOTES, 'UTF-8')),
+                ];
+
+                header('Location: index.php?section=meldeschein');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+                $activeMeldescheinSignatureId = $signatureFormId;
+                $activeMeldescheinSignature = $meldescheinManager->find($signatureFormId);
             }
 
             break;
@@ -10448,6 +10535,7 @@ if ($activeSection === 'reservations') {
                           <th>Reisezweck</th>
                           <th>Firma</th>
                           <th>Ausgestellt</th>
+                          <th>Unterschrift</th>
                           <th class="text-end">Aktionen</th>
                         </tr>
                       </thead>
@@ -10489,8 +10577,34 @@ if ($activeSection === 'reservations') {
                             $reservationNumber = isset($formStayDetails['reservation_number']) ? (string) $formStayDetails['reservation_number'] : '';
                             $downloadUrl = 'index.php?section=meldeschein&downloadMeldeschein=' . $formId;
                             $pdfPath = isset($form['pdf_path']) ? (string) $form['pdf_path'] : '';
+                            $guestSignaturePath = isset($form['guest_signature_path']) && $form['guest_signature_path'] !== null
+                                ? (string) $form['guest_signature_path']
+                                : '';
+                            $guestSignedAtRaw = isset($form['guest_signed_at']) && $form['guest_signed_at'] !== null
+                                ? (string) $form['guest_signed_at']
+                                : null;
+                            $signatureStatusLabel = $guestSignaturePath !== '' ? 'vorhanden' : 'offen';
+                            $signatureStatusClass = $guestSignaturePath !== '' ? 'text-bg-success' : 'text-bg-warning';
+                            $signatureTimestampLabel = null;
+                            if ($guestSignedAtRaw !== null && $guestSignedAtRaw !== '') {
+                                try {
+                                    $signatureTimestampLabel = (new DateTimeImmutable($guestSignedAtRaw))->format('d.m.Y H:i');
+                                } catch (Throwable $exception) {
+                                    $signatureTimestampLabel = null;
+                                }
+                            }
+                            $signatureUrl = 'index.php?section=meldeschein&signMeldeschein=' . $formId;
+                            $signatureButtonClass = $guestSignaturePath !== '' ? 'btn btn-outline-secondary btn-sm' : 'btn btn-primary btn-sm';
+                            if ($activeMeldescheinSignatureId !== null && (int) $activeMeldescheinSignatureId === $formId) {
+                                $signatureButtonClass = 'btn btn-secondary btn-sm';
+                            }
+                            $signatureButtonLabel = $guestSignaturePath !== '' ? 'Unterschrift' : 'Unterschreiben';
+                            if ($activeMeldescheinSignatureId !== null && (int) $activeMeldescheinSignatureId === $formId) {
+                                $signatureButtonLabel = 'Unterschrift erfassen';
+                            }
+                            $rowIsActive = $activeMeldescheinSignatureId !== null && (int) $activeMeldescheinSignatureId === $formId;
                           ?>
-                          <tr>
+                          <tr<?= $rowIsActive ? ' class="table-active"' : '' ?>>
                             <td>
                               <div class="fw-semibold"><?= htmlspecialchars($formNumber) ?></div>
                               <?php if ($reservationNumber !== ''): ?>
@@ -10510,8 +10624,15 @@ if ($activeSection === 'reservations') {
                             <td><?= htmlspecialchars($purpose) ?></td>
                             <td><?= htmlspecialchars($companyName) ?></td>
                             <td><?= htmlspecialchars($issuedLabel) ?></td>
+                            <td>
+                              <span class="badge <?= $signatureStatusClass ?> text-uppercase"><?= htmlspecialchars($signatureStatusLabel) ?></span>
+                              <?php if ($signatureTimestampLabel !== null): ?>
+                                <div class="small text-muted"><?= htmlspecialchars($signatureTimestampLabel) ?></div>
+                              <?php endif; ?>
+                            </td>
                             <td class="text-end">
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
+                                <a class="<?= $signatureButtonClass ?>" href="<?= htmlspecialchars($signatureUrl) ?>"><?= htmlspecialchars($signatureButtonLabel) ?></a>
                                 <?php if ($pdfPath !== ''): ?>
                                   <a class="btn btn-outline-primary btn-sm" href="<?= htmlspecialchars($downloadUrl) ?>" target="_blank" rel="noopener">Download</a>
                                 <?php else: ?>
@@ -10534,6 +10655,107 @@ if ($activeSection === 'reservations') {
             </div>
           </div>
           <div class="col-12 col-xxl-5">
+            <?php if (is_array($activeMeldescheinSignature) && isset($activeMeldescheinSignature['id'])): ?>
+              <?php
+                $signatureFormId = (int) ($activeMeldescheinSignature['id'] ?? 0);
+                $signatureFormNumber = isset($activeMeldescheinSignature['form_number']) && $activeMeldescheinSignature['form_number'] !== ''
+                    ? (string) $activeMeldescheinSignature['form_number']
+                    : ('MS-' . $signatureFormId);
+                $signatureGuestName = isset($activeMeldescheinSignature['guest_name']) && $activeMeldescheinSignature['guest_name'] !== ''
+                    ? (string) $activeMeldescheinSignature['guest_name']
+                    : 'Gast';
+                $signatureArrival = isset($activeMeldescheinSignature['arrival_date']) ? (string) $activeMeldescheinSignature['arrival_date'] : null;
+                $signatureDeparture = isset($activeMeldescheinSignature['departure_date']) ? (string) $activeMeldescheinSignature['departure_date'] : null;
+                $signatureArrivalLabel = $formatDateLabel($signatureArrival);
+                if ($signatureArrivalLabel === null) {
+                    $signatureArrivalLabel = $signatureArrival !== null && $signatureArrival !== '' ? (string) $signatureArrival : '—';
+                }
+                $signatureDepartureLabel = $formatDateLabel($signatureDeparture);
+                if ($signatureDepartureLabel === null) {
+                    $signatureDepartureLabel = $signatureDeparture !== null && $signatureDeparture !== '' ? (string) $signatureDeparture : '—';
+                }
+                $signaturePurpose = isset($activeMeldescheinSignature['purpose_of_stay']) && (string) $activeMeldescheinSignature['purpose_of_stay'] === 'geschäftlich'
+                    ? 'Geschäftlich'
+                    : 'Privat';
+                $signatureCompany = isset($activeMeldescheinSignature['company_name']) && $activeMeldescheinSignature['company_name'] !== ''
+                    ? (string) $activeMeldescheinSignature['company_name']
+                    : '—';
+                $signatureRoom = isset($activeMeldescheinSignature['room_label']) && $activeMeldescheinSignature['room_label'] !== ''
+                    ? (string) $activeMeldescheinSignature['room_label']
+                    : '—';
+                $signatureDetails = isset($activeMeldescheinSignature['details']) && is_array($activeMeldescheinSignature['details'])
+                    ? $activeMeldescheinSignature['details']
+                    : [];
+                $signatureStayDetails = isset($signatureDetails['stay']) && is_array($signatureDetails['stay']) ? $signatureDetails['stay'] : [];
+                $signatureReservationNumber = isset($signatureStayDetails['reservation_number']) ? (string) $signatureStayDetails['reservation_number'] : '';
+                $signatureExistingPath = isset($activeMeldescheinSignature['guest_signature_path']) && $activeMeldescheinSignature['guest_signature_path'] !== null
+                    ? (string) $activeMeldescheinSignature['guest_signature_path']
+                    : '';
+                $signatureExistingAtRaw = isset($activeMeldescheinSignature['guest_signed_at']) && $activeMeldescheinSignature['guest_signed_at'] !== null
+                    ? (string) $activeMeldescheinSignature['guest_signed_at']
+                    : null;
+                $signatureExistingAtLabel = null;
+                if ($signatureExistingAtRaw !== null && $signatureExistingAtRaw !== '') {
+                    try {
+                        $signatureExistingAtLabel = (new DateTimeImmutable($signatureExistingAtRaw))->format('d.m.Y H:i');
+                    } catch (Throwable $exception) {
+                        $signatureExistingAtLabel = null;
+                    }
+                }
+                $signatureStatusBadge = $signatureExistingPath !== '' ? 'text-bg-success' : 'text-bg-warning';
+                $signatureStatusText = $signatureExistingPath !== '' ? 'Unterschrift vorhanden' : 'Unterschrift offen';
+              ?>
+              <div class="card module-card mb-4" id="meldeschein-signature" data-section="meldeschein">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                  <div>
+                    <h2 class="h5 mb-1">Digitale Gast-Unterschrift</h2>
+                    <p class="text-muted mb-0">Meldeschein <?= htmlspecialchars($signatureFormNumber) ?> für <?= htmlspecialchars($signatureGuestName) ?>.</p>
+                  </div>
+                  <span class="badge <?= $signatureStatusBadge ?> text-uppercase"><?= htmlspecialchars($signatureStatusText) ?></span>
+                </div>
+                <div class="card-body">
+                  <dl class="row small mb-3">
+                    <dt class="col-sm-4">Aufenthalt</dt>
+                    <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureArrivalLabel) ?> – <?= htmlspecialchars($signatureDepartureLabel) ?></dd>
+                    <dt class="col-sm-4">Reisezweck</dt>
+                    <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signaturePurpose) ?></dd>
+                    <dt class="col-sm-4">Zimmer</dt>
+                    <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureRoom) ?></dd>
+                    <dt class="col-sm-4">Firma</dt>
+                    <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureCompany) ?></dd>
+                    <?php if ($signatureReservationNumber !== ''): ?>
+                      <dt class="col-sm-4">Reservierung</dt>
+                      <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureReservationNumber) ?></dd>
+                    <?php endif; ?>
+                    <?php if ($signatureExistingAtLabel !== null): ?>
+                      <dt class="col-sm-4">Zuletzt signiert</dt>
+                      <dd class="col-sm-8 mb-1"><?= htmlspecialchars($signatureExistingAtLabel) ?></dd>
+                    <?php endif; ?>
+                  </dl>
+                  <?php if ($signatureExistingPath !== ''): ?>
+                    <div class="alert alert-info small" role="status">
+                      Es ist bereits eine digitale Unterschrift gespeichert. Eine neue Unterschrift ersetzt die vorhandene Version.
+                    </div>
+                  <?php endif; ?>
+                  <form method="post" id="signature-form">
+                    <input type="hidden" name="form" value="meldeschein_capture_signature">
+                    <input type="hidden" name="id" value="<?= $signatureFormId ?>">
+                    <input type="hidden" name="signature_data" id="signature-data">
+                    <div class="mb-3">
+                      <canvas id="signature-pad" width="900" height="260" class="w-100 border border-secondary-subtle rounded" aria-label="Unterschriftsfeld"></canvas>
+                      <div class="form-text">Unterschrift direkt auf einem Tablet oder Touch-Gerät erfassen. Mit „Zurücksetzen“ wird das Feld geleert.</div>
+                      <div class="text-danger small mt-2 d-none" id="signature-error"></div>
+                      <noscript><div class="text-danger small mt-2">Bitte JavaScript aktivieren, um die digitale Unterschrift zu erfassen.</div></noscript>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                      <button type="button" class="btn btn-outline-secondary" id="signature-clear">Zurücksetzen</button>
+                      <button type="submit" class="btn btn-primary">Unterschrift speichern</button>
+                      <a class="btn btn-link text-decoration-none" href="index.php?section=meldeschein">Abbrechen</a>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            <?php endif; ?>
             <div class="card module-card" id="meldeschein-candidates" data-section="meldeschein">
               <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
                 <div>
@@ -14003,6 +14225,170 @@ if ($activeSection === 'reservations') {
           }
         });
 
+        function setupSignaturePad() {
+          var canvas = document.getElementById('signature-pad');
+          var form = document.getElementById('signature-form');
+          var dataInput = document.getElementById('signature-data');
+          var clearButton = document.getElementById('signature-clear');
+          var errorHint = document.getElementById('signature-error');
+
+          if (!canvas || !form || !dataInput) {
+            return;
+          }
+
+          var context = canvas.getContext('2d');
+          if (!context) {
+            if (errorHint) {
+              errorHint.textContent = 'Ihr Browser unterstützt keine digitale Unterschrift.';
+              errorHint.classList.remove('d-none');
+            }
+            canvas.classList.add('d-none');
+            return;
+          }
+
+          canvas.style.touchAction = 'none';
+
+          var scaleRatio = 1;
+          var drawing = false;
+          var hasSignature = false;
+
+          function clearError() {
+            if (errorHint) {
+              errorHint.textContent = '';
+              errorHint.classList.add('d-none');
+            }
+          }
+
+          function applyStyle() {
+            context.strokeStyle = '#111827';
+            context.lineWidth = 2;
+            context.lineCap = 'round';
+            context.lineJoin = 'round';
+          }
+
+          function resetCanvasBackground() {
+            context.setTransform(1, 0, 0, 1, 0, 0);
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.setTransform(scaleRatio, 0, 0, scaleRatio, 0, 0);
+            var width = canvas.width / scaleRatio;
+            var height = canvas.height / scaleRatio;
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, width, height);
+            applyStyle();
+          }
+
+          function resizeCanvas() {
+            var rect = canvas.getBoundingClientRect();
+            scaleRatio = Math.max(window.devicePixelRatio || 1, 1);
+            canvas.width = Math.max(rect.width, 1) * scaleRatio;
+            canvas.height = Math.max(rect.height, 1) * scaleRatio;
+            resetCanvasBackground();
+            hasSignature = false;
+            dataInput.value = '';
+          }
+
+          resizeCanvas();
+
+          function getPoint(event) {
+            var rect = canvas.getBoundingClientRect();
+            return {
+              x: event.clientX - rect.left,
+              y: event.clientY - rect.top
+            };
+          }
+
+          function stopDrawing(event) {
+            if (!drawing) {
+              return;
+            }
+
+            drawing = false;
+
+            if (event && typeof canvas.releasePointerCapture === 'function') {
+              try {
+                canvas.releasePointerCapture(event.pointerId);
+              } catch (error) {
+                // Ignore capture release errors.
+              }
+            }
+          }
+
+          canvas.addEventListener('pointerdown', function (event) {
+            event.preventDefault();
+            clearError();
+            drawing = true;
+
+            if (typeof canvas.setPointerCapture === 'function') {
+              try {
+                canvas.setPointerCapture(event.pointerId);
+              } catch (error) {
+                // Ignore capture errors.
+              }
+            }
+
+            var point = getPoint(event);
+            context.beginPath();
+            context.moveTo(point.x, point.y);
+          });
+
+          canvas.addEventListener('pointermove', function (event) {
+            if (!drawing) {
+              return;
+            }
+
+            event.preventDefault();
+            var point = getPoint(event);
+            context.lineTo(point.x, point.y);
+            context.stroke();
+            hasSignature = true;
+          });
+
+          canvas.addEventListener('pointerup', stopDrawing);
+          canvas.addEventListener('pointerleave', stopDrawing);
+          canvas.addEventListener('pointercancel', stopDrawing);
+
+          if (clearButton) {
+            clearButton.addEventListener('click', function (event) {
+              event.preventDefault();
+              resizeCanvas();
+              clearError();
+            });
+          }
+
+          form.addEventListener('submit', function (event) {
+            clearError();
+
+            if (!hasSignature) {
+              event.preventDefault();
+              if (errorHint) {
+                errorHint.textContent = 'Bitte erfassen Sie eine Unterschrift im Feld.';
+                errorHint.classList.remove('d-none');
+              }
+              return;
+            }
+
+            try {
+              dataInput.value = canvas.toDataURL('image/png');
+            } catch (error) {
+              event.preventDefault();
+              if (errorHint) {
+                errorHint.textContent = 'Die Unterschrift konnte nicht verarbeitet werden.';
+                errorHint.classList.remove('d-none');
+              }
+            }
+          });
+
+          window.addEventListener('resize', function () {
+            var wasSigned = hasSignature;
+            resizeCanvas();
+            if (wasSigned && errorHint) {
+              errorHint.textContent = 'Bitte erfassen Sie die Unterschrift nach der Größenänderung erneut.';
+              errorHint.classList.remove('d-none');
+            }
+          });
+        }
+
+        setupSignaturePad();
         setupReservationFormModal();
         setupReservationCategoryRepeater();
         setupReservationPricing();

@@ -340,6 +340,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     issued_date DATE NOT NULL,
                     room_label VARCHAR(191) NULL,
                     pdf_path VARCHAR(255) NULL,
+                    guest_signature_path VARCHAR(255) NULL,
+                    guest_signed_at DATETIME NULL,
                     details_json LONGTEXT NULL,
                     created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

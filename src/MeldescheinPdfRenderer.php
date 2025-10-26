@@ -42,7 +42,7 @@ class MeldescheinPdfRenderer
         $this->renderStaySection($pdf, $form);
         $this->renderCompanySection($pdf, $form);
         $this->renderNotes($pdf, $form);
-        $this->renderSignatureSection($pdf);
+        $this->renderSignatureSection($pdf, $form);
 
         $pdf->Output('F', $targetPath);
 
@@ -228,11 +228,59 @@ class MeldescheinPdfRenderer
         $pdf->Ln(3);
     }
 
-    private function renderSignatureSection(\FPDF $pdf): void
+    private function renderSignatureSection(\FPDF $pdf, array $form): void
     {
         $pdf->Ln(4);
         $pdf->SetFont('Arial', '', 11);
-        $pdf->Cell(0, 6, $this->convertText('Unterschrift Gast: _________________________________'), 0, 1);
+
+        $signature = isset($form['signature']) && is_array($form['signature']) ? $form['signature'] : [];
+
+        $guestSignaturePath = null;
+        if (isset($signature['guest_signature_path']) && $signature['guest_signature_path'] !== '') {
+            $guestSignaturePath = $this->resolveRelativePath((string) $signature['guest_signature_path']);
+        } elseif (isset($form['guest_signature_path']) && $form['guest_signature_path'] !== '') {
+            $guestSignaturePath = $this->resolveRelativePath((string) $form['guest_signature_path']);
+        }
+
+        $guestSignedAt = null;
+        if (isset($signature['guest_signed_at']) && $signature['guest_signed_at'] !== '') {
+            $guestSignedAt = $this->formatDateTime((string) $signature['guest_signed_at']);
+        } elseif (isset($form['guest_signed_at']) && $form['guest_signed_at'] !== '') {
+            $guestSignedAt = $this->formatDateTime((string) $form['guest_signed_at']);
+        }
+
+        if ($guestSignaturePath !== null) {
+            $pdf->Cell(0, 6, $this->convertText('Unterschrift Gast:'), 0, 1);
+            $x = $pdf->GetX();
+            $y = $pdf->GetY();
+            $imageWidth = 70.0;
+            $imageHeight = 0.0;
+
+            try {
+                $size = @getimagesize($guestSignaturePath);
+                if (is_array($size) && isset($size[0], $size[1]) && (int) $size[0] > 0) {
+                    $imageHeight = ($size[1] / $size[0]) * $imageWidth;
+                }
+            } catch (\Throwable $exception) {
+                $imageHeight = 0.0;
+            }
+
+            if ($imageHeight <= 0.0) {
+                $imageHeight = 28.0;
+            }
+
+            $pdf->Image($guestSignaturePath, $x, $y, $imageWidth);
+            $pdf->Ln($imageHeight + 2.0);
+        } else {
+            $pdf->Cell(0, 6, $this->convertText('Unterschrift Gast: _________________________________'), 0, 1);
+        }
+
+        if ($guestSignedAt !== null) {
+            $pdf->SetFont('Arial', 'I', 9);
+            $pdf->Cell(0, 5, $this->convertText('Signiert am: ' . $guestSignedAt), 0, 1);
+            $pdf->SetFont('Arial', '', 11);
+        }
+
         $pdf->Cell(0, 6, $this->convertText('Unterschrift Gastgeber: ____________________________'), 0, 1);
     }
 
@@ -265,5 +313,40 @@ class MeldescheinPdfRenderer
         }
 
         return $converted;
+    }
+
+    private function resolveRelativePath(string $relativePath): ?string
+    {
+        $trimmed = ltrim($relativePath, '/\\');
+        if ($trimmed === '') {
+            return null;
+        }
+
+        $base = realpath(__DIR__ . '/..');
+        if ($base === false) {
+            return null;
+        }
+
+        $absolute = $base . DIRECTORY_SEPARATOR . str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $trimmed);
+        if (is_file($absolute)) {
+            return $absolute;
+        }
+
+        return null;
+    }
+
+    private function formatDateTime(?string $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        try {
+            $dateTime = new \DateTimeImmutable($value);
+        } catch (\Exception $exception) {
+            return null;
+        }
+
+        return $dateTime->format('d.m.Y H:i');
     }
 }
