@@ -252,6 +252,22 @@ $mailReplyToAddress = '';
 $mailFromAddressFormValue = '';
 $mailReplyToAddressFormValue = '';
 $mailLogEntries = [];
+$getDefaultPaymentMethods = static function (): array {
+    return [
+        [
+            'id' => 'cash',
+            'label' => 'Bar',
+            'type' => 'cash',
+            'terminal_serial' => null,
+        ],
+        [
+            'id' => 'card',
+            'label' => 'Karte',
+            'type' => 'sumup',
+            'terminal_serial' => null,
+        ],
+    ];
+};
 $paymentMethods = $getDefaultPaymentMethods();
 $paymentMethodLookup = [];
 foreach ($paymentMethods as $method) {
@@ -627,23 +643,6 @@ $parsePaymentMethods = static function (?string $value): array {
     }
 
     return $normalized;
-};
-
-$getDefaultPaymentMethods = static function (): array {
-    return [
-        [
-            'id' => 'cash',
-            'label' => 'Bar',
-            'type' => 'cash',
-            'terminal_serial' => null,
-        ],
-        [
-            'id' => 'card',
-            'label' => 'Karte',
-            'type' => 'sumup',
-            'terminal_serial' => null,
-        ],
-    ];
 };
 
 $hexToRgba = static function (?string $hex, float $alpha) use ($normalizeHexColor): ?string {
