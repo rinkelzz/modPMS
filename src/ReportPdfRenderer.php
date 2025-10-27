@@ -300,7 +300,7 @@ class ReportPdfRenderer
 
     private function createPdf(string $title, string $subtitle): \FPDF
     {
-        $pdf = new \FPDF('P', 'mm', 'A4');
+        $pdf = new \FPDF('L', 'mm', 'A4');
         $pdf->SetMargins(15, 20, 15);
         $pdf->AddPage();
 
@@ -319,24 +319,115 @@ class ReportPdfRenderer
 
     private function renderTable(\FPDF $pdf, array $headers, array $rows, array $widths, array $aligns): void
     {
+        $lineHeight = 6.0;
+
         $pdf->SetFillColor(241, 245, 249);
         $pdf->SetFont('Arial', 'B', 10);
 
         foreach ($headers as $index => $header) {
-            $width = $widths[$index] ?? 0;
-            $pdf->Cell($width, 8, $this->convertText((string) $header), 1, 0, 'L', true);
+            $width = $widths[$index] ?? 0.0;
+            $pdf->Cell($width, $lineHeight + 2.0, $this->convertText((string) $header), 1, 0, 'L', true);
         }
         $pdf->Ln();
 
         $pdf->SetFont('Arial', '', 10);
         foreach ($rows as $row) {
+            $rowHeight = $this->calculateRowHeight($pdf, $row, $widths, $lineHeight);
+            $startX = $pdf->GetX();
+            $startY = $pdf->GetY();
+
             foreach (array_values($row) as $index => $value) {
-                $width = $widths[$index] ?? 0;
+                $width = $widths[$index] ?? 0.0;
                 $align = $aligns[$index] ?? 'L';
-                $pdf->Cell($width, 8, $this->convertText((string) $value), 1, 0, $align);
+                $x = $pdf->GetX();
+                $y = $pdf->GetY();
+
+                $pdf->MultiCell($width, $lineHeight, $this->convertText((string) $value), 1, $align);
+                $pdf->SetXY($x + $width, $y);
             }
-            $pdf->Ln();
+
+            $pdf->SetXY($startX, $startY + $rowHeight);
         }
+    }
+
+    /**
+     * @param array<int, string> $row
+     * @param array<int, float> $widths
+     */
+    private function calculateRowHeight(\FPDF $pdf, array $row, array $widths, float $lineHeight): float
+    {
+        $maxLines = 1;
+
+        foreach (array_values($row) as $index => $value) {
+            $width = $widths[$index] ?? 0.0;
+            if ($width <= 0.0) {
+                continue;
+            }
+
+            $lines = $this->getNumberOfLines($pdf, $width, $this->convertText((string) $value));
+            if ($lines > $maxLines) {
+                $maxLines = $lines;
+            }
+        }
+
+        return $maxLines * $lineHeight;
+    }
+
+    private function getNumberOfLines(\FPDF $pdf, float $width, string $text): int
+    {
+        $text = str_replace("\r", '', $text);
+        $textLength = strlen($text);
+
+        if ($textLength > 0 && $text[$textLength - 1] === "\n") {
+            $textLength--;
+        }
+
+        $cw = $pdf->CurrentFont['cw'] ?? [];
+        $wmax = ($width - 1.5) * 1000 / $pdf->FontSize;
+        $lines = 1;
+        $lineLength = 0;
+        $sep = -1;
+        $i = 0;
+        $j = 0;
+
+        while ($i < $textLength) {
+            $char = $text[$i];
+
+            if ($char === "\n") {
+                $i++;
+                $sep = -1;
+                $j = $i;
+                $lineLength = 0;
+                $lines++;
+                continue;
+            }
+
+            if ($char === ' ') {
+                $sep = $i;
+            }
+
+            $lineLength += $cw[$char] ?? 0;
+
+            if ($lineLength > $wmax) {
+                if ($sep === -1) {
+                    if ($i === $j) {
+                        $i++;
+                    }
+                } else {
+                    $i = $sep + 1;
+                }
+
+                $sep = -1;
+                $j = $i;
+                $lineLength = 0;
+                $lines++;
+                continue;
+            }
+
+            $i++;
+        }
+
+        return $lines;
     }
 
     private function renderEmptyHint(\FPDF $pdf, string $message): void
