@@ -30,6 +30,10 @@ class DocumentPdf extends \FPDF
             return;
         }
 
+        $previousAutoPageBreak = $this->AutoPageBreak;
+        $previousBottomMargin = $this->bMargin;
+
+        $this->SetAutoPageBreak(false, $previousBottomMargin);
         $this->SetY(-35);
         $this->SetFont('Arial', 'B', 9);
         $this->SetTextColor(90, 90, 90);
@@ -45,6 +49,7 @@ class DocumentPdf extends \FPDF
             }
         }
 
+        $this->SetAutoPageBreak($previousAutoPageBreak, $previousBottomMargin);
         $this->SetTextColor(0, 0, 0);
     }
 }
