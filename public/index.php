@@ -70,6 +70,12 @@ if (isset($_SESSION['signature_invite_result']) && is_array($_SESSION['signature
     unset($_SESSION['signature_invite_result']);
 }
 
+$documentEmailResult = null;
+if (isset($_SESSION['document_email_result']) && is_array($_SESSION['document_email_result'])) {
+    $documentEmailResult = $_SESSION['document_email_result'];
+    unset($_SESSION['document_email_result']);
+}
+
 $updateOutput = null;
 if (isset($_SESSION['update_output']) && is_array($_SESSION['update_output'])) {
     $updateOutput = $_SESSION['update_output'];
@@ -220,6 +226,12 @@ $documentFormData['items'] = array_fill(0, 5, [
     'unit_price' => '',
     'tax_rate' => '',
 ]);
+$documentEmailFormData = [
+    'document_id' => null,
+    'email' => '',
+    'subject' => '',
+    'message' => '',
+];
 $documentTemplateFormData = [
     'id' => null,
     'type' => DocumentManager::TYPE_INVOICE,
@@ -391,6 +403,36 @@ $calendarNextUrl = 'index.php?section=dashboard';
 $calendarTodayUrl = 'index.php?section=dashboard';
 
 $config = require __DIR__ . '/../config/app.php';
+$getDocumentEmailDefaults = static function (array $document) use ($config, $documentTypeLabels): array {
+    $documentNumber = isset($document['document_number']) ? (string) $document['document_number'] : '';
+    $typeKey = isset($document['type']) ? (string) $document['type'] : DocumentManager::TYPE_INVOICE;
+    $typeLabel = $documentTypeLabels[$typeKey] ?? 'Dokument';
+
+    $subjectCandidate = trim((string) ($document['subject'] ?? ''));
+    $subject = $subjectCandidate !== ''
+        ? $subjectCandidate
+        : trim($typeLabel . ($documentNumber !== '' ? ' ' . $documentNumber : ''));
+
+    $appName = isset($config['name']) ? (string) $config['name'] : 'Ihre Unterkunft';
+    $recipientName = trim((string) ($document['recipient_name'] ?? ''));
+    $typeLabelLower = function_exists('mb_strtolower')
+        ? mb_strtolower($typeLabel)
+        : strtolower($typeLabel);
+
+    $messageLines = [
+        'Guten Tag' . ($recipientName !== '' ? ' ' . $recipientName : '') . ',',
+        '',
+        'im Anhang finden Sie ' . trim($typeLabelLower . ($documentNumber !== '' ? ' ' . $documentNumber : '')) . '.',
+        '',
+        'Vielen Dank und freundliche Grüße',
+        $appName,
+    ];
+
+    return [
+        'subject' => $subject,
+        'message' => implode("\n", $messageLines),
+    ];
+};
 $dbError = null;
 $categories = [];
 $rooms = [];
@@ -3377,6 +3419,281 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             break;
+
+        case 'document_send_email':
+            $activeSection = 'documents';
+
+            $documentId = (int) ($_POST['id'] ?? 0);
+            $emailRaw = trim((string) ($_POST['email'] ?? ''));
+            $subjectInput = trim((string) ($_POST['subject'] ?? ''));
+            $messageInput = (string) ($_POST['message'] ?? '');
+
+            $redirectTarget = $documentId > 0
+                ? 'index.php?section=documents&editDocument=' . $documentId
+                : 'index.php?section=documents';
+
+            $resultPayload = [
+                'document_id' => $documentId,
+                'email' => $emailRaw,
+                'subject' => $subjectInput,
+                'message' => $messageInput,
+                'email_status' => 'error',
+                'email_error' => null,
+            ];
+
+            if (!$documentManager instanceof DocumentManager) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Die Dokumentverwaltung ist derzeit nicht verfügbar.',
+                ];
+                $_SESSION['document_email_result'] = $resultPayload;
+                header('Location: ' . $redirectTarget);
+                exit;
+            }
+
+            if ($documentId <= 0) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Das Dokument konnte nicht versendet werden, da keine gültige ID übermittelt wurde.',
+                ];
+                $_SESSION['document_email_result'] = $resultPayload;
+                header('Location: ' . $redirectTarget);
+                exit;
+            }
+
+            $document = $documentManager->find($documentId);
+            if ($document === null) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Das ausgewählte Dokument wurde nicht gefunden.',
+                ];
+                $_SESSION['document_email_result'] = $resultPayload;
+                header('Location: ' . $redirectTarget);
+                exit;
+            }
+
+            $defaults = $getDocumentEmailDefaults($document);
+            $mailSubject = $subjectInput !== '' ? $subjectInput : $defaults['subject'];
+            $plainMessage = trim($messageInput) !== '' ? (string) $messageInput : $defaults['message'];
+
+            $resultPayload['subject'] = $mailSubject;
+            $resultPayload['message'] = $plainMessage;
+
+            $documentNumber = isset($document['document_number']) ? (string) $document['document_number'] : '';
+            $documentType = isset($document['type']) ? (string) $document['type'] : DocumentManager::TYPE_INVOICE;
+            $documentTypeLabel = $documentTypeLabels[$documentType] ?? 'Dokument';
+
+            $pdfRelativePath = isset($document['pdf_path']) ? (string) $document['pdf_path'] : '';
+            if ($pdfRelativePath === '') {
+                $_SESSION['alert'] = [
+                    'type' => 'warning',
+                    'message' => 'Bitte finalisieren Sie das Dokument zuerst, um es per E-Mail zu versenden.',
+                ];
+                $_SESSION['document_email_result'] = $resultPayload;
+                header('Location: ' . $redirectTarget);
+                exit;
+            }
+
+            $relativePath = ltrim($pdfRelativePath, '/');
+            $pdfAbsolutePath = __DIR__ . '/../' . $relativePath;
+            if (!is_file($pdfAbsolutePath) || !is_readable($pdfAbsolutePath)) {
+                $resolvedPath = realpath($pdfAbsolutePath);
+                if ($resolvedPath !== false && is_file($resolvedPath) && is_readable($resolvedPath)) {
+                    $pdfAbsolutePath = $resolvedPath;
+                }
+            }
+
+            if (!is_file($pdfAbsolutePath) || !is_readable($pdfAbsolutePath)) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Das PDF-Dokument konnte nicht geöffnet werden.',
+                ];
+                $resultPayload['email_error'] = 'PDF nicht gefunden.';
+                $_SESSION['document_email_result'] = $resultPayload;
+                header('Location: ' . $redirectTarget);
+                exit;
+            }
+
+            $plainForMail = str_replace(["\r\n", "\r"], "\n", $plainMessage);
+            $plainForMail = trim($plainForMail) !== '' ? $plainForMail : trim($defaults['message']);
+            $plainForMail = str_replace("\n", "\r\n", $plainForMail);
+
+            $attachmentName = $documentNumber !== '' ? $documentNumber . '.pdf' : basename($pdfAbsolutePath);
+            $attachmentNameLower = strtolower($attachmentName);
+            if (substr($attachmentNameLower, -4) !== '.pdf') {
+                $attachmentName .= '.pdf';
+            }
+            $attachmentName = str_replace('"', '', $attachmentName);
+
+            $mailHeaders = '';
+            $mailBody = '';
+            $emailStatus = 'invalid';
+            $mailErrorMessage = 'Die E-Mail-Adresse ist ungültig.';
+            $headersForLog = '';
+
+            if ($emailRaw !== '' && filter_var($emailRaw, FILTER_VALIDATE_EMAIL)) {
+                $emailStatus = 'failed';
+                $mailErrorMessage = null;
+
+                try {
+                    $boundarySeed = bin2hex(random_bytes(12));
+                } catch (Throwable $exception) {
+                    $boundarySeed = bin2hex(hash('sha256', uniqid('', true), true));
+                }
+                $boundary = '==ModPmsMail-' . $boundarySeed;
+
+                $mailHeaderLines = [];
+                if ($mailFromAddress !== '') {
+                    $fromSanitized = str_replace(["\r", "\n"], '', $mailFromAddress);
+                    $mailHeaderLines[] = 'From: ' . $fromSanitized;
+                }
+                if ($mailReplyToAddress !== '') {
+                    $replySanitized = str_replace(["\r", "\n"], '', $mailReplyToAddress);
+                    $mailHeaderLines[] = 'Reply-To: ' . $replySanitized;
+                }
+                $mailHeaderLines[] = 'MIME-Version: 1.0';
+                $mailHeaderLines[] = 'Content-Type: multipart/mixed; boundary="' . $boundary . '"';
+
+                $mailHeaders = implode("\r\n", $mailHeaderLines) . "\r\n";
+                $headersForLog = $mailHeaders;
+
+                $mailBodyParts = [];
+                $mailBodyParts[] = '--' . $boundary;
+                $mailBodyParts[] = 'Content-Type: text/plain; charset=utf-8';
+                $mailBodyParts[] = 'Content-Transfer-Encoding: 8bit';
+                $mailBodyParts[] = '';
+                $mailBodyParts[] = $plainForMail;
+                $mailBodyParts[] = '';
+
+                $pdfContent = file_get_contents($pdfAbsolutePath);
+                if ($pdfContent === false) {
+                    $emailStatus = 'error';
+                    $mailErrorMessage = 'Das PDF-Dokument konnte nicht gelesen werden.';
+                } else {
+                    $mailBodyParts[] = '--' . $boundary;
+                    $mailBodyParts[] = 'Content-Type: application/pdf; name="' . $attachmentName . '"';
+                    $mailBodyParts[] = 'Content-Transfer-Encoding: base64';
+                    $mailBodyParts[] = 'Content-Disposition: attachment; filename="' . $attachmentName . '"';
+                    $mailBodyParts[] = '';
+                    $mailBodyParts[] = chunk_split(base64_encode($pdfContent));
+                    $mailBodyParts[] = '';
+                    $mailBodyParts[] = '--' . $boundary . '--';
+                    $mailBodyParts[] = '';
+
+                    $mailBody = 'Dies ist eine mehrteilige Nachricht im MIME-Format.' . "\r\n\r\n"
+                        . implode("\r\n", $mailBodyParts);
+
+                    $envelopeFrom = '';
+                    if ($mailFromAddress !== '') {
+                        $envelopeCandidate = $mailFromAddress;
+                        if (preg_match('/<([^>]+)>/', $envelopeCandidate, $matches)) {
+                            $envelopeCandidate = $matches[1];
+                        }
+                        $envelopeCandidate = trim(str_replace(["\r", "\n"], '', $envelopeCandidate));
+                        if ($envelopeCandidate !== '' && filter_var($envelopeCandidate, FILTER_VALIDATE_EMAIL)) {
+                            $envelopeFrom = $envelopeCandidate;
+                        }
+                    }
+
+                    $mailSent = false;
+                    if (!function_exists('mail')) {
+                        $emailStatus = 'failed';
+                        $mailErrorMessage = 'Die PHP-Funktion mail() ist auf diesem Server nicht verfügbar.';
+                    } else {
+                        $mailAdditionalParameters = $envelopeFrom !== '' ? ('-f' . $envelopeFrom) : '';
+                        $mailErrorMessage = null;
+                        set_error_handler(static function (int $severity, string $message) use (&$mailErrorMessage): bool {
+                            $mailErrorMessage = $message;
+                            return true;
+                        });
+
+                        try {
+                            if ($mailAdditionalParameters !== '') {
+                                $mailSent = mail($emailRaw, $mailSubject, $mailBody, $mailHeaders, $mailAdditionalParameters);
+                            } else {
+                                $mailSent = mail($emailRaw, $mailSubject, $mailBody, $mailHeaders);
+                            }
+                        } catch (Throwable $mailException) {
+                            $mailSent = false;
+                            $mailErrorMessage = $mailException->getMessage();
+                        } finally {
+                            restore_error_handler();
+                        }
+
+                        if ($mailSent) {
+                            $emailStatus = 'sent';
+                        } else {
+                            if ($mailErrorMessage === null) {
+                                $mailErrorMessage = 'mail() lieferte keine Erfolgsbestätigung.';
+                            }
+                            $emailStatus = 'failed';
+                        }
+                    }
+                }
+            }
+
+            $resultPayload['email_status'] = $emailStatus;
+            $resultPayload['email_error'] = $mailErrorMessage;
+
+            if ($emailLogManager instanceof EmailLogManager && $emailRaw !== '') {
+                $context = [
+                    'document_id' => $documentId,
+                    'document_number' => $documentNumber !== '' ? $documentNumber : null,
+                    'document_type' => $documentType,
+                    'attachment' => $attachmentName,
+                ];
+
+                $emailLogManager->log(
+                    $emailRaw,
+                    $mailSubject,
+                    str_replace("\r\n", "\n", $plainForMail),
+                    $headersForLog,
+                    $emailStatus,
+                    $mailErrorMessage,
+                    array_filter($context, static fn ($value) => $value !== null && $value !== '')
+                );
+            }
+
+            if ($emailStatus === 'sent') {
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => sprintf(
+                        '%s %s wurde an <strong>%s</strong> gesendet.',
+                        $documentTypeLabel,
+                        htmlspecialchars($documentNumber !== '' ? $documentNumber : ('#' . $documentId), ENT_QUOTES, 'UTF-8'),
+                        htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8')
+                    ),
+                ];
+            } elseif ($emailStatus === 'invalid') {
+                $_SESSION['alert'] = [
+                    'type' => 'warning',
+                    'message' => 'Bitte geben Sie eine gültige E-Mail-Adresse ein.',
+                ];
+            } elseif ($emailStatus === 'failed') {
+                $message = sprintf(
+                    'Die E-Mail an <strong>%s</strong> konnte nicht versendet werden.',
+                    htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8')
+                );
+                if ($mailErrorMessage !== null && $mailErrorMessage !== '') {
+                    $message .= '<br><small class="text-danger">Fehler: '
+                        . htmlspecialchars($mailErrorMessage, ENT_QUOTES, 'UTF-8')
+                        . '</small>';
+                }
+                $_SESSION['alert'] = [
+                    'type' => 'warning',
+                    'message' => $message,
+                ];
+            } else {
+                $_SESSION['alert'] = [
+                    'type' => 'warning',
+                    'message' => 'Die E-Mail konnte nicht vorbereitet werden.',
+                ];
+            }
+
+            $_SESSION['document_email_result'] = $resultPayload;
+
+            header('Location: ' . $redirectTarget);
+            exit;
 
         case 'document_generate_correction':
             $activeSection = 'documents';
@@ -6980,6 +7297,28 @@ if ($pdo !== null && isset($_GET['editDocument']) && $documentFormData['id'] ===
             if ($documentFormData['currency'] === '') {
                 $documentFormData['currency'] = 'EUR';
             }
+
+            $documentEmailFormData['document_id'] = $documentFormData['id'];
+            $emailDefaults = $getDocumentEmailDefaults($documentToEdit);
+            $documentEmailFormData['subject'] = $emailDefaults['subject'];
+            $documentEmailFormData['message'] = $emailDefaults['message'];
+            $documentEmailFormData['email'] = '';
+
+            if (
+                is_array($documentEmailResult)
+                && isset($documentEmailResult['document_id'])
+                && (int) $documentEmailResult['document_id'] === $documentFormData['id']
+            ) {
+                if (isset($documentEmailResult['email'])) {
+                    $documentEmailFormData['email'] = (string) $documentEmailResult['email'];
+                }
+                if (isset($documentEmailResult['subject']) && $documentEmailResult['subject'] !== '') {
+                    $documentEmailFormData['subject'] = (string) $documentEmailResult['subject'];
+                }
+                if (isset($documentEmailResult['message']) && $documentEmailResult['message'] !== '') {
+                    $documentEmailFormData['message'] = (string) $documentEmailResult['message'];
+                }
+            }
         } elseif ($alert === null) {
             $alert = [
                 'type' => 'warning',
@@ -7393,6 +7732,28 @@ if ($pdo !== null && isset($_GET['editDocument']) && $documentFormData['id'] ===
 
             if ($documentFormData['currency'] === '') {
                 $documentFormData['currency'] = 'EUR';
+            }
+
+            $documentEmailFormData['document_id'] = $documentFormData['id'];
+            $emailDefaults = $getDocumentEmailDefaults($documentToEdit);
+            $documentEmailFormData['subject'] = $emailDefaults['subject'];
+            $documentEmailFormData['message'] = $emailDefaults['message'];
+            $documentEmailFormData['email'] = '';
+
+            if (
+                is_array($documentEmailResult)
+                && isset($documentEmailResult['document_id'])
+                && (int) $documentEmailResult['document_id'] === $documentFormData['id']
+            ) {
+                if (isset($documentEmailResult['email'])) {
+                    $documentEmailFormData['email'] = (string) $documentEmailResult['email'];
+                }
+                if (isset($documentEmailResult['subject']) && $documentEmailResult['subject'] !== '') {
+                    $documentEmailFormData['subject'] = (string) $documentEmailResult['subject'];
+                }
+                if (isset($documentEmailResult['message']) && $documentEmailResult['message'] !== '') {
+                    $documentEmailFormData['message'] = (string) $documentEmailResult['message'];
+                }
             }
         } elseif ($alert === null) {
             $alert = [
@@ -9273,15 +9634,89 @@ if ($activeSection === 'reservations') {
                     </table>
                   </div>
                 <?php endif; ?>
-              </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-xxl-5">
+    <?php if ($isDocumentEditing && $documentFormData['pdf_path'] !== ''): ?>
+      <?php
+        $documentEmailFeedbackStatus = '';
+        $documentEmailFeedbackMessage = '';
+        $documentEmailFeedbackClass = 'text-warning';
+        if (
+            is_array($documentEmailResult)
+            && isset($documentEmailResult['document_id'])
+            && (int) $documentEmailResult['document_id'] === (int) $documentFormData['id']
+        ) {
+            $documentEmailFeedbackStatus = (string) ($documentEmailResult['email_status'] ?? '');
+            $documentEmailFeedbackError = isset($documentEmailResult['email_error']) && $documentEmailResult['email_error'] !== null
+                ? (string) $documentEmailResult['email_error']
+                : '';
+            $documentEmailRecipient = isset($documentEmailResult['email']) ? (string) $documentEmailResult['email'] : '';
+
+            if ($documentEmailFeedbackStatus === 'sent' && $documentEmailRecipient !== '') {
+                $documentEmailFeedbackMessage = sprintf(
+                    'Zuletzt erfolgreich an %s gesendet.',
+                    htmlspecialchars($documentEmailRecipient)
+                );
+                $documentEmailFeedbackClass = 'text-success';
+            } elseif ($documentEmailFeedbackStatus === 'failed') {
+                $documentEmailFeedbackMessage = 'Der letzte Versandversuch ist fehlgeschlagen.';
+                if ($documentEmailFeedbackError !== '') {
+                    $documentEmailFeedbackMessage .= ' Fehler: ' . htmlspecialchars($documentEmailFeedbackError);
+                }
+                $documentEmailFeedbackClass = 'text-danger';
+            } elseif ($documentEmailFeedbackStatus === 'invalid') {
+                $documentEmailFeedbackMessage = 'Bitte prüfen Sie die angegebene E-Mail-Adresse.';
+                if ($documentEmailFeedbackError !== '') {
+                    $documentEmailFeedbackMessage .= ' Fehler: ' . htmlspecialchars($documentEmailFeedbackError);
+                }
+                $documentEmailFeedbackClass = 'text-warning';
+            } elseif ($documentEmailFeedbackStatus === 'error') {
+                $documentEmailFeedbackMessage = 'Die E-Mail konnte nicht vorbereitet werden.';
+                if ($documentEmailFeedbackError !== '') {
+                    $documentEmailFeedbackMessage .= ' Fehler: ' . htmlspecialchars($documentEmailFeedbackError);
+                }
+                $documentEmailFeedbackClass = 'text-danger';
+            }
+        }
+      ?>
+      <div class="card module-card mb-4">
+        <div class="card-header bg-transparent border-0">
+          <h3 class="h5 mb-0">Per E-Mail versenden</h3>
+        </div>
+        <div class="card-body">
+          <?php if ($documentEmailFeedbackMessage !== ''): ?>
+            <div class="small mb-3 <?= $documentEmailFeedbackClass ?>">
+              <?= $documentEmailFeedbackMessage ?>
             </div>
-          </div>
-          <div class="col-12 col-xxl-5">
-            <div class="card module-card">
-              <div class="card-header bg-transparent border-0">
-                <h3 class="h5 mb-0"><?= $isDocumentEditing ? 'Dokument bearbeiten' : 'Neues Dokument' ?></h3>
-              </div>
-              <div class="card-body">
+          <?php endif; ?>
+          <form method="post">
+            <input type="hidden" name="form" value="document_send_email">
+            <input type="hidden" name="id" value="<?= (int) $documentFormData['id'] ?>">
+            <div class="mb-3">
+              <label for="document-email-recipient" class="form-label">E-Mail-Adresse</label>
+              <input type="email" class="form-control" id="document-email-recipient" name="email" value="<?= htmlspecialchars($documentEmailFormData['email']) ?>" required>
+            </div>
+            <div class="mb-3">
+              <label for="document-email-subject" class="form-label">Betreff</label>
+              <input type="text" class="form-control" id="document-email-subject" name="subject" value="<?= htmlspecialchars($documentEmailFormData['subject']) ?>" required>
+            </div>
+            <div class="mb-3">
+              <label for="document-email-message" class="form-label">Nachricht</label>
+              <textarea class="form-control" id="document-email-message" name="message" rows="4"><?= htmlspecialchars($documentEmailFormData['message']) ?></textarea>
+              <div class="form-text">Das Dokument wird als PDF angehängt.</div>
+            </div>
+            <button type="submit" class="btn btn-outline-primary">E-Mail senden</button>
+          </form>
+        </div>
+      </div>
+    <?php endif; ?>
+    <div class="card module-card">
+      <div class="card-header bg-transparent border-0">
+        <h3 class="h5 mb-0"><?= $isDocumentEditing ? 'Dokument bearbeiten' : 'Neues Dokument' ?></h3>
+      </div>
+      <div class="card-body">
                 <?php if (!$documentIsEditable && $isDocumentEditing): ?>
                   <div class="alert alert-info" role="status">
                     Dieses Dokument ist bereits finalisiert. Änderungen sind nicht mehr möglich.
@@ -10788,7 +11223,7 @@ if ($activeSection === 'reservations') {
             <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
               <div>
                 <h2 class="h5 mb-1">E-Mail-Protokoll</h2>
-                <p class="text-muted mb-0">Nachverfolgen, wann Signatur-E-Mails versendet oder abgelehnt wurden.</p>
+                <p class="text-muted mb-0">Nachverfolgen, wann Signatur- oder Dokument-E-Mails versendet oder abgelehnt wurden.</p>
               </div>
               <span class="badge text-bg-secondary">Protokoll</span>
             </div>
