@@ -2,7 +2,7 @@
 
 return [
     'name' => 'modPMS',
-    'version' => '1.14.0',
+    'version' => '1.15.0',
     'repository' => [
         'url' => 'https://github.com/rinkelzz/modpms',
         'branch' => 'main',
@@ -19,6 +19,10 @@ return [
         'documents' => [
             'title' => 'Dokumente',
             'description' => 'Rechnungen, Angebote, Mahnungen und Korrekturen als PDF erstellen.'
+        ],
+        'reports' => [
+            'title' => 'Berichte',
+            'description' => 'Frühstücks-, Monats- und Reinigungslisten als PDF exportieren.'
         ],
         'rates' => [
             'title' => 'Raten',
