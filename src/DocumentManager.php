@@ -100,6 +100,9 @@ class DocumentManager
         $this->ensureColumn('documents', 'pdf_path', 'ALTER TABLE documents ADD COLUMN pdf_path VARCHAR(255) NULL AFTER correction_number');
         $this->ensureColumn('documents', 'finalized_at', 'ALTER TABLE documents ADD COLUMN finalized_at TIMESTAMP NULL DEFAULT NULL AFTER pdf_path');
         $this->ensureColumn('documents', 'correction_number', 'ALTER TABLE documents ADD COLUMN correction_number INT UNSIGNED NULL AFTER correction_of_id');
+        $this->ensureColumn('documents', 'payment_method', 'ALTER TABLE documents ADD COLUMN payment_method VARCHAR(64) NULL AFTER finalized_at');
+        $this->ensureColumn('documents', 'payment_reference', 'ALTER TABLE documents ADD COLUMN payment_reference VARCHAR(191) NULL AFTER payment_method');
+        $this->ensureColumn('documents', 'payment_details_json', 'ALTER TABLE documents ADD COLUMN payment_details_json LONGTEXT NULL AFTER payment_reference');
 
         try {
             $this->pdo->exec('ALTER TABLE documents ADD INDEX idx_documents_reservation (reservation_id)');
@@ -342,7 +345,13 @@ class DocumentManager
         $stmt->execute(['id' => $id]);
     }
 
-    public function finalizeDocument(int $id, callable $pdfGenerator): array
+    public function finalizeDocument(
+        int $id,
+        callable $pdfGenerator,
+        ?string $paymentMethod = null,
+        ?string $paymentReference = null,
+        ?array $paymentDetails = null
+    ): array
     {
         $document = $this->find($id);
         if ($document === null) {
@@ -391,8 +400,27 @@ class DocumentManager
             throw new RuntimeException('PDF konnte nicht erzeugt werden.');
         }
 
+        $normalizedPaymentMethod = $paymentMethod !== null ? trim($paymentMethod) : null;
+        if ($normalizedPaymentMethod === '') {
+            $normalizedPaymentMethod = null;
+        }
+
+        $normalizedPaymentReference = $paymentReference !== null ? trim($paymentReference) : null;
+        if ($normalizedPaymentReference === '') {
+            $normalizedPaymentReference = null;
+        }
+
+        $paymentDetailsJson = null;
+        if ($paymentDetails !== null) {
+            try {
+                $paymentDetailsJson = $this->encodePaymentDetails($paymentDetails);
+            } catch (\JsonException $exception) {
+                throw new RuntimeException('Zahlungsdetails konnten nicht verarbeitet werden: ' . $exception->getMessage(), 0, $exception);
+            }
+        }
+
         $stmt = $this->pdo->prepare(
-            'UPDATE documents SET status = :status, finalized_at = NOW(), pdf_path = :pdf_path, total_net = :total_net, total_vat = :total_vat, total_gross = :total_gross, items_json = :items_json, updated_at = NOW() WHERE id = :id'
+            'UPDATE documents SET status = :status, finalized_at = NOW(), pdf_path = :pdf_path, total_net = :total_net, total_vat = :total_vat, total_gross = :total_gross, items_json = :items_json, payment_method = :payment_method, payment_reference = :payment_reference, payment_details_json = :payment_details_json, updated_at = NOW() WHERE id = :id'
         );
         $stmt->execute([
             'id' => $id,
@@ -402,6 +430,9 @@ class DocumentManager
             'total_vat' => $totals['vat'],
             'total_gross' => $totals['gross'],
             'items_json' => $this->encodeItems($items),
+            'payment_method' => $normalizedPaymentMethod,
+            'payment_reference' => $normalizedPaymentReference,
+            'payment_details_json' => $paymentDetailsJson,
         ]);
 
         return $this->find($id);
@@ -579,6 +610,14 @@ class DocumentManager
     }
 
     /**
+     * @param array<string, mixed> $details
+     */
+    private function encodePaymentDetails(array $details): string
+    {
+        return json_encode($details, JSON_THROW_ON_ERROR);
+    }
+
+    /**
      * @param array<int, array<string, mixed>> $items
      * @return array<int, array<string, mixed>>
      */
@@ -718,6 +757,27 @@ class DocumentManager
         $record['reservation_number'] = isset($record['reservation_number']) && $record['reservation_number'] !== null
             ? (string) $record['reservation_number']
             : null;
+
+        $record['payment_method'] = isset($record['payment_method']) && $record['payment_method'] !== ''
+            ? (string) $record['payment_method']
+            : null;
+        $record['payment_reference'] = isset($record['payment_reference']) && $record['payment_reference'] !== ''
+            ? (string) $record['payment_reference']
+            : null;
+        $record['payment_details'] = [];
+
+        if (isset($record['payment_details_json']) && $record['payment_details_json'] !== null && $record['payment_details_json'] !== '') {
+            try {
+                $decodedDetails = json_decode((string) $record['payment_details_json'], true, 512, JSON_THROW_ON_ERROR);
+                if (is_array($decodedDetails)) {
+                    $record['payment_details'] = $decodedDetails;
+                }
+            } catch (\JsonException $exception) {
+                $record['payment_details'] = [];
+            }
+        }
+
+        unset($record['payment_details_json']);
 
         return $record;
     }

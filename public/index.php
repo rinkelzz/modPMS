@@ -13,6 +13,7 @@ use ModPMS\MeldescheinManager;
 use ModPMS\MeldescheinPdfRenderer;
 use ModPMS\RateManager;
 use ModPMS\ReservationManager;
+use ModPMS\SumUpClient;
 use ModPMS\TaxCategoryManager;
 use ModPMS\SettingManager;
 use ModPMS\RoomCategoryManager;
@@ -39,6 +40,7 @@ require_once __DIR__ . '/../src/DocumentPdfRenderer.php';
 require_once __DIR__ . '/../src/EmailLogManager.php';
 require_once __DIR__ . '/../src/MeldescheinManager.php';
 require_once __DIR__ . '/../src/MeldescheinPdfRenderer.php';
+require_once __DIR__ . '/../src/SumUpClient.php';
 
 session_start();
 
@@ -185,6 +187,22 @@ $documentStatusBadges = [
     DocumentManager::STATUS_FINALIZED => 'text-bg-success',
     DocumentManager::STATUS_CORRECTED => 'text-bg-warning text-dark',
 ];
+$getDefaultPaymentMethods = static function (): array {
+    return [
+        [
+            'id' => 'cash',
+            'label' => 'Bar',
+            'type' => 'cash',
+            'terminal_serial' => null,
+        ],
+        [
+            'id' => 'card',
+            'label' => 'Karte',
+            'type' => 'sumup',
+            'terminal_serial' => null,
+        ],
+    ];
+};
 $emailLogManager = null;
 $meldescheinManager = null;
 $meldescheine = [];
@@ -250,6 +268,25 @@ $mailReplyToAddress = '';
 $mailFromAddressFormValue = '';
 $mailReplyToAddressFormValue = '';
 $mailLogEntries = [];
+$paymentMethods = $getDefaultPaymentMethods();
+$paymentMethodLookup = [];
+foreach ($paymentMethods as $method) {
+    if (isset($method['id'])) {
+        $paymentMethodLookup[(string) $method['id']] = $method;
+    }
+}
+$paymentMethodFormData = $paymentMethods;
+$paymentMethodOptions = array_map(static function (array $method): array {
+    return [
+        'value' => (string) ($method['id'] ?? ''),
+        'label' => (string) ($method['label'] ?? ''),
+        'type' => (string) ($method['type'] ?? 'other'),
+    ];
+}, $paymentMethods);
+$sumupAuthMethod = 'api_key';
+$sumupCredential = '';
+$sumupMerchantCode = '';
+$sumupDefaultTerminal = '';
 $reservationFormDefaults = $reservationFormData;
 $reservationFormMode = 'create';
 $isEditingReservation = false;
@@ -555,6 +592,57 @@ $calculateContrastColor = static function (string $hex): string {
     return $luminance > 0.6 ? '#111827' : '#ffffff';
 };
 
+$parsePaymentMethods = static function (?string $value): array {
+    if ($value === null) {
+        return [];
+    }
+
+    $trimmed = trim($value);
+    if ($trimmed === '') {
+        return [];
+    }
+
+    try {
+        $decoded = json_decode($trimmed, true, 512, JSON_THROW_ON_ERROR);
+    } catch (\JsonException $exception) {
+        return [];
+    }
+
+    if (!is_array($decoded)) {
+        return [];
+    }
+
+    $normalized = [];
+
+    foreach ($decoded as $entry) {
+        if (!is_array($entry)) {
+            continue;
+        }
+
+        $id = isset($entry['id']) ? trim((string) $entry['id']) : '';
+        $label = isset($entry['label']) ? trim((string) $entry['label']) : '';
+        $type = isset($entry['type']) ? strtolower(trim((string) $entry['type'])) : 'other';
+        $terminal = isset($entry['terminal_serial']) ? trim((string) $entry['terminal_serial']) : '';
+
+        if ($id === '' || $label === '') {
+            continue;
+        }
+
+        if (!in_array($type, ['cash', 'sumup', 'other'], true)) {
+            $type = 'other';
+        }
+
+        $normalized[] = [
+            'id' => $id,
+            'label' => $label,
+            'type' => $type,
+            'terminal_serial' => $terminal !== '' ? $terminal : null,
+        ];
+    }
+
+    return $normalized;
+};
+
 $hexToRgba = static function (?string $hex, float $alpha) use ($normalizeHexColor): ?string {
     $normalized = $normalizeHexColor($hex);
     if ($normalized === null) {
@@ -796,6 +884,90 @@ if ($settingsManager instanceof SettingManager) {
 
     if (isset($documentSettings['document_company_bank_details'])) {
         $documentCompanyBankDetails = (string) $documentSettings['document_company_bank_details'];
+    }
+
+    $storedPaymentMethods = $parsePaymentMethods($settingsManager->get('payment_methods', ''));
+    if ($storedPaymentMethods !== []) {
+        $paymentMethods = [];
+        $paymentMethodLookup = [];
+
+        foreach ($storedPaymentMethods as $method) {
+            if (!is_array($method)) {
+                continue;
+            }
+
+            $id = isset($method['id']) ? trim((string) $method['id']) : '';
+            $label = isset($method['label']) ? trim((string) $method['label']) : '';
+            $type = isset($method['type']) ? strtolower((string) $method['type']) : 'other';
+            $terminalSerial = isset($method['terminal_serial']) && $method['terminal_serial'] !== null
+                ? trim((string) $method['terminal_serial'])
+                : null;
+
+            if ($id === '' || $label === '') {
+                continue;
+            }
+
+            if (!in_array($type, ['cash', 'sumup', 'other'], true)) {
+                $type = 'other';
+            }
+
+            if ($terminalSerial !== null && $terminalSerial === '') {
+                $terminalSerial = null;
+            }
+
+            $normalizedMethod = [
+                'id' => $id,
+                'label' => $label,
+                'type' => $type,
+                'terminal_serial' => $terminalSerial,
+            ];
+
+            $paymentMethods[] = $normalizedMethod;
+            $paymentMethodLookup[$id] = $normalizedMethod;
+        }
+
+        if ($paymentMethods === []) {
+            $paymentMethods = $getDefaultPaymentMethods();
+            $paymentMethodLookup = [];
+            foreach ($paymentMethods as $method) {
+                $paymentMethodLookup[(string) $method['id']] = $method;
+            }
+        }
+    }
+
+    $paymentMethodFormData = $paymentMethods;
+    $paymentMethodOptions = array_map(static function (array $method): array {
+        return [
+            'value' => (string) ($method['id'] ?? ''),
+            'label' => (string) ($method['label'] ?? ''),
+            'type' => (string) ($method['type'] ?? 'other'),
+        ];
+    }, $paymentMethods);
+
+    $sumupSettings = $settingsManager->getMany([
+        'sumup_auth_method',
+        'sumup_credential',
+        'sumup_merchant_code',
+        'sumup_default_terminal',
+    ]);
+
+    if (isset($sumupSettings['sumup_auth_method'])) {
+        $candidate = strtolower(trim((string) $sumupSettings['sumup_auth_method']));
+        if (in_array($candidate, ['api_key', 'oauth'], true)) {
+            $sumupAuthMethod = $candidate;
+        }
+    }
+
+    if (isset($sumupSettings['sumup_credential'])) {
+        $sumupCredential = trim((string) $sumupSettings['sumup_credential']);
+    }
+
+    if (isset($sumupSettings['sumup_merchant_code'])) {
+        $sumupMerchantCode = trim((string) $sumupSettings['sumup_merchant_code']);
+    }
+
+    if (isset($sumupSettings['sumup_default_terminal'])) {
+        $sumupDefaultTerminal = trim((string) $sumupSettings['sumup_default_terminal']);
     }
 }
 
@@ -1773,6 +1945,133 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             header('Location: index.php?section=settings#mail-log');
+            exit;
+
+        case 'settings_payment_methods':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Einstellungen konnte nicht hergestellt werden.',
+                ];
+                break;
+            }
+
+            $methodsInput = isset($_POST['payment_methods']) && is_array($_POST['payment_methods'])
+                ? $_POST['payment_methods']
+                : [];
+            $labels = isset($methodsInput['label']) && is_array($methodsInput['label']) ? $methodsInput['label'] : [];
+            $ids = isset($methodsInput['id']) && is_array($methodsInput['id']) ? $methodsInput['id'] : [];
+            $types = isset($methodsInput['type']) && is_array($methodsInput['type']) ? $methodsInput['type'] : [];
+            $terminals = isset($methodsInput['terminal_serial']) && is_array($methodsInput['terminal_serial'])
+                ? $methodsInput['terminal_serial']
+                : [];
+
+            $normalizedMethods = [];
+            $seenIds = [];
+
+            foreach ($labels as $index => $labelValue) {
+                $label = trim((string) $labelValue);
+                $idValue = isset($ids[$index]) ? trim((string) $ids[$index]) : '';
+                $typeValue = isset($types[$index]) ? strtolower(trim((string) $types[$index])) : 'other';
+                $terminalValue = isset($terminals[$index]) ? strtoupper(trim((string) $terminals[$index])) : '';
+
+                if ($label === '') {
+                    continue;
+                }
+
+                $id = $idValue !== '' ? $idValue : $label;
+                $id = strtolower($id);
+                $id = preg_replace('/[^a-z0-9_-]+/', '-', $id);
+                $id = trim($id, '-_');
+                if ($id === '') {
+                    $id = 'method-' . (count($normalizedMethods) + 1);
+                }
+
+                $candidateId = $id;
+                $suffix = 1;
+                while (isset($seenIds[$candidateId])) {
+                    $candidateId = $id . '-' . ++$suffix;
+                }
+                $seenIds[$candidateId] = true;
+                $id = $candidateId;
+
+                if (!in_array($typeValue, ['cash', 'sumup', 'other'], true)) {
+                    $typeValue = 'other';
+                }
+
+                if ($typeValue !== 'sumup') {
+                    $terminalValue = '';
+                } else {
+                    $terminalValue = preg_replace('/\s+/', '', $terminalValue);
+                }
+
+                $normalizedMethods[] = [
+                    'id' => $id,
+                    'label' => $label,
+                    'type' => $typeValue,
+                    'terminal_serial' => $terminalValue !== '' ? $terminalValue : null,
+                ];
+            }
+
+            if ($normalizedMethods === []) {
+                $normalizedMethods = $getDefaultPaymentMethods();
+            }
+
+            try {
+                $settingsManager->set('payment_methods', json_encode($normalizedMethods, JSON_THROW_ON_ERROR));
+            } catch (\JsonException $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Zahlungsarten konnten nicht gespeichert werden: '
+                        . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+                break;
+            }
+
+            $sumupAuthMethodInput = isset($_POST['sumup_auth_method'])
+                ? strtolower(trim((string) $_POST['sumup_auth_method']))
+                : 'api_key';
+            if (!in_array($sumupAuthMethodInput, ['api_key', 'oauth'], true)) {
+                $sumupAuthMethodInput = 'api_key';
+            }
+
+            $sumupCredentialInput = trim((string) ($_POST['sumup_credential'] ?? ''));
+            $sumupMerchantCodeInput = strtoupper(trim((string) ($_POST['sumup_merchant_code'] ?? '')));
+            $sumupMerchantCodeInput = preg_replace('/[^A-Z0-9]/', '', $sumupMerchantCodeInput);
+            $sumupDefaultTerminalInput = strtoupper(trim((string) ($_POST['sumup_default_terminal'] ?? '')));
+            $sumupDefaultTerminalInput = preg_replace('/\s+/', '', $sumupDefaultTerminalInput);
+
+            $settingsManager->set('sumup_auth_method', $sumupAuthMethodInput);
+            $settingsManager->set('sumup_credential', $sumupCredentialInput);
+            $settingsManager->set('sumup_merchant_code', $sumupMerchantCodeInput);
+            $settingsManager->set('sumup_default_terminal', $sumupDefaultTerminalInput);
+
+            $paymentMethods = $normalizedMethods;
+            $paymentMethodLookup = [];
+            foreach ($paymentMethods as $method) {
+                $paymentMethodLookup[(string) $method['id']] = $method;
+            }
+            $paymentMethodFormData = $paymentMethods;
+            $paymentMethodOptions = array_map(static function (array $method): array {
+                return [
+                    'value' => (string) ($method['id'] ?? ''),
+                    'label' => (string) ($method['label'] ?? ''),
+                    'type' => (string) ($method['type'] ?? 'other'),
+                ];
+            }, $paymentMethods);
+            $sumupAuthMethod = $sumupAuthMethodInput;
+            $sumupCredential = $sumupCredentialInput;
+            $sumupMerchantCode = $sumupMerchantCodeInput;
+            $sumupDefaultTerminal = $sumupDefaultTerminalInput;
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Zahlungsarten und SumUp-Einstellungen wurden gespeichert.',
+            ];
+
+            header('Location: index.php?section=settings#payment-settings');
             exit;
 
         case 'settings_document_company':
@@ -3482,19 +3781,155 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             try {
+                $selectedPaymentMethod = isset($_POST['payment_method'])
+                    ? trim((string) $_POST['payment_method'])
+                    : '';
+
+                $document = $documentManager->find($documentId);
+                if ($document === null) {
+                    throw new RuntimeException('Dokument wurde nicht gefunden.');
+                }
+
+                $requiresPaymentMethod = isset($document['type'])
+                    && (string) $document['type'] === DocumentManager::TYPE_INVOICE;
+
+                if ($requiresPaymentMethod && $selectedPaymentMethod === '') {
+                    throw new RuntimeException('Bitte wählen Sie eine Zahlungsart aus.');
+                }
+
+                if ($selectedPaymentMethod !== '' && !isset($paymentMethodLookup[$selectedPaymentMethod])) {
+                    throw new RuntimeException('Die ausgewählte Zahlungsart ist nicht verfügbar.');
+                }
+
+                if ($selectedPaymentMethod === '' && !$requiresPaymentMethod && $paymentMethods !== []) {
+                    $fallbackMethod = $paymentMethods[0]['id'] ?? '';
+                    if ($fallbackMethod !== '') {
+                        $selectedPaymentMethod = (string) $fallbackMethod;
+                    }
+                }
+
+                $paymentMethodData = $selectedPaymentMethod !== '' && isset($paymentMethodLookup[$selectedPaymentMethod])
+                    ? $paymentMethodLookup[$selectedPaymentMethod]
+                    : null;
+
+                $paymentReference = null;
+                $paymentDetails = null;
+
+                if ($paymentMethodData !== null && ($paymentMethodData['type'] ?? 'other') === 'sumup') {
+                    if ($sumupCredential === '') {
+                        throw new RuntimeException('Bitte hinterlegen Sie Ihren SumUp-API-Schlüssel oder ein Access Token in den Einstellungen.');
+                    }
+
+                    $terminalSerial = isset($paymentMethodData['terminal_serial']) && $paymentMethodData['terminal_serial'] !== null
+                        ? (string) $paymentMethodData['terminal_serial']
+                        : $sumupDefaultTerminal;
+                    $terminalSerial = strtoupper(trim((string) $terminalSerial));
+
+                    if ($terminalSerial === '') {
+                        throw new RuntimeException('Für SumUp-Zahlungen ist eine Terminal-Seriennummer erforderlich.');
+                    }
+
+                    $grossAmount = isset($document['total_gross']) ? (float) $document['total_gross'] : 0.0;
+                    if ($grossAmount <= 0) {
+                        throw new RuntimeException('Die Rechnungssumme muss größer als 0 sein, um eine Kartenzahlung zu starten.');
+                    }
+
+                    $currency = isset($document['currency']) ? (string) $document['currency'] : 'EUR';
+                    $documentNumber = isset($document['document_number'])
+                        ? (string) $document['document_number']
+                        : ('#' . $documentId);
+                    $description = sprintf('Rechnung %s', $documentNumber);
+                    $externalId = sprintf('invoice-%d', $documentId);
+
+                    $sumUpClient = new SumUpClient($sumupCredential, $terminalSerial, $sumupAuthMethod);
+                    $response = $sumUpClient->sendPayment($grossAmount, $currency, $externalId, $description);
+
+                    if ($response['status'] < 200 || $response['status'] >= 300) {
+                        $errorMessage = 'SumUp-Transaktion konnte nicht gestartet werden.';
+                        $responseBody = $response['body'] ?? [];
+                        if (is_array($responseBody)) {
+                            if (isset($responseBody['message']) && $responseBody['message'] !== '') {
+                                $errorMessage .= ' ' . (string) $responseBody['message'];
+                            } elseif (isset($responseBody['error_message']) && $responseBody['error_message'] !== '') {
+                                $errorMessage .= ' ' . (string) $responseBody['error_message'];
+                            }
+                        }
+                        $errorMessage .= sprintf(' (HTTP %d)', (int) $response['status']);
+                        throw new RuntimeException($errorMessage);
+                    }
+
+                    $referenceCandidates = [
+                        $response['body']['transaction_code'] ?? null,
+                        $response['body']['transaction_id'] ?? null,
+                        $response['body']['id'] ?? null,
+                        $response['body']['checkout_reference'] ?? null,
+                        $response['body']['foreign_transaction_id'] ?? null,
+                    ];
+
+                    foreach ($referenceCandidates as $candidate) {
+                        if (is_string($candidate) && $candidate !== '') {
+                            $paymentReference = $candidate;
+                            break;
+                        }
+                    }
+
+                    $paymentDetails = [
+                        'provider' => 'sumup',
+                        'terminal_serial' => $terminalSerial,
+                        'status' => $response['status'],
+                    ];
+
+                    if ($sumupMerchantCode !== '') {
+                        $paymentDetails['merchant_code'] = $sumupMerchantCode;
+                    }
+
+                    if (isset($response['body']) && is_array($response['body'])) {
+                        $paymentDetails['response'] = $response['body'];
+                    }
+
+                    if (isset($response['raw'])) {
+                        $paymentDetails['raw_response'] = (string) $response['raw'];
+                    }
+                }
+
                 $renderer = new DocumentPdfRenderer();
                 $logoPath = $invoiceLogoPath !== '' ? $invoiceLogoPath : null;
 
-                $document = $documentManager->finalizeDocument($documentId, static function (array $doc) use ($renderer, $logoPath): string {
-                    return $renderer->render($doc, $logoPath);
-                });
+                $document = $documentManager->finalizeDocument(
+                    $documentId,
+                    static function (array $doc) use ($renderer, $logoPath): string {
+                        return $renderer->render($doc, $logoPath);
+                    },
+                    $selectedPaymentMethod !== '' ? $selectedPaymentMethod : null,
+                    $paymentReference,
+                    $paymentDetails
+                );
 
                 $documentNumber = isset($document['document_number']) ? (string) $document['document_number'] : ('#' . $documentId);
                 $typeLabel = $documentTypeLabels[$document['type']] ?? 'Dokument';
 
+                $paymentSuffix = '';
+                if ($selectedPaymentMethod !== '') {
+                    $methodLabel = '';
+                    if ($paymentMethodData !== null && isset($paymentMethodData['label'])) {
+                        $methodLabel = (string) $paymentMethodData['label'];
+                    }
+                    if ($methodLabel === '') {
+                        $methodLabel = $selectedPaymentMethod;
+                    }
+                    if ($methodLabel !== '') {
+                        $paymentSuffix = ' Zahlungsart: ' . htmlspecialchars($methodLabel, ENT_QUOTES, 'UTF-8');
+                    }
+                }
+
                 $_SESSION['alert'] = [
                     'type' => 'success',
-                    'message' => sprintf('%s %s wurde finalisiert.', $typeLabel, htmlspecialchars($documentNumber, ENT_QUOTES, 'UTF-8')),
+                    'message' => sprintf(
+                        '%s %s wurde finalisiert.%s',
+                        $typeLabel,
+                        htmlspecialchars($documentNumber, ENT_QUOTES, 'UTF-8'),
+                        $paymentSuffix
+                    ),
                 ];
 
                 header('Location: index.php?section=documents&editDocument=' . $documentId);
@@ -9760,10 +10195,25 @@ if ($activeSection === 'reservations') {
                                   <a class="btn btn-outline-primary btn-sm" href="index.php?section=documents&amp;downloadDocument=<?= $documentId ?>">PDF</a>
                                 <?php endif; ?>
                                 <?php if ($documentCanFinalize): ?>
-                                  <form method="post" class="d-inline">
+                                  <form method="post" class="d-inline" data-document-finalize-form>
                                     <input type="hidden" name="form" value="document_finalize">
                                     <input type="hidden" name="id" value="<?= $documentId ?>">
-                                    <button type="submit" class="btn btn-success btn-sm" onclick="return confirm('Dokument finalisieren und PDF erzeugen?');">Finalisieren</button>
+                                    <div class="input-group input-group-sm">
+                                      <select
+                                        class="form-select form-select-sm"
+                                        name="payment_method"
+                                        required
+                                        data-finalize-payment-select
+                                        aria-label="Zahlungsart auswählen"
+                                        style="min-width: 160px;"
+                                      >
+                                        <option value="">Zahlungsart wählen</option>
+                                        <?php foreach ($paymentMethods as $methodOption): ?>
+                                          <option value="<?= htmlspecialchars((string) ($methodOption['id'] ?? '')) ?>"><?= htmlspecialchars((string) ($methodOption['label'] ?? '')) ?></option>
+                                        <?php endforeach; ?>
+                                      </select>
+                                      <button type="submit" class="btn btn-success btn-sm">Finalisieren</button>
+                                    </div>
                                   </form>
                                 <?php endif; ?>
                                 <?php if ($documentCanDelete): ?>
@@ -11277,6 +11727,127 @@ if ($activeSection === 'reservations') {
                   <div class="col-md-8 col-lg-9">
                     <p class="form-text mb-2">Der hinterlegte Satz wird bei neuen Reservierungen automatisch übernommen.</p>
                     <button type="submit" class="btn btn-outline-primary">Mehrwertsteuer speichern</button>
+                  </div>
+                </form>
+              <?php endif; ?>
+            </div>
+          </div>
+          <div class="card module-card mt-4" id="payment-settings">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+              <div>
+                <h2 class="h5 mb-1">Zahlungsarten &amp; SumUp</h2>
+                <p class="text-muted mb-0">Verfügbare Zahlungsarten festlegen und SumUp-Terminals konfigurieren.</p>
+              </div>
+              <span class="badge text-bg-success">Zahlungen</span>
+            </div>
+            <div class="card-body">
+              <?php if (!$settingsAvailable): ?>
+                <p class="text-muted mb-0">Zahlungsarten können erst nach einer erfolgreichen Datenbankverbindung gepflegt werden.</p>
+              <?php else: ?>
+                <form method="post" class="payment-settings-form">
+                  <input type="hidden" name="form" value="settings_payment_methods">
+                  <div class="d-flex flex-column gap-3" data-payment-methods-container>
+                    <?php foreach ($paymentMethodFormData as $method): ?>
+                      <?php
+                        $methodIdValue = isset($method['id']) ? (string) $method['id'] : '';
+                        $methodLabelValue = isset($method['label']) ? (string) $method['label'] : '';
+                        $methodTypeValue = isset($method['type']) ? (string) $method['type'] : 'other';
+                        if ($methodTypeValue === '') {
+                            $methodTypeValue = 'other';
+                        }
+                        $methodTerminalValue = isset($method['terminal_serial']) && $method['terminal_serial'] !== null
+                            ? (string) $method['terminal_serial']
+                            : '';
+                      ?>
+                      <div class="border rounded p-3" data-payment-method-row>
+                        <div class="row g-3 align-items-end">
+                          <div class="col-md-4">
+                            <label class="form-label">Bezeichnung</label>
+                            <input type="text" class="form-control" name="payment_methods[label][]" value="<?= htmlspecialchars($methodLabelValue) ?>" required>
+                          </div>
+                          <div class="col-md-3">
+                            <label class="form-label">Schlüssel</label>
+                            <input type="text" class="form-control" name="payment_methods[id][]" value="<?= htmlspecialchars($methodIdValue) ?>" pattern="[a-zA-Z0-9_-]{2,}" required>
+                            <div class="form-text">Nur Buchstaben, Zahlen, Unter- und Bindestrich.</div>
+                          </div>
+                          <div class="col-md-3">
+                            <label class="form-label">Typ</label>
+                            <select class="form-select" name="payment_methods[type][]" data-payment-method-type>
+                              <option value="cash" <?= $methodTypeValue === 'cash' ? 'selected' : '' ?>>Barzahlung</option>
+                              <option value="sumup" <?= $methodTypeValue === 'sumup' ? 'selected' : '' ?>>Karte (SumUp)</option>
+                              <option value="other" <?= $methodTypeValue === 'other' ? 'selected' : '' ?>>Andere</option>
+                            </select>
+                          </div>
+                          <div class="col-md-2 text-end">
+                            <button type="button" class="btn btn-outline-danger w-100" data-remove-payment-method>Entfernen</button>
+                          </div>
+                          <div class="col-12 col-md-6" data-payment-terminal-field <?= $methodTypeValue === 'sumup' ? '' : 'style="display: none;"' ?>>
+                            <label class="form-label">Terminal-Seriennummer</label>
+                            <input type="text" class="form-control" name="payment_methods[terminal_serial][]" value="<?= htmlspecialchars($methodTerminalValue) ?>" placeholder="z. B. ABCDEF123456">
+                            <div class="form-text">Erforderlich für Kartenzahlungen über SumUp.</div>
+                          </div>
+                        </div>
+                      </div>
+                    <?php endforeach; ?>
+                  </div>
+                  <template id="payment-method-template">
+                    <div class="border rounded p-3" data-payment-method-row>
+                      <div class="row g-3 align-items-end">
+                        <div class="col-md-4">
+                          <label class="form-label">Bezeichnung</label>
+                          <input type="text" class="form-control" name="payment_methods[label][]" required>
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label">Schlüssel</label>
+                          <input type="text" class="form-control" name="payment_methods[id][]" pattern="[a-zA-Z0-9_-]{2,}" required>
+                          <div class="form-text">Nur Buchstaben, Zahlen, Unter- und Bindestrich.</div>
+                        </div>
+                        <div class="col-md-3">
+                          <label class="form-label">Typ</label>
+                          <select class="form-select" name="payment_methods[type][]" data-payment-method-type>
+                            <option value="cash">Barzahlung</option>
+                            <option value="sumup">Karte (SumUp)</option>
+                            <option value="other" selected>Andere</option>
+                          </select>
+                        </div>
+                        <div class="col-md-2 text-end">
+                          <button type="button" class="btn btn-outline-danger w-100" data-remove-payment-method>Entfernen</button>
+                        </div>
+                        <div class="col-12 col-md-6" data-payment-terminal-field style="display: none;">
+                          <label class="form-label">Terminal-Seriennummer</label>
+                          <input type="text" class="form-control" name="payment_methods[terminal_serial][]" placeholder="z. B. ABCDEF123456">
+                          <div class="form-text">Erforderlich für Kartenzahlungen über SumUp.</div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                  <hr class="my-4">
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label for="sumup-auth-method" class="form-label">SumUp-Authentifizierung</label>
+                      <select class="form-select" id="sumup-auth-method" name="sumup_auth_method">
+                        <option value="api_key" <?= $sumupAuthMethod === 'api_key' ? 'selected' : '' ?>>API-Key</option>
+                        <option value="oauth" <?= $sumupAuthMethod === 'oauth' ? 'selected' : '' ?>>OAuth Access Token</option>
+                      </select>
+                    </div>
+                    <div class="col-md-8">
+                      <label for="sumup-credential" class="form-label">API-Key oder Access Token</label>
+                      <textarea class="form-control" id="sumup-credential" name="sumup_credential" rows="2" placeholder="sum_sk_…"><?= htmlspecialchars($sumupCredential) ?></textarea>
+                      <div class="form-text">Der geheime SumUp-Schlüssel wird benötigt, um Beträge an das Terminal zu senden.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label for="sumup-merchant-code" class="form-label">Händlercode (optional)</label>
+                      <input type="text" class="form-control" id="sumup-merchant-code" name="sumup_merchant_code" value="<?= htmlspecialchars($sumupMerchantCode) ?>" placeholder="z. B. MCRXXXX">
+                    </div>
+                    <div class="col-md-4">
+                      <label for="sumup-default-terminal" class="form-label">Standard-Terminal</label>
+                      <input type="text" class="form-control" id="sumup-default-terminal" name="sumup_default_terminal" value="<?= htmlspecialchars($sumupDefaultTerminal) ?>" placeholder="Seriennummer">
+                      <div class="form-text">Wird verwendet, wenn bei einer Zahlungsart kein Terminal hinterlegt ist.</div>
+                    </div>
+                  </div>
+                  <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mt-4">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" data-add-payment-method>Zahlungsart hinzufügen</button>
+                    <button type="submit" class="btn btn-outline-primary">Zahlungsarten speichern</button>
                   </div>
                 </form>
               <?php endif; ?>
@@ -15788,6 +16359,98 @@ if ($activeSection === 'reservations') {
           });
         }
 
+        function setupPaymentMethodSettings() {
+          var container = document.querySelector('[data-payment-methods-container]');
+          if (!container) {
+            return;
+          }
+
+          var template = document.getElementById('payment-method-template');
+          var addButton = document.querySelector('[data-add-payment-method]');
+
+          function updateRow(row) {
+            if (!row) {
+              return;
+            }
+
+            var typeSelect = row.querySelector('[data-payment-method-type]');
+            var terminalField = row.querySelector('[data-payment-terminal-field]');
+            if (!typeSelect || !terminalField) {
+              return;
+            }
+
+            if (typeSelect.value === 'sumup') {
+              terminalField.style.removeProperty('display');
+            } else {
+              terminalField.style.display = 'none';
+            }
+          }
+
+          container.querySelectorAll('[data-payment-method-row]').forEach(function (row) {
+            updateRow(row);
+          });
+
+          container.addEventListener('change', function (event) {
+            var target = event.target;
+            if (target && target.matches('[data-payment-method-type]')) {
+              updateRow(target.closest('[data-payment-method-row]'));
+            }
+          });
+
+          container.addEventListener('click', function (event) {
+            var target = event.target;
+            if (target && target.matches('[data-remove-payment-method]')) {
+              event.preventDefault();
+              var row = target.closest('[data-payment-method-row]');
+              if (row) {
+                row.remove();
+              }
+            }
+          });
+
+          if (addButton && template) {
+            addButton.addEventListener('click', function (event) {
+              event.preventDefault();
+              var fragment = template.content.cloneNode(true);
+              var newRow = fragment.querySelector('[data-payment-method-row]');
+              container.appendChild(fragment);
+              if (newRow) {
+                updateRow(newRow);
+              }
+            });
+          }
+        }
+
+        function setupDocumentFinalizeForms() {
+          document.querySelectorAll('[data-document-finalize-form]').forEach(function (form) {
+            form.addEventListener('submit', function (event) {
+              var select = form.querySelector('[data-finalize-payment-select]');
+              if (select && !select.value) {
+                event.preventDefault();
+                select.focus();
+                return;
+              }
+
+              var label = '';
+              if (select) {
+                var option = select.options[select.selectedIndex];
+                if (option && option.textContent) {
+                  label = option.textContent.trim();
+                }
+              }
+
+              var message = 'Dokument finalisieren und PDF erzeugen?';
+              if (label !== '') {
+                message += ' Zahlungsart: ' + label + '.';
+              }
+
+              if (!window.confirm(message)) {
+                event.preventDefault();
+              }
+            });
+          });
+        }
+
         setupSignatureInviteCopy();
         setupSignaturePad();
         setupReservationFormModal();
@@ -15795,6 +16458,8 @@ if ($activeSection === 'reservations') {
         setupReservationPricing();
         setupStatusColorPickers();
         setupReservationDetailModal();
+        setupPaymentMethodSettings();
+        setupDocumentFinalizeForms();
       })();
     </script>
   </body>
