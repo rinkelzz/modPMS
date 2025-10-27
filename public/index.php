@@ -188,6 +188,7 @@ $documentStatusBadges = [
 $emailLogManager = null;
 $meldescheinManager = null;
 $meldescheine = [];
+$meldescheinSignatureReservations = [];
 $meldescheinCandidates = [];
 $documentFormData = [
     'id' => null,
@@ -6374,6 +6375,63 @@ if ($pdo !== null) {
 
     $categoryOverbookingStays = [];
 
+    if ($meldescheinManager instanceof MeldescheinManager) {
+        $meldescheine = $meldescheinManager->listForms();
+
+        $meldescheinFormHasSignature = static function (array $form): bool {
+            $candidates = [];
+
+            if (array_key_exists('guest_signature_path', $form)) {
+                $candidates[] = $form['guest_signature_path'];
+            }
+            if (array_key_exists('guest_signed_at', $form)) {
+                $candidates[] = $form['guest_signed_at'];
+            }
+
+            if (isset($form['details']) && is_array($form['details'])) {
+                $details = $form['details'];
+
+                foreach (['guest_signature_path', 'guest_signed_at'] as $key) {
+                    if (array_key_exists($key, $details)) {
+                        $candidates[] = $details[$key];
+                    }
+                }
+
+                if (isset($details['signature']) && is_array($details['signature'])) {
+                    $signatureDetails = $details['signature'];
+                    foreach (['guest_signature_path', 'guest_signed_at'] as $key) {
+                        if (array_key_exists($key, $signatureDetails)) {
+                            $candidates[] = $signatureDetails[$key];
+                        }
+                    }
+                }
+            }
+
+            foreach ($candidates as $candidate) {
+                if ($candidate !== null && trim((string) $candidate) !== '') {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        foreach ($meldescheine as $form) {
+            if (!is_array($form)) {
+                continue;
+            }
+
+            $formReservationId = isset($form['reservation_id']) ? (int) $form['reservation_id'] : 0;
+            if ($formReservationId <= 0) {
+                continue;
+            }
+
+            if ($meldescheinFormHasSignature($form)) {
+                $meldescheinSignatureReservations[$formReservationId] = true;
+            }
+        }
+    }
+
     foreach ($reservations as $index => $reservation) {
         $reservationId = isset($reservation['id']) ? (int) $reservation['id'] : 0;
         $reservationStatus = isset($reservation['status']) ? (string) $reservation['status'] : 'geplant';
@@ -6400,6 +6458,9 @@ if ($pdo !== null) {
         $guestLastName = isset($reservation['guest_last_name']) ? trim((string) $reservation['guest_last_name']) : '';
         $guestFullNameParts = array_filter([$guestFirstName, $guestLastName], static fn ($value) => $value !== '');
         $guestFullName = trim(implode(' ', $guestFullNameParts));
+
+        $hasSignedMeldeschein = $reservationId > 0 && isset($meldescheinSignatureReservations[$reservationId]);
+        $isPaidReservation = $reservationStatus === 'bezahlt';
 
         $items = $reservation['items'] ?? [];
         if ($items === []) {
@@ -6563,6 +6624,16 @@ if ($pdo !== null) {
             }
 
             $itemLabel = $baseLabel;
+            $statusMarkers = [];
+            if ($hasSignedMeldeschein) {
+                $statusMarkers[] = 'M';
+            }
+            if ($isPaidReservation) {
+                $statusMarkers[] = 'B';
+            }
+            if ($statusMarkers !== []) {
+                $itemLabel .= ' (' . implode(') (', $statusMarkers) . ')';
+            }
             if ($itemGuestCount !== null && $itemGuestCount > 0) {
                 $itemLabel .= sprintf(' (%d)', $itemGuestCount);
             }
@@ -7091,10 +7162,6 @@ $selectLatestReservationForGuest = static function (array $reservationList): ?ar
 
     return $latest;
 };
-
-if ($meldescheinManager instanceof MeldescheinManager) {
-    $meldescheine = $meldescheinManager->listForms();
-}
 
 $meldescheinCandidates = [];
 foreach ($guests as $guest) {
