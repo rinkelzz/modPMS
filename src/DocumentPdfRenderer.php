@@ -33,8 +33,18 @@ class DocumentPdf extends \FPDF
         $previousAutoPageBreak = $this->AutoPageBreak;
         $previousBottomMargin = $this->bMargin;
 
-        $this->SetAutoPageBreak(false, $previousBottomMargin);
-        $this->SetY(-35);
+        $this->SetAutoPageBreak(false);
+
+        $lineHeight = 5;
+        $contentLineCount = count($this->bankDetailsLines) + ($this->bankDetailsHeading !== '' ? 1 : 0);
+        $footerHeight = $contentLineCount > 0 ? $contentLineCount * $lineHeight : 0;
+        $startOffset = -35;
+
+        if ($footerHeight > 0) {
+            $startOffset = min($startOffset, -($previousBottomMargin + $footerHeight));
+        }
+
+        $this->SetY($startOffset);
         $this->SetFont('Arial', 'B', 9);
         $this->SetTextColor(90, 90, 90);
 
