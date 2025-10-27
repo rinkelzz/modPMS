@@ -32,8 +32,8 @@ class SumUpClient
         }
 
         $credential = trim($credential);
-        $merchantCode = strtoupper(trim($merchantCode));
-        $terminalSerial = strtoupper(trim($terminalSerial));
+        $merchantCode = trim($merchantCode);
+        $terminalSerial = trim($terminalSerial);
 
         if ($credential === '') {
             throw new RuntimeException('Missing SumUp credentials.');
