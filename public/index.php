@@ -3915,6 +3915,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         throw new RuntimeException('Bitte hinterlegen Sie Ihren SumUp-API-Schlüssel oder ein Access Token in den Einstellungen.');
                     }
 
+                    if ($sumupMerchantCode === '') {
+                        throw new RuntimeException('Bitte hinterlegen Sie Ihren SumUp-Händlercode in den Einstellungen.');
+                    }
+
                     $terminalSerial = isset($paymentMethodData['terminal_serial']) && $paymentMethodData['terminal_serial'] !== null
                         ? (string) $paymentMethodData['terminal_serial']
                         : $sumupDefaultTerminal;
@@ -3936,7 +3940,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $description = sprintf('Rechnung %s', $documentNumber);
                     $externalId = sprintf('invoice-%d', $documentId);
 
-                    $sumUpClient = new SumUpClient($sumupCredential, $terminalSerial, $sumupAuthMethod);
+                    $sumUpClient = new SumUpClient($sumupCredential, $sumupMerchantCode, $terminalSerial, $sumupAuthMethod);
                     $response = $sumUpClient->sendPayment(
                         $grossAmount,
                         $currency,
