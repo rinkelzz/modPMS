@@ -2064,7 +2064,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $label = trim((string) $labelValue);
                 $idValue = isset($ids[$index]) ? trim((string) $ids[$index]) : '';
                 $typeValue = isset($types[$index]) ? strtolower(trim((string) $types[$index])) : 'other';
-                $terminalValue = isset($terminals[$index]) ? strtoupper(trim((string) $terminals[$index])) : '';
+                $terminalValue = isset($terminals[$index]) ? trim((string) $terminals[$index]) : '';
 
                 if ($label === '') {
                     continue;
@@ -2127,9 +2127,9 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             $sumupCredentialInput = trim((string) ($_POST['sumup_credential'] ?? ''));
-            $sumupMerchantCodeInput = strtoupper(trim((string) ($_POST['sumup_merchant_code'] ?? '')));
-            $sumupMerchantCodeInput = preg_replace('/[^A-Z0-9]/', '', $sumupMerchantCodeInput);
-            $sumupDefaultTerminalInput = strtoupper(trim((string) ($_POST['sumup_default_terminal'] ?? '')));
+            $sumupMerchantCodeInput = trim((string) ($_POST['sumup_merchant_code'] ?? ''));
+            $sumupMerchantCodeInput = preg_replace('/\s+/', '', $sumupMerchantCodeInput);
+            $sumupDefaultTerminalInput = trim((string) ($_POST['sumup_default_terminal'] ?? ''));
             $sumupDefaultTerminalInput = preg_replace('/\s+/', '', $sumupDefaultTerminalInput);
             $sumupApplicationIdInput = trim((string) ($_POST['sumup_application_id'] ?? ''));
             $sumupAffiliateKeyInput = trim((string) ($_POST['sumup_affiliate_key'] ?? ''));
@@ -3915,10 +3915,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         throw new RuntimeException('Bitte hinterlegen Sie Ihren SumUp-API-Schlüssel oder ein Access Token in den Einstellungen.');
                     }
 
+                    if ($sumupMerchantCode === '') {
+                        throw new RuntimeException('Bitte hinterlegen Sie Ihren SumUp-Händlercode in den Einstellungen.');
+                    }
+
                     $terminalSerial = isset($paymentMethodData['terminal_serial']) && $paymentMethodData['terminal_serial'] !== null
                         ? (string) $paymentMethodData['terminal_serial']
                         : $sumupDefaultTerminal;
-                    $terminalSerial = strtoupper(trim((string) $terminalSerial));
+                    $terminalSerial = trim((string) $terminalSerial);
+                    $terminalSerial = preg_replace('/\s+/', '', $terminalSerial);
 
                     if ($terminalSerial === '') {
                         throw new RuntimeException('Für SumUp-Zahlungen ist eine Terminal-Seriennummer erforderlich.');
@@ -3936,7 +3941,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $description = sprintf('Rechnung %s', $documentNumber);
                     $externalId = sprintf('invoice-%d', $documentId);
 
-                    $sumUpClient = new SumUpClient($sumupCredential, $terminalSerial, $sumupAuthMethod);
+                    $sumUpClient = new SumUpClient($sumupCredential, $sumupMerchantCode, $terminalSerial, $sumupAuthMethod);
                     $response = $sumUpClient->sendPayment(
                         $grossAmount,
                         $currency,
