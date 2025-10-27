@@ -30,6 +30,10 @@ class Calendar
         7 => 'So',
     ];
 
+    private const INTL_DATE_NONE = -1;
+    private const INTL_DATE_LONG = 1;
+    private const INTL_CALENDAR_GREGORIAN = 1;
+
     private DateTimeImmutable $currentDate;
 
     public function __construct(?DateTimeImmutable $date = null)
@@ -44,21 +48,21 @@ class Calendar
 
     public function monthLabel(): string
     {
-        if (class_exists(\IntlDateFormatter::class)) {
-            $formatter = new \IntlDateFormatter(
-                'de_DE',
-                \IntlDateFormatter::LONG,
-                \IntlDateFormatter::NONE,
-                $this->currentDate->getTimezone()->getName(),
-                \IntlDateFormatter::GREGORIAN,
-                'LLLL yyyy'
-            );
+        $formatter = $this->createIntlFormatter(
+            'LLLL yyyy',
+            self::INTL_DATE_LONG,
+            self::INTL_DATE_NONE
+        );
 
-            if ($formatter !== false) {
+        if ($formatter instanceof \IntlDateFormatter) {
+            try {
                 $label = $formatter->format($this->currentDate);
-                if ($label !== false) {
-                    return $label;
-                }
+            } catch (\Throwable $exception) {
+                $label = false;
+            }
+
+            if ($label !== false) {
+                return $label;
             }
         }
 
@@ -99,20 +103,7 @@ class Calendar
     {
         $days = [];
         $daysInMonth = (int) $this->currentDate->format('t');
-        $weekdayFormatter = null;
-        if (class_exists(\IntlDateFormatter::class)) {
-            $weekdayFormatter = new \IntlDateFormatter(
-                'de_DE',
-                \IntlDateFormatter::NONE,
-                \IntlDateFormatter::NONE,
-                $this->currentDate->getTimezone()->getName(),
-                \IntlDateFormatter::GREGORIAN,
-                'EE'
-            );
-            if ($weekdayFormatter === false) {
-                $weekdayFormatter = null;
-            }
-        }
+        $weekdayFormatter = $this->createIntlFormatter('EE');
 
         for ($offset = 0; $offset < $daysInMonth; $offset++) {
             $date = $this->currentDate->modify(sprintf('+%d days', $offset));
@@ -137,20 +128,7 @@ class Calendar
         $total = $pastDays + $futureDays + 1;
         $start = $this->currentDate->modify(sprintf('-%d days', $pastDays));
 
-        $weekdayFormatter = null;
-        if (class_exists(\IntlDateFormatter::class)) {
-            $weekdayFormatter = new \IntlDateFormatter(
-                'de_DE',
-                \IntlDateFormatter::NONE,
-                \IntlDateFormatter::NONE,
-                $this->currentDate->getTimezone()->getName(),
-                \IntlDateFormatter::GREGORIAN,
-                'EE'
-            );
-            if ($weekdayFormatter === false) {
-                $weekdayFormatter = null;
-            }
-        }
+        $weekdayFormatter = $this->createIntlFormatter('EE');
 
         for ($offset = 0; $offset < $total; $offset++) {
             $date = $start->modify(sprintf('+%d days', $offset));
@@ -175,24 +153,24 @@ class Calendar
         $startPattern = $sameMonth ? 'd.' : 'd. MMMM';
         $endPattern = 'd. MMMM yyyy';
 
-        if (class_exists(\IntlDateFormatter::class)) {
-            $formatter = new \IntlDateFormatter(
-                'de_DE',
-                \IntlDateFormatter::NONE,
-                \IntlDateFormatter::NONE,
-                $this->currentDate->getTimezone()->getName(),
-                \IntlDateFormatter::GREGORIAN,
-                $startPattern
-            );
-
-            if ($formatter !== false) {
+        $formatter = $this->createIntlFormatter($startPattern);
+        if ($formatter instanceof \IntlDateFormatter) {
+            try {
                 $startLabel = $formatter->format($start);
-                if ($startLabel !== false) {
+            } catch (\Throwable $exception) {
+                $startLabel = false;
+            }
+
+            if ($startLabel !== false) {
+                try {
                     $formatter->setPattern($endPattern);
                     $endLabel = $formatter->format($end);
-                    if ($endLabel !== false) {
-                        return sprintf('%s – %s', $startLabel, $endLabel);
-                    }
+                } catch (\Throwable $exception) {
+                    $endLabel = false;
+                }
+
+                if ($endLabel !== false) {
+                    return sprintf('%s – %s', $startLabel, $endLabel);
                 }
             }
         }
@@ -219,7 +197,12 @@ class Calendar
     private function formatWeekday(DateTimeImmutable $date, $formatter): string
     {
         if ($formatter instanceof \IntlDateFormatter) {
-            $formatted = $formatter->format($date);
+            try {
+                $formatted = $formatter->format($date);
+            } catch (\Throwable $exception) {
+                $formatted = false;
+            }
+
             if ($formatted !== false) {
                 return $formatted;
             }
@@ -233,5 +216,37 @@ class Calendar
     private function fallbackMonthName(DateTimeImmutable $date): string
     {
         return self::MONTH_NAMES[(int) $date->format('n')] ?? $date->format('F');
+    }
+
+    /**
+     * @return \IntlDateFormatter|null
+     */
+    private function createIntlFormatter(
+        string $pattern,
+        int $dateType = self::INTL_DATE_NONE,
+        int $timeType = self::INTL_DATE_NONE
+    ) {
+        if (!class_exists(\IntlDateFormatter::class)) {
+            return null;
+        }
+
+        try {
+            $formatter = new \IntlDateFormatter(
+                'de_DE',
+                $dateType,
+                $timeType,
+                $this->currentDate->getTimezone()->getName(),
+                self::INTL_CALENDAR_GREGORIAN,
+                $pattern
+            );
+        } catch (\Throwable $exception) {
+            return null;
+        }
+
+        if ($formatter === false) {
+            return null;
+        }
+
+        return $formatter;
     }
 }
