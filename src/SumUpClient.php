@@ -12,11 +12,18 @@ class SumUpClient
 
     private string $credential;
 
+    private string $merchantCode;
+
     private string $terminalSerial;
 
     private string $authMethod;
 
-    public function __construct(string $credential, string $terminalSerial, string $authMethod = 'api_key')
+    public function __construct(
+        string $credential,
+        string $merchantCode,
+        string $terminalSerial,
+        string $authMethod = 'api_key'
+    )
     {
         $authMethod = strtolower(trim($authMethod));
 
@@ -25,10 +32,15 @@ class SumUpClient
         }
 
         $credential = trim($credential);
+        $merchantCode = strtoupper(trim($merchantCode));
         $terminalSerial = strtoupper(trim($terminalSerial));
 
         if ($credential === '') {
             throw new RuntimeException('Missing SumUp credentials.');
+        }
+
+        if ($merchantCode === '') {
+            throw new RuntimeException('Missing SumUp merchant code.');
         }
 
         if ($terminalSerial === '') {
@@ -36,6 +48,7 @@ class SumUpClient
         }
 
         $this->credential = $credential;
+        $this->merchantCode = $merchantCode;
         $this->terminalSerial = $terminalSerial;
         $this->authMethod = $authMethod;
     }
@@ -56,18 +69,32 @@ class SumUpClient
             throw new RuntimeException('Amount must be greater than zero.');
         }
 
+        $currency = strtoupper($currency);
+        $minorUnit = $this->resolveMinorUnit($currency);
+        $totalAmount = $amount;
+
+        if ($tipAmount !== null && $tipAmount > 0) {
+            $totalAmount += $tipAmount;
+        }
+
         $payload = [
-            'amount' => round($amount, 2),
-            'currency' => strtoupper($currency),
-            'transaction_type' => 'SALE',
+            'total_amount' => [
+                'value' => $this->toMinorUnits($totalAmount, $minorUnit),
+                'minor_unit' => $minorUnit,
+                'currency' => $currency,
+            ],
         ];
 
         if ($tipAmount !== null && $tipAmount > 0) {
-            $payload['tip_amount'] = round($tipAmount, 2);
+            $payload['tip_amount'] = [
+                'value' => $this->toMinorUnits($tipAmount, $minorUnit),
+                'minor_unit' => $minorUnit,
+                'currency' => $currency,
+            ];
         }
 
         if ($externalId !== null && $externalId !== '') {
-            $payload['external_id'] = $externalId;
+            $payload['checkout_reference'] = $externalId;
         }
 
         if ($description !== null && $description !== '') {
@@ -92,8 +119,9 @@ class SumUpClient
         }
 
         $endpoint = sprintf(
-            '%s/me/terminals/%s/transactions',
+            '%s/merchants/%s/readers/%s/checkout',
             self::API_BASE_URL,
+            rawurlencode($this->merchantCode),
             rawurlencode($this->terminalSerial)
         );
 
@@ -169,6 +197,7 @@ class SumUpClient
                 'method' => strtoupper($method),
                 'payload' => $payload,
                 'auth_method' => $this->authMethod,
+                'merchant_code' => $this->merchantCode,
                 'terminal_serial' => $this->terminalSerial,
             ],
         ];
@@ -177,6 +206,48 @@ class SumUpClient
     private function buildAuthorizationHeader(): string
     {
         return 'Bearer ' . $this->credential;
+    }
+
+    private function resolveMinorUnit(string $currency): int
+    {
+        $map = [
+            'BHD' => 3,
+            'CLF' => 4,
+            'CLP' => 0,
+            'CVE' => 0,
+            'DJF' => 0,
+            'GNF' => 0,
+            'IDR' => 0,
+            'IQD' => 3,
+            'IRR' => 0,
+            'ISK' => 0,
+            'JOD' => 3,
+            'JPY' => 0,
+            'KMF' => 0,
+            'KRW' => 0,
+            'KWD' => 3,
+            'LYD' => 3,
+            'OMR' => 3,
+            'PYG' => 0,
+            'RWF' => 0,
+            'TND' => 3,
+            'UGX' => 0,
+            'UYI' => 0,
+            'VND' => 0,
+            'VUV' => 0,
+            'XAF' => 0,
+            'XOF' => 0,
+            'XPF' => 0,
+        ];
+
+        return $map[$currency] ?? 2;
+    }
+
+    private function toMinorUnits(float $amount, int $minorUnit): int
+    {
+        $factor = 10 ** $minorUnit;
+
+        return (int) round($amount * $factor);
     }
 }
 
