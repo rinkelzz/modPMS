@@ -7,6 +7,27 @@ use RuntimeException;
 
 require_once __DIR__ . '/Pdf/Fpdf.php';
 
+class ReportPdf extends \FPDF
+{
+    /**
+     * @return array<string, mixed>
+     */
+    public function getCurrentFontMetrics(): array
+    {
+        return $this->CurrentFont;
+    }
+
+    public function getFontSizeInUserUnit(): float
+    {
+        return $this->FontSize;
+    }
+
+    public function getCellMargin(): float
+    {
+        return $this->cMargin;
+    }
+}
+
 class ReportPdfRenderer
 {
     private string $storageDirectory;
@@ -298,9 +319,9 @@ class ReportPdfRenderer
         }
     }
 
-    private function createPdf(string $title, string $subtitle): \FPDF
+    private function createPdf(string $title, string $subtitle): ReportPdf
     {
-        $pdf = new \FPDF('L', 'mm', 'A4');
+        $pdf = new ReportPdf('L', 'mm', 'A4');
         $pdf->SetMargins(15, 20, 15);
         $pdf->AddPage();
 
@@ -317,7 +338,7 @@ class ReportPdfRenderer
         return $pdf;
     }
 
-    private function renderTable(\FPDF $pdf, array $headers, array $rows, array $widths, array $aligns): void
+    private function renderTable(ReportPdf $pdf, array $headers, array $rows, array $widths, array $aligns): void
     {
         $lineHeight = 6.0;
 
@@ -354,7 +375,7 @@ class ReportPdfRenderer
      * @param array<int, string> $row
      * @param array<int, float> $widths
      */
-    private function calculateRowHeight(\FPDF $pdf, array $row, array $widths, float $lineHeight): float
+    private function calculateRowHeight(ReportPdf $pdf, array $row, array $widths, float $lineHeight): float
     {
         $maxLines = 1;
 
@@ -373,7 +394,7 @@ class ReportPdfRenderer
         return $maxLines * $lineHeight;
     }
 
-    private function getNumberOfLines(\FPDF $pdf, float $width, string $text): int
+    private function getNumberOfLines(ReportPdf $pdf, float $width, string $text): int
     {
         $text = str_replace("\r", '', $text);
         $textLength = strlen($text);
@@ -382,8 +403,17 @@ class ReportPdfRenderer
             $textLength--;
         }
 
-        $cw = $pdf->CurrentFont['cw'] ?? [];
-        $wmax = ($width - 1.5) * 1000 / $pdf->FontSize;
+        $currentFont = $pdf->getCurrentFontMetrics();
+        $cw = is_array($currentFont['cw'] ?? null) ? $currentFont['cw'] : [];
+        $fontSize = $pdf->getFontSizeInUserUnit();
+        $cellMargin = $pdf->getCellMargin();
+
+        $availableWidth = max($width - (2.0 * $cellMargin), 0.0);
+        if ($availableWidth <= 0.0 || $fontSize <= 0.0) {
+            return max(1, substr_count($text, "\n") + 1);
+        }
+
+        $wmax = ($availableWidth * 1000) / $fontSize;
         $lines = 1;
         $lineLength = 0;
         $sep = -1;
@@ -430,7 +460,7 @@ class ReportPdfRenderer
         return $lines;
     }
 
-    private function renderEmptyHint(\FPDF $pdf, string $message): void
+    private function renderEmptyHint(ReportPdf $pdf, string $message): void
     {
         $pdf->Ln(2);
         $pdf->SetFont('Arial', 'I', 10);
