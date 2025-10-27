@@ -31,6 +31,7 @@ require_once __DIR__ . '/../src/SystemUpdater.php';
 require_once __DIR__ . '/../src/UserManager.php';
 require_once __DIR__ . '/../src/GuestManager.php';
 require_once __DIR__ . '/../src/ReservationManager.php';
+require_once __DIR__ . '/../src/ReportManager.php';
 require_once __DIR__ . '/../src/SettingManager.php';
 require_once __DIR__ . '/../src/RateManager.php';
 require_once __DIR__ . '/../src/TaxCategoryManager.php';
@@ -43,6 +44,16 @@ require_once __DIR__ . '/../src/MeldescheinPdfRenderer.php';
 require_once __DIR__ . '/../src/SumUpClient.php';
 
 session_start();
+
+if (!isset($_SESSION['report_downloads']) || !is_array($_SESSION['report_downloads'])) {
+    $_SESSION['report_downloads'] = [];
+}
+
+$reportGenerationResult = null;
+if (isset($_SESSION['report_generation_result']) && is_array($_SESSION['report_generation_result'])) {
+    $reportGenerationResult = $_SESSION['report_generation_result'];
+    unset($_SESSION['report_generation_result']);
+}
 
 if (!isset($_SESSION['user_id'])) {
     header('Location: login.php');
@@ -170,6 +181,14 @@ $taxCategoryFormData = [
     'name' => '',
     'rate' => '',
 ];
+$reportToday = new DateTimeImmutable('today');
+$reportMonthDefault = $reportToday->modify('first day of this month');
+$reportFormData = [
+    'breakfast_date' => $reportToday->format('Y-m-d'),
+    'cleaning_date' => $reportToday->format('Y-m-d'),
+    'monthly_month' => $reportMonthDefault->format('Y-m'),
+    'closing_month' => $reportMonthDefault->format('Y-m'),
+];
 $documentManager = null;
 $documents = [];
 $documentTemplates = [];
@@ -187,8 +206,33 @@ $documentStatusBadges = [
     DocumentManager::STATUS_FINALIZED => 'text-bg-success',
     DocumentManager::STATUS_CORRECTED => 'text-bg-warning text-dark',
 ];
+$getDefaultPaymentMethods = static function (): array {
+    return [
+        [
+            'id' => 'cash',
+            'label' => 'Bar',
+            'type' => 'cash',
+            'terminal_serial' => null,
+        ],
+        [
+            'id' => 'card',
+            'label' => 'Karte',
+            'type' => 'sumup',
+            'terminal_serial' => null,
+        ],
+    ];
+};
+$generateReportToken = static function (): string {
+    try {
+        return bin2hex(random_bytes(16));
+    } catch (Throwable $exception) {
+        return substr(bin2hex(hash('sha256', uniqid('', true), true)), 0, 32);
+    }
+};
 $emailLogManager = null;
 $meldescheinManager = null;
+$reportManager = null;
+$reportPdfRenderer = new ReportPdfRenderer();
 $meldescheine = [];
 $meldescheinSignatureReservations = [];
 $meldescheinCandidates = [];
@@ -385,6 +429,7 @@ $navItems = [
     'dashboard' => 'Dashboard',
     'reservations' => 'Reservierungen',
     'documents' => 'Dokumente',
+    'reports' => 'Berichte',
     'rates' => 'Raten',
     'articles' => 'Artikel',
     'categories' => 'Kategorien',
@@ -745,6 +790,7 @@ try {
     $rateManager = new RateManager($pdo);
     $taxCategoryManager = new TaxCategoryManager($pdo);
     $articleManager = new ArticleManager($pdo);
+    $reportManager = new ReportManager($pdo);
 } catch (Throwable $exception) {
     $dbError = $exception->getMessage();
 }
@@ -776,6 +822,34 @@ if ($documentManager instanceof DocumentManager && isset($_GET['downloadDocument
     ];
 
     header('Location: index.php?section=documents');
+    exit;
+}
+
+if (isset($_GET['downloadReport'])) {
+    $reportToken = trim((string) $_GET['downloadReport']);
+    $reportDownloads = isset($_SESSION['report_downloads']) && is_array($_SESSION['report_downloads'])
+        ? $_SESSION['report_downloads']
+        : [];
+
+    if ($reportToken !== '' && isset($reportDownloads[$reportToken])) {
+        $relativePath = (string) $reportDownloads[$reportToken];
+        $absolutePath = realpath(__DIR__ . '/../' . ltrim($relativePath, '/'));
+
+        if ($absolutePath !== false && is_readable($absolutePath)) {
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: inline; filename="' . basename($absolutePath) . '"');
+            header('Content-Length: ' . (string) filesize($absolutePath));
+            readfile($absolutePath);
+            exit;
+        }
+    }
+
+    $_SESSION['alert'] = [
+        'type' => 'warning',
+        'message' => 'Der angeforderte Bericht konnte nicht heruntergeladen werden.',
+    ];
+
+    header('Location: index.php?section=reports');
     exit;
 }
 
@@ -6387,6 +6461,292 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             header('Location: index.php?section=reservations');
             exit;
 
+        case 'reports_breakfast':
+            $activeSection = 'reports';
+
+            $dateInput = trim((string) ($_POST['report_date'] ?? ''));
+            $reportFormData['breakfast_date'] = $dateInput;
+
+            $date = DateTimeImmutable::createFromFormat('Y-m-d', $dateInput);
+            if ($dateInput === '' || !$date instanceof DateTimeImmutable) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte ein gültiges Datum für die Frühstücksliste auswählen.',
+                ];
+                break;
+            }
+
+            if ($pdo === null || !$reportManager instanceof ReportManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Berichte ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            try {
+                $entries = $reportManager->getBreakfastList($date);
+                $relativePath = $reportPdfRenderer->renderBreakfastList($date, $entries);
+                $token = $generateReportToken();
+
+                $_SESSION['report_downloads'][$token] = $relativePath;
+                if (count($_SESSION['report_downloads']) > 20) {
+                    $_SESSION['report_downloads'] = array_slice($_SESSION['report_downloads'], -20, null, true);
+                }
+
+                $totalGuests = 0;
+                foreach ($entries as $entry) {
+                    $totalGuests += (int) ($entry['occupancy'] ?? 0);
+                }
+
+                $_SESSION['report_generation_result'] = [
+                    'type' => 'breakfast',
+                    'label' => 'Frühstücksliste ' . $date->format('d.m.Y'),
+                    'token' => $token,
+                    'count' => count($entries),
+                    'summary' => [
+                        'Gäste insgesamt' => (string) $totalGuests,
+                        'Reservierungen' => (string) count($entries),
+                    ],
+                ];
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Frühstücksliste wurde erstellt.',
+                ];
+
+                header('Location: index.php?section=reports');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Bericht konnte nicht erstellt werden: ' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'reports_cleaning':
+            $activeSection = 'reports';
+
+            $dateInput = trim((string) ($_POST['cleaning_date'] ?? ''));
+            $reportFormData['cleaning_date'] = $dateInput;
+
+            $date = DateTimeImmutable::createFromFormat('Y-m-d', $dateInput);
+            if ($dateInput === '' || !$date instanceof DateTimeImmutable) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte ein gültiges Datum für die Putzliste auswählen.',
+                ];
+                break;
+            }
+
+            if ($pdo === null || !$reportManager instanceof ReportManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Berichte ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            try {
+                $entries = $reportManager->getCleaningList($date);
+                $relativePath = $reportPdfRenderer->renderCleaningList($date, $entries);
+                $token = $generateReportToken();
+
+                $_SESSION['report_downloads'][$token] = $relativePath;
+                if (count($_SESSION['report_downloads']) > 20) {
+                    $_SESSION['report_downloads'] = array_slice($_SESSION['report_downloads'], -20, null, true);
+                }
+
+                $stateCounts = [];
+                $totalGuests = 0;
+                foreach ($entries as $entry) {
+                    $state = isset($entry['state']) && (string) $entry['state'] !== ''
+                        ? (string) $entry['state']
+                        : 'Aufenthalt';
+                    if (!isset($stateCounts[$state])) {
+                        $stateCounts[$state] = 0;
+                    }
+                    $stateCounts[$state]++;
+                    $totalGuests += (int) ($entry['occupancy'] ?? 0);
+                }
+
+                $summary = [];
+                foreach ($stateCounts as $stateLabel => $count) {
+                    $summary[$stateLabel] = (string) $count;
+                }
+                $summary['Gäste'] = (string) $totalGuests;
+
+                $_SESSION['report_generation_result'] = [
+                    'type' => 'cleaning',
+                    'label' => 'Putzliste ' . $date->format('d.m.Y'),
+                    'token' => $token,
+                    'count' => count($entries),
+                    'summary' => $summary,
+                ];
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Putzliste wurde erstellt.',
+                ];
+
+                header('Location: index.php?section=reports');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Bericht konnte nicht erstellt werden: ' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'reports_monthly':
+            $activeSection = 'reports';
+
+            $monthInput = trim((string) ($_POST['monthly_month'] ?? ''));
+            $reportFormData['monthly_month'] = $monthInput;
+
+            if ($monthInput === '' || !preg_match('/^\d{4}-\d{2}$/', $monthInput)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte einen gültigen Monat im Format JJJJ-MM auswählen.',
+                ];
+                break;
+            }
+
+            $monthStart = DateTimeImmutable::createFromFormat('Y-m-d', $monthInput . '-01');
+            if (!$monthStart instanceof DateTimeImmutable) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Monat ist ungültig.',
+                ];
+                break;
+            }
+
+            if ($pdo === null || !$reportManager instanceof ReportManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Berichte ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            try {
+                $reportData = $reportManager->getMonthlyReport($monthStart);
+                $relativePath = $reportPdfRenderer->renderMonthlyReport($reportData);
+                $token = $generateReportToken();
+
+                $_SESSION['report_downloads'][$token] = $relativePath;
+                if (count($_SESSION['report_downloads']) > 20) {
+                    $_SESSION['report_downloads'] = array_slice($_SESSION['report_downloads'], -20, null, true);
+                }
+
+                $summary = [
+                    'Anreisen' => (string) ($reportData['arrivals'] ?? 0),
+                    'Abreisen' => (string) ($reportData['departures'] ?? 0),
+                    'Zimmernächte' => (string) ($reportData['total_room_nights'] ?? 0),
+                    'Übernachtungen' => (string) ($reportData['total_overnights'] ?? 0),
+                    'Ø Aufenthalt (Nächte)' => number_format((float) ($reportData['average_stay'] ?? 0.0), 2, ',', '.'),
+                ];
+
+                $_SESSION['report_generation_result'] = [
+                    'type' => 'monthly',
+                    'label' => 'Monatsbericht ' . $monthStart->format('m/Y'),
+                    'token' => $token,
+                    'count' => isset($reportData['entries']) && is_array($reportData['entries']) ? count($reportData['entries']) : 0,
+                    'summary' => $summary,
+                ];
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Monatsbericht wurde erstellt.',
+                ];
+
+                header('Location: index.php?section=reports');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Bericht konnte nicht erstellt werden: ' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
+        case 'reports_monthly_closing':
+            $activeSection = 'reports';
+
+            $monthInput = trim((string) ($_POST['closing_month'] ?? ''));
+            $reportFormData['closing_month'] = $monthInput;
+
+            if ($monthInput === '' || !preg_match('/^\d{4}-\d{2}$/', $monthInput)) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte einen gültigen Monat im Format JJJJ-MM auswählen.',
+                ];
+                break;
+            }
+
+            $monthStart = DateTimeImmutable::createFromFormat('Y-m-d', $monthInput . '-01');
+            if (!$monthStart instanceof DateTimeImmutable) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Monat ist ungültig.',
+                ];
+                break;
+            }
+
+            if ($pdo === null || !$reportManager instanceof ReportManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Berichte ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            try {
+                $reportData = $reportManager->getMonthlyClosingReport($monthStart);
+                $relativePath = $reportPdfRenderer->renderMonthlyClosingReport($reportData);
+                $token = $generateReportToken();
+
+                $_SESSION['report_downloads'][$token] = $relativePath;
+                if (count($_SESSION['report_downloads']) > 20) {
+                    $_SESSION['report_downloads'] = array_slice($_SESSION['report_downloads'], -20, null, true);
+                }
+
+                $summary = [
+                    'Gesamtumsatz' => number_format((float) ($reportData['total_revenue'] ?? 0.0), 2, ',', '.') . ' €',
+                    'Zimmerumsatz' => number_format((float) ($reportData['total_room_revenue'] ?? 0.0), 2, ',', '.') . ' €',
+                    'Artikelumsatz' => number_format((float) ($reportData['total_article_revenue'] ?? 0.0), 2, ',', '.') . ' €',
+                    'Übernachtungen (Personen)' => (string) ($reportData['total_overnights'] ?? 0),
+                ];
+
+                $_SESSION['report_generation_result'] = [
+                    'type' => 'monthly_closing',
+                    'label' => 'Monatsabschluss ' . $monthStart->format('m/Y'),
+                    'token' => $token,
+                    'count' => isset($reportData['entries']) && is_array($reportData['entries']) ? count($reportData['entries']) : 0,
+                    'summary' => $summary,
+                ];
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Monatsabschlussbericht wurde erstellt.',
+                ];
+
+                header('Location: index.php?section=reports');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Der Bericht konnte nicht erstellt werden: ' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+            }
+
+            break;
+
         case 'user_create':
         case 'user_update':
             $activeSection = 'users';
@@ -10595,6 +10955,143 @@ if ($activeSection === 'reservations') {
                     <?php endif; ?>
                   </div>
                 </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <?php elseif ($activeSection === 'reports'): ?>
+      <section id="reports" class="app-section active">
+        <div class="row g-4">
+          <div class="col-12">
+            <div class="card module-card">
+              <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <div>
+                  <h2 class="h5 mb-1">Berichte exportieren</h2>
+                  <p class="text-muted mb-0">Listen für den Hotelalltag und Monatsauswertungen als PDF speichern.</p>
+                </div>
+                <span class="badge text-bg-primary">Neu</span>
+              </div>
+              <div class="card-body">
+                <p class="text-muted">Wählen Sie unten den gewünschten Bericht aus und erstellen Sie das PDF. Nach erfolgreicher Generierung steht der Download-Link zur Verfügung.</p>
+                <?php if ($reportGenerationResult !== null): ?>
+                  <?php
+                    $reportDownloadToken = isset($reportGenerationResult['token']) ? (string) $reportGenerationResult['token'] : '';
+                    $reportDownloadUrl = $reportDownloadToken !== ''
+                        ? 'index.php?section=reports&downloadReport=' . rawurlencode($reportDownloadToken)
+                        : '';
+                  ?>
+                  <div class="alert alert-success d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <div>
+                      <strong><?= htmlspecialchars($reportGenerationResult['label'] ?? 'Bericht erstellt') ?></strong>
+                      <?php if (isset($reportGenerationResult['count'])): ?>
+                        <span class="text-muted ms-2"><?= (int) $reportGenerationResult['count'] ?> Einträge</span>
+                      <?php endif; ?>
+                      <?php if (isset($reportGenerationResult['summary']) && is_array($reportGenerationResult['summary']) && $reportGenerationResult['summary'] !== []): ?>
+                        <ul class="list-unstyled mb-0 mt-2 small text-muted">
+                          <?php foreach ($reportGenerationResult['summary'] as $summaryLabel => $summaryValue): ?>
+                            <li><?= htmlspecialchars((string) $summaryLabel) ?>: <?= htmlspecialchars((string) $summaryValue) ?></li>
+                          <?php endforeach; ?>
+                        </ul>
+                      <?php endif; ?>
+                    </div>
+                    <?php if ($reportDownloadToken !== ''): ?>
+                      <a class="btn btn-outline-primary btn-sm" href="<?= htmlspecialchars($reportDownloadUrl) ?>" target="_blank" rel="noopener">PDF herunterladen</a>
+                    <?php endif; ?>
+                  </div>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xl-6">
+            <div class="card module-card h-100">
+              <div class="card-header bg-transparent border-0">
+                <h2 class="h5 mb-1">Frühstücksliste</h2>
+                <p class="text-muted mb-0">Erfasst alle Gäste mit gebuchten Frühstücksleistungen für den ausgewählten Tag.</p>
+              </div>
+              <div class="card-body">
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="reports_breakfast">
+                  <div class="col-12 col-sm-6 col-xl-7">
+                    <label for="report-breakfast-date" class="form-label">Datum</label>
+                    <input type="date" class="form-control" id="report-breakfast-date" name="report_date" value="<?= htmlspecialchars($reportFormData['breakfast_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?> required>
+                  </div>
+                  <div class="col-12 col-sm-6 col-xl-5 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary w-100" <?= $pdo === null ? 'disabled' : '' ?>>PDF erstellen</button>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mt-3 mb-0">Verfügbar nach Aufbau der Datenbankverbindung.</p>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xl-6">
+            <div class="card module-card h-100">
+              <div class="card-header bg-transparent border-0">
+                <h2 class="h5 mb-1">Putzliste</h2>
+                <p class="text-muted mb-0">Zeigt Anreisen, Abreisen und Bleiber je Zimmer für den ausgewählten Tag.</p>
+              </div>
+              <div class="card-body">
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="reports_cleaning">
+                  <div class="col-12 col-sm-6 col-xl-7">
+                    <label for="report-cleaning-date" class="form-label">Datum</label>
+                    <input type="date" class="form-control" id="report-cleaning-date" name="cleaning_date" value="<?= htmlspecialchars($reportFormData['cleaning_date']) ?>" <?= $pdo === null ? 'disabled' : '' ?> required>
+                  </div>
+                  <div class="col-12 col-sm-6 col-xl-5 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary w-100" <?= $pdo === null ? 'disabled' : '' ?>>PDF erstellen</button>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mt-3 mb-0">Verfügbar nach Aufbau der Datenbankverbindung.</p>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xl-6">
+            <div class="card module-card h-100">
+              <div class="card-header bg-transparent border-0">
+                <h2 class="h5 mb-1">Monatsbericht</h2>
+                <p class="text-muted mb-0">Beherbergungszahlen und Statusübersicht für den ausgewählten Monat.</p>
+              </div>
+              <div class="card-body">
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="reports_monthly">
+                  <div class="col-12 col-sm-6 col-xl-7">
+                    <label for="report-monthly-month" class="form-label">Monat</label>
+                    <input type="month" class="form-control" id="report-monthly-month" name="monthly_month" value="<?= htmlspecialchars($reportFormData['monthly_month']) ?>" <?= $pdo === null ? 'disabled' : '' ?> required>
+                  </div>
+                  <div class="col-12 col-sm-6 col-xl-5 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary w-100" <?= $pdo === null ? 'disabled' : '' ?>>PDF erstellen</button>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mt-3 mb-0">Verfügbar nach Aufbau der Datenbankverbindung.</p>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xl-6">
+            <div class="card module-card h-100">
+              <div class="card-header bg-transparent border-0">
+                <h2 class="h5 mb-1">Monatsabschluss</h2>
+                <p class="text-muted mb-0">Finanzielle Auswertung des Monats inklusive Zimmer- und Artikelumsätzen.</p>
+              </div>
+              <div class="card-body">
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="reports_monthly_closing">
+                  <div class="col-12 col-sm-6 col-xl-7">
+                    <label for="report-closing-month" class="form-label">Monat</label>
+                    <input type="month" class="form-control" id="report-closing-month" name="closing_month" value="<?= htmlspecialchars($reportFormData['closing_month']) ?>" <?= $pdo === null ? 'disabled' : '' ?> required>
+                  </div>
+                  <div class="col-12 col-sm-6 col-xl-5 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary w-100" <?= $pdo === null ? 'disabled' : '' ?>>PDF erstellen</button>
+                  </div>
+                </form>
+                <?php if ($pdo === null): ?>
+                  <p class="text-muted mt-3 mb-0">Verfügbar nach Aufbau der Datenbankverbindung.</p>
+                <?php endif; ?>
               </div>
             </div>
           </div>
