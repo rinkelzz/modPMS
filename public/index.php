@@ -187,6 +187,22 @@ $documentStatusBadges = [
     DocumentManager::STATUS_FINALIZED => 'text-bg-success',
     DocumentManager::STATUS_CORRECTED => 'text-bg-warning text-dark',
 ];
+$getDefaultPaymentMethods = static function (): array {
+    return [
+        [
+            'id' => 'cash',
+            'label' => 'Bar',
+            'type' => 'cash',
+            'terminal_serial' => null,
+        ],
+        [
+            'id' => 'card',
+            'label' => 'Karte',
+            'type' => 'sumup',
+            'terminal_serial' => null,
+        ],
+    ];
+};
 $emailLogManager = null;
 $meldescheinManager = null;
 $meldescheine = [];
@@ -625,23 +641,6 @@ $parsePaymentMethods = static function (?string $value): array {
     }
 
     return $normalized;
-};
-
-$getDefaultPaymentMethods = static function (): array {
-    return [
-        [
-            'id' => 'cash',
-            'label' => 'Bar',
-            'type' => 'cash',
-            'terminal_serial' => null,
-        ],
-        [
-            'id' => 'card',
-            'label' => 'Karte',
-            'type' => 'sumup',
-            'terminal_serial' => null,
-        ],
-    ];
 };
 
 $hexToRgba = static function (?string $hex, float $alpha) use ($normalizeHexColor): ?string {
