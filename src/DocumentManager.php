@@ -816,9 +816,10 @@ class DocumentManager
     private function ensureColumn(string $table, string $column, string $alterStatement): void
     {
         try {
-            $check = $this->pdo->prepare('SHOW COLUMNS FROM ' . $table . ' LIKE :column');
-            $check->execute(['column' => $column]);
-            $exists = $check->fetch();
+            $tableName = str_replace('`', '', $table);
+            $columnName = str_replace('`', '', $column);
+            $sql = sprintf('SHOW COLUMNS FROM `%s` LIKE %s', $tableName, $this->pdo->quote($columnName));
+            $exists = $this->pdo->query($sql)->fetch();
 
             if ($exists === false) {
                 $this->pdo->exec($alterStatement);

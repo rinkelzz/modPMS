@@ -528,9 +528,9 @@ class MeldescheinManager
     private function ensureColumn(string $column, string $alterStatement): void
     {
         try {
-            $check = $this->pdo->prepare('SHOW COLUMNS FROM meldescheine LIKE :column');
-            $check->execute(['column' => $column]);
-            $exists = $check->fetch();
+            $columnName = str_replace('`', '', $column);
+            $sql = sprintf('SHOW COLUMNS FROM `meldescheine` LIKE %s', $this->pdo->quote($columnName));
+            $exists = $this->pdo->query($sql)->fetch();
 
             if ($exists === false) {
                 $this->pdo->exec($alterStatement);

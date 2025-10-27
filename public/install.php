@@ -361,6 +361,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
+                if (!in_array('room_label', $meldescheinColumns, true)) {
+                    $pdo->exec('ALTER TABLE `meldescheine` ADD COLUMN room_label VARCHAR(191) NULL AFTER issued_date');
+                }
+
                 if (!in_array('guest_signature_path', $meldescheinColumns, true)) {
                     $pdo->exec('ALTER TABLE `meldescheine` ADD COLUMN guest_signature_path VARCHAR(255) NULL AFTER pdf_path');
                 }
@@ -379,6 +383,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if (!in_array('signature_token_created_at', $meldescheinColumns, true)) {
                     $pdo->exec('ALTER TABLE `meldescheine` ADD COLUMN signature_token_created_at DATETIME NULL AFTER signature_token_expires_at');
+                }
+
+                if (!in_array('details_json', $meldescheinColumns, true)) {
+                    $pdo->exec('ALTER TABLE `meldescheine` ADD COLUMN details_json LONGTEXT NULL AFTER signature_token_created_at');
                 }
 
                 $pdo->exec('CREATE TABLE IF NOT EXISTS reservation_items (
@@ -493,6 +501,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_install_documents_status (status),
                     INDEX idx_install_documents_reservation (reservation_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+                $documentColumns = [];
+                foreach ($pdo->query('SHOW COLUMNS FROM `documents`') as $column) {
+                    if (isset($column['Field'])) {
+                        $documentColumns[] = $column['Field'];
+                    }
+                }
+
+                if (!in_array('reservation_id', $documentColumns, true)) {
+                    $pdo->exec('ALTER TABLE `documents` ADD COLUMN reservation_id INT UNSIGNED NULL AFTER items_json');
+                }
+
+                if (!in_array('correction_number', $documentColumns, true)) {
+                    $pdo->exec('ALTER TABLE `documents` ADD COLUMN correction_number INT UNSIGNED NULL AFTER correction_of_id');
+                }
+
+                if (!in_array('pdf_path', $documentColumns, true)) {
+                    $pdo->exec('ALTER TABLE `documents` ADD COLUMN pdf_path VARCHAR(255) NULL AFTER correction_number');
+                }
+
+                if (!in_array('finalized_at', $documentColumns, true)) {
+                    $pdo->exec('ALTER TABLE `documents` ADD COLUMN finalized_at TIMESTAMP NULL DEFAULT NULL AFTER pdf_path');
+                }
+
+                if (!in_array('payment_method', $documentColumns, true)) {
+                    $pdo->exec('ALTER TABLE `documents` ADD COLUMN payment_method VARCHAR(64) NULL AFTER finalized_at');
+                }
+
+                if (!in_array('payment_reference', $documentColumns, true)) {
+                    $pdo->exec('ALTER TABLE `documents` ADD COLUMN payment_reference VARCHAR(191) NULL AFTER payment_method');
+                }
+
+                if (!in_array('payment_details_json', $documentColumns, true)) {
+                    $pdo->exec('ALTER TABLE `documents` ADD COLUMN payment_details_json LONGTEXT NULL AFTER payment_reference');
+                }
 
                 $statusColorDefaults = [
                     'geplant' => '#2563EB',
