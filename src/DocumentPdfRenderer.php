@@ -6,6 +6,49 @@ use RuntimeException;
 
 require_once __DIR__ . '/Pdf/Fpdf.php';
 
+class DocumentPdf extends \FPDF
+{
+    /**
+     * @var string
+     */
+    private string $bankDetailsHeading = '';
+
+    /**
+     * @var array<int, string>
+     */
+    private array $bankDetailsLines = [];
+
+    public function setBankDetails(string $heading, array $lines): void
+    {
+        $this->bankDetailsHeading = $heading;
+        $this->bankDetailsLines = $lines;
+    }
+
+    public function Footer(): void
+    {
+        if ($this->bankDetailsHeading === '' && $this->bankDetailsLines === []) {
+            return;
+        }
+
+        $this->SetY(-35);
+        $this->SetFont('Arial', 'B', 9);
+        $this->SetTextColor(90, 90, 90);
+
+        if ($this->bankDetailsHeading !== '') {
+            $this->Cell(0, 5, $this->bankDetailsHeading, 0, 1, 'C');
+        }
+
+        if ($this->bankDetailsLines !== []) {
+            $this->SetFont('Arial', '', 9);
+            foreach ($this->bankDetailsLines as $line) {
+                $this->Cell(0, 5, $line, 0, 1, 'C');
+            }
+        }
+
+        $this->SetTextColor(0, 0, 0);
+    }
+}
+
 class DocumentPdfRenderer
 {
     private string $storageDirectory;
@@ -30,12 +73,15 @@ class DocumentPdfRenderer
         $filename = $this->sanitizeFilename($documentNumber) . '.pdf';
         $targetPath = rtrim($this->storageDirectory, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $filename;
 
-        $pdf = new \FPDF('P', 'mm', 'A4');
+        $pdf = new DocumentPdf('P', 'mm', 'A4');
         $pdf->SetMargins(15, 20, 15);
+        $pdf->SetAutoPageBreak(true, 30);
+        $this->renderFooter($pdf, $document);
         $pdf->AddPage();
 
         $this->renderLogo($pdf, $logoRelativePath);
         $this->renderHeader($pdf, $document);
+        $this->renderCompanyDetails($pdf, $document);
         $this->renderRecipient($pdf, $document);
         $this->renderMeta($pdf, $document);
         $this->renderItems($pdf, $document);
@@ -75,6 +121,39 @@ class DocumentPdfRenderer
         }
 
         $pdf->Ln(5);
+    }
+
+    private function renderCompanyDetails(\FPDF $pdf, array $document): void
+    {
+        $companyName = trim((string) ($document['company_name'] ?? ''));
+        $companyAddress = trim((string) ($document['company_address'] ?? ''));
+        $vatId = trim((string) ($document['company_vat_id'] ?? ''));
+
+        if ($companyName === '' && $companyAddress === '' && $vatId === '') {
+            return;
+        }
+
+        $pdf->SetFont('Arial', '', 11);
+        if ($companyName !== '') {
+            $pdf->Cell(0, 6, $this->convertText($companyName), 0, 1, 'R');
+        }
+
+        if ($companyAddress !== '') {
+            foreach (preg_split('/\r?\n/', $companyAddress) as $line) {
+                $line = trim($line);
+                if ($line === '') {
+                    continue;
+                }
+
+                $pdf->Cell(0, 6, $this->convertText($line), 0, 1, 'R');
+            }
+        }
+
+        if ($vatId !== '') {
+            $pdf->Cell(0, 6, $this->convertText('USt-IdNr.: ' . $vatId), 0, 1, 'R');
+        }
+
+        $pdf->Ln(4);
     }
 
     private function renderRecipient(\FPDF $pdf, array $document): void
@@ -196,6 +275,26 @@ class DocumentPdfRenderer
             $pdf->SetFont('Arial', '', 11);
             $pdf->MultiCell(0, 6, $this->convertText($plainText));
         }
+    }
+
+    private function renderFooter(DocumentPdf $pdf, array $document): void
+    {
+        $bankDetails = trim((string) ($document['company_bank_details'] ?? ''));
+        if ($bankDetails === '') {
+            $pdf->setBankDetails('', []);
+            return;
+        }
+
+        $lines = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', $bankDetails) ?: []), static fn ($line) => $line !== ''));
+        if ($lines === []) {
+            $pdf->setBankDetails('', []);
+            return;
+        }
+
+        $heading = $this->convertText('Bankverbindung');
+        $convertedLines = array_map([$this, 'convertText'], $lines);
+
+        $pdf->setBankDetails($heading, $convertedLines);
     }
 
     private function convertHtmlToText(string $html): string

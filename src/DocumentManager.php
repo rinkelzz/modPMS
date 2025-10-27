@@ -367,6 +367,25 @@ class DocumentManager
         $documentForPdf['total_gross'] = $totals['gross'];
         $documentForPdf['type_label'] = self::TYPE_LABELS[$documentForPdf['type']] ?? 'Dokument';
 
+        $companySettings = $this->settingsManager->getMany([
+            'document_company_name',
+            'document_company_address',
+            'document_company_vat_id',
+            'document_company_bank_details',
+        ]);
+        $documentForPdf['company_name'] = isset($companySettings['document_company_name'])
+            ? trim((string) $companySettings['document_company_name'])
+            : '';
+        $documentForPdf['company_address'] = isset($companySettings['document_company_address'])
+            ? trim((string) $companySettings['document_company_address'])
+            : '';
+        $documentForPdf['company_vat_id'] = isset($companySettings['document_company_vat_id'])
+            ? trim((string) $companySettings['document_company_vat_id'])
+            : '';
+        $documentForPdf['company_bank_details'] = isset($companySettings['document_company_bank_details'])
+            ? trim((string) $companySettings['document_company_bank_details'])
+            : '';
+
         $pdfPath = $pdfGenerator($documentForPdf);
         if (!is_string($pdfPath) || $pdfPath === '') {
             throw new RuntimeException('PDF konnte nicht erzeugt werden.');

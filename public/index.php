@@ -241,6 +241,10 @@ $documentTemplateFormData = [
     'body_html' => '',
 ];
 $invoiceLogoPath = '';
+$documentCompanyName = '';
+$documentCompanyAddress = '';
+$documentCompanyVatId = '';
+$documentCompanyBankDetails = '';
 $mailFromAddress = '';
 $mailReplyToAddress = '';
 $mailFromAddressFormValue = '';
@@ -766,9 +770,32 @@ if ($settingsManager instanceof SettingManager) {
         $mailReplyToAddress = (string) $mailSettings['mail_reply_to_address'];
     }
 
-    $storedInvoiceLogo = $settingsManager->get('invoice_logo_path', '');
-    if ($storedInvoiceLogo !== null && $storedInvoiceLogo !== '') {
-        $invoiceLogoPath = $storedInvoiceLogo;
+    $documentSettings = $settingsManager->getMany([
+        'invoice_logo_path',
+        'document_company_name',
+        'document_company_address',
+        'document_company_vat_id',
+        'document_company_bank_details',
+    ]);
+
+    if (isset($documentSettings['invoice_logo_path']) && $documentSettings['invoice_logo_path'] !== '') {
+        $invoiceLogoPath = (string) $documentSettings['invoice_logo_path'];
+    }
+
+    if (isset($documentSettings['document_company_name'])) {
+        $documentCompanyName = (string) $documentSettings['document_company_name'];
+    }
+
+    if (isset($documentSettings['document_company_address'])) {
+        $documentCompanyAddress = (string) $documentSettings['document_company_address'];
+    }
+
+    if (isset($documentSettings['document_company_vat_id'])) {
+        $documentCompanyVatId = (string) $documentSettings['document_company_vat_id'];
+    }
+
+    if (isset($documentSettings['document_company_bank_details'])) {
+        $documentCompanyBankDetails = (string) $documentSettings['document_company_bank_details'];
     }
 }
 
@@ -1746,6 +1773,66 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             }
 
             header('Location: index.php?section=settings#mail-log');
+            exit;
+
+        case 'settings_document_company':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Einstellungen konnte nicht hergestellt werden.',
+                ];
+                break;
+            }
+
+            $truncate = static function (string $value, int $length): string {
+                if ($length <= 0) {
+                    return '';
+                }
+
+                if (function_exists('mb_substr')) {
+                    return mb_substr($value, 0, $length);
+                }
+
+                return substr($value, 0, $length);
+            };
+
+            $companyNameInput = isset($_POST['document_company_name']) ? trim((string) $_POST['document_company_name']) : '';
+            $addressInput = isset($_POST['document_company_address'])
+                ? (string) $_POST['document_company_address']
+                : '';
+            $vatIdInput = isset($_POST['document_company_vat_id']) ? trim((string) $_POST['document_company_vat_id']) : '';
+            $bankDetailsInput = isset($_POST['document_company_bank_details'])
+                ? (string) $_POST['document_company_bank_details']
+                : '';
+
+            $companyNameSanitized = $truncate($companyNameInput, 191);
+            $addressNormalized = str_replace(["\r\n", "\r"], "\n", $addressInput);
+            $addressNormalized = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', (string) $addressNormalized);
+            $addressSanitized = $truncate(trim((string) $addressNormalized), 1000);
+            $vatIdSanitized = $truncate(str_replace(["\r", "\n"], ' ', $vatIdInput), 64);
+
+            $bankDetailsNormalized = str_replace(["\r\n", "\r"], "\n", $bankDetailsInput);
+            $bankDetailsNormalized = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', (string) $bankDetailsNormalized);
+            $bankDetailsSanitized = $truncate(trim((string) $bankDetailsNormalized), 1000);
+
+            $settingsManager->set('document_company_name', $companyNameSanitized);
+            $settingsManager->set('document_company_address', $addressSanitized);
+            $settingsManager->set('document_company_vat_id', $vatIdSanitized);
+            $settingsManager->set('document_company_bank_details', $bankDetailsSanitized);
+
+            $documentCompanyName = $companyNameSanitized;
+            $documentCompanyAddress = $addressSanitized;
+            $documentCompanyVatId = $vatIdSanitized;
+            $documentCompanyBankDetails = $bankDetailsSanitized;
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Firmendaten für Dokumente wurden gespeichert.',
+            ];
+
+            header('Location: index.php?section=settings#document-settings');
             exit;
 
         case 'settings_invoice_logo':
@@ -11238,6 +11325,58 @@ if ($activeSection === 'reservations') {
                     <?php endif; ?>
                   </div>
                 </div>
+                <hr class="my-4">
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="settings_document_company">
+                  <div class="col-12 col-lg-6">
+                    <label for="document-company-name" class="form-label">Firmenname</label>
+                    <input
+                      type="text"
+                      class="form-control"
+                      id="document-company-name"
+                      name="document_company_name"
+                      value="<?= htmlspecialchars($documentCompanyName) ?>"
+                      placeholder="Hotel Beispiel GmbH"
+                    >
+                    <div class="form-text">Dieser Name erscheint im Kopfbereich des PDFs.</div>
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="document-company-address" class="form-label">Adresse</label>
+                    <textarea
+                      class="form-control"
+                      id="document-company-address"
+                      name="document_company_address"
+                      rows="3"
+                      placeholder="Hotelstraße 1\n12345 Musterstadt"><?= htmlspecialchars($documentCompanyAddress) ?></textarea>
+                    <div class="form-text">Optional. Wird unter dem Firmennamen im PDF angezeigt.</div>
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="document-company-vat" class="form-label">Umsatzsteuer-ID</label>
+                    <input
+                      type="text"
+                      class="form-control"
+                      id="document-company-vat"
+                      name="document_company_vat_id"
+                      value="<?= htmlspecialchars($documentCompanyVatId) ?>"
+                      placeholder="DE123456789"
+                    >
+                    <div class="form-text">Optional. Wird neben dem Firmennamen angezeigt.</div>
+                  </div>
+                  <div class="col-12">
+                    <label for="document-company-bank" class="form-label">Bankverbindung</label>
+                    <textarea
+                      class="form-control"
+                      id="document-company-bank"
+                      name="document_company_bank_details"
+                      rows="4"
+                      placeholder="Bankname\nIBAN: DE00 0000 0000 0000 0000 00\nBIC: GENODEF1XXX"
+                    ><?= htmlspecialchars($documentCompanyBankDetails) ?></textarea>
+                    <div class="form-text">Wird im PDF-Footer mittig dargestellt.</div>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end">
+                    <button type="submit" class="btn btn-outline-primary">Firmendaten speichern</button>
+                  </div>
+                </form>
               <?php endif; ?>
             </div>
           </div>
