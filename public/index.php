@@ -13,8 +13,6 @@ use ModPMS\MeldescheinManager;
 use ModPMS\MeldescheinPdfRenderer;
 use ModPMS\RateManager;
 use ModPMS\ReservationManager;
-use ModPMS\ReportManager;
-use ModPMS\ReportPdfRenderer;
 use ModPMS\SumUpClient;
 use ModPMS\TaxCategoryManager;
 use ModPMS\SettingManager;
@@ -43,7 +41,6 @@ require_once __DIR__ . '/../src/DocumentPdfRenderer.php';
 require_once __DIR__ . '/../src/EmailLogManager.php';
 require_once __DIR__ . '/../src/MeldescheinManager.php';
 require_once __DIR__ . '/../src/MeldescheinPdfRenderer.php';
-require_once __DIR__ . '/../src/ReportPdfRenderer.php';
 require_once __DIR__ . '/../src/SumUpClient.php';
 
 session_start();
@@ -299,6 +296,22 @@ $mailReplyToAddress = '';
 $mailFromAddressFormValue = '';
 $mailReplyToAddressFormValue = '';
 $mailLogEntries = [];
+$getDefaultPaymentMethods = static function (): array {
+    return [
+        [
+            'id' => 'cash',
+            'label' => 'Bar',
+            'type' => 'cash',
+            'terminal_serial' => null,
+        ],
+        [
+            'id' => 'card',
+            'label' => 'Karte',
+            'type' => 'sumup',
+            'terminal_serial' => null,
+        ],
+    ];
+};
 $paymentMethods = $getDefaultPaymentMethods();
 $paymentMethodLookup = [];
 foreach ($paymentMethods as $method) {
@@ -318,6 +331,8 @@ $sumupAuthMethod = 'api_key';
 $sumupCredential = '';
 $sumupMerchantCode = '';
 $sumupDefaultTerminal = '';
+$sumupApplicationId = '';
+$sumupAffiliateKey = '';
 $reservationFormDefaults = $reservationFormData;
 $reservationFormMode = 'create';
 $isEditingReservation = false;
@@ -1010,6 +1025,8 @@ if ($settingsManager instanceof SettingManager) {
         'sumup_credential',
         'sumup_merchant_code',
         'sumup_default_terminal',
+        'sumup_application_id',
+        'sumup_affiliate_key',
     ]);
 
     if (isset($sumupSettings['sumup_auth_method'])) {
@@ -1029,6 +1046,14 @@ if ($settingsManager instanceof SettingManager) {
 
     if (isset($sumupSettings['sumup_default_terminal'])) {
         $sumupDefaultTerminal = trim((string) $sumupSettings['sumup_default_terminal']);
+    }
+
+    if (isset($sumupSettings['sumup_application_id'])) {
+        $sumupApplicationId = trim((string) $sumupSettings['sumup_application_id']);
+    }
+
+    if (isset($sumupSettings['sumup_affiliate_key'])) {
+        $sumupAffiliateKey = trim((string) $sumupSettings['sumup_affiliate_key']);
     }
 }
 
@@ -2103,11 +2128,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $sumupMerchantCodeInput = preg_replace('/[^A-Z0-9]/', '', $sumupMerchantCodeInput);
             $sumupDefaultTerminalInput = strtoupper(trim((string) ($_POST['sumup_default_terminal'] ?? '')));
             $sumupDefaultTerminalInput = preg_replace('/\s+/', '', $sumupDefaultTerminalInput);
+            $sumupApplicationIdInput = trim((string) ($_POST['sumup_application_id'] ?? ''));
+            $sumupAffiliateKeyInput = trim((string) ($_POST['sumup_affiliate_key'] ?? ''));
 
             $settingsManager->set('sumup_auth_method', $sumupAuthMethodInput);
             $settingsManager->set('sumup_credential', $sumupCredentialInput);
             $settingsManager->set('sumup_merchant_code', $sumupMerchantCodeInput);
             $settingsManager->set('sumup_default_terminal', $sumupDefaultTerminalInput);
+            $settingsManager->set('sumup_application_id', $sumupApplicationIdInput);
+            $settingsManager->set('sumup_affiliate_key', $sumupAffiliateKeyInput);
 
             $paymentMethods = $normalizedMethods;
             $paymentMethodLookup = [];
@@ -2126,6 +2155,8 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $sumupCredential = $sumupCredentialInput;
             $sumupMerchantCode = $sumupMerchantCodeInput;
             $sumupDefaultTerminal = $sumupDefaultTerminalInput;
+            $sumupApplicationId = $sumupApplicationIdInput;
+            $sumupAffiliateKey = $sumupAffiliateKeyInput;
 
             $_SESSION['alert'] = [
                 'type' => 'success',
@@ -3903,7 +3934,15 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $externalId = sprintf('invoice-%d', $documentId);
 
                     $sumUpClient = new SumUpClient($sumupCredential, $terminalSerial, $sumupAuthMethod);
-                    $response = $sumUpClient->sendPayment($grossAmount, $currency, $externalId, $description);
+                    $response = $sumUpClient->sendPayment(
+                        $grossAmount,
+                        $currency,
+                        $externalId,
+                        $description,
+                        null,
+                        $sumupApplicationId !== '' ? $sumupApplicationId : null,
+                        $sumupAffiliateKey !== '' ? $sumupAffiliateKey : null
+                    );
 
                     if ($response['status'] < 200 || $response['status'] >= 300) {
                         $errorMessage = 'SumUp-Transaktion konnte nicht gestartet werden.';
@@ -3942,6 +3981,14 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
                     if ($sumupMerchantCode !== '') {
                         $paymentDetails['merchant_code'] = $sumupMerchantCode;
+                    }
+
+                    if ($sumupApplicationId !== '') {
+                        $paymentDetails['affiliate_app_id'] = $sumupApplicationId;
+                    }
+
+                    if ($sumupAffiliateKey !== '') {
+                        $paymentDetails['affiliate_key'] = $sumupAffiliateKey;
                     }
 
                     if (isset($response['body']) && is_array($response['body'])) {
@@ -12327,6 +12374,16 @@ if ($activeSection === 'reservations') {
                       <label for="sumup-default-terminal" class="form-label">Standard-Terminal</label>
                       <input type="text" class="form-control" id="sumup-default-terminal" name="sumup_default_terminal" value="<?= htmlspecialchars($sumupDefaultTerminal) ?>" placeholder="Seriennummer">
                       <div class="form-text">Wird verwendet, wenn bei einer Zahlungsart kein Terminal hinterlegt ist.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label for="sumup-application-id" class="form-label">Anwendungskennung</label>
+                      <input type="text" class="form-control" id="sumup-application-id" name="sumup_application_id" value="<?= htmlspecialchars($sumupApplicationId) ?>" placeholder="z. B. com.example.app">
+                      <div class="form-text">Optional: Kennung Ihrer SumUp-Partneranwendung.</div>
+                    </div>
+                    <div class="col-md-4">
+                      <label for="sumup-affiliate-key" class="form-label">Affiliate-Key</label>
+                      <input type="text" class="form-control" id="sumup-affiliate-key" name="sumup_affiliate_key" value="<?= htmlspecialchars($sumupAffiliateKey) ?>" placeholder="Affiliate-Key">
+                      <div class="form-text">Optional: Wird für Partnerabrechnungen benötigt.</div>
                     </div>
                   </div>
                   <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mt-4">

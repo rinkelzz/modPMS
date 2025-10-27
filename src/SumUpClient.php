@@ -4,6 +4,7 @@ namespace ModPMS;
 
 use JsonException;
 use RuntimeException;
+use stdClass;
 
 class SumUpClient
 {
@@ -47,7 +48,9 @@ class SumUpClient
         string $currency = 'EUR',
         ?string $externalId = null,
         ?string $description = null,
-        ?float $tipAmount = null
+        ?float $tipAmount = null,
+        ?string $affiliateAppId = null,
+        ?string $affiliateKey = null
     ): array {
         if ($amount <= 0) {
             throw new RuntimeException('Amount must be greater than zero.');
@@ -69,6 +72,23 @@ class SumUpClient
 
         if ($description !== null && $description !== '') {
             $payload['description'] = $description;
+        }
+
+        $affiliateAppId = $affiliateAppId !== null ? trim($affiliateAppId) : null;
+        $affiliateKey = $affiliateKey !== null ? trim($affiliateKey) : null;
+
+        if ($affiliateAppId !== null && $affiliateAppId !== '' && $affiliateKey !== null && $affiliateKey !== '') {
+            $affiliatePayload = [
+                'app_id' => $affiliateAppId,
+                'key' => $affiliateKey,
+                'tags' => new stdClass(),
+            ];
+
+            if ($externalId !== null && $externalId !== '') {
+                $affiliatePayload['foreign_transaction_id'] = $externalId;
+            }
+
+            $payload['affiliate'] = $affiliatePayload;
         }
 
         $endpoint = sprintf(
