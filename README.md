@@ -2,6 +2,22 @@
 
 Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP und MySQL. Dieses Repository enthält das Basis-Modul mit Dashboard, Kalender, Zimmerkategorien und integriertem Update-Workflow.
 
+## Technologie-Stack
+
+- **Backend:** PHP 8.1+ mit Composer-Abhängigkeiten
+- **Datenbank:** MySQL 8 (kompatibel zu MariaDB ≥ 10.4)
+- **Frontend:** Bootstrap 5, Vanilla JS und Alpine.js für reaktive UI-Elemente
+- **Tools & Services:** Git für den Update-Mechanismus, PHPZip/ZipArchive für Fallback-Updates
+
+> Für einen schnellen Einstieg empfiehlt sich eine lokale Entwicklungsumgebung wie Laravel Herd, DDEV oder ein klassischer LAMP/LEMP-Stack.
+
+## Systemvoraussetzungen
+
+- PHP-Erweiterungen: `pdo_mysql`, `zip`, `mbstring`, `json`, `curl`
+- HTTPS-fähiger Webserver (Apache/Nginx) oder der eingebaute PHP-Server zu Testzwecken
+- Schreibrechte für `storage/` und `public/uploads/` (Logo-Uploads, Sicherungen)
+- Git (optional, aber empfohlen) für den integrierten Update-Workflow
+
 ## Features Basis-Modul (Version 1.9.0)
 
 - **Dashboard** mit gleitendem 8-Tage-Zimmerkalender (Zimmer auf Y-Achse, Tage auf X-Achse) inklusive aufgeräumter Kategorien-/Zimmerleiste in voller Inhaltsbreite, kategorieweiser Übersichtszeile (Belegung/Frei/Überbuchungen je Tag), eigener Zimmer- und Überbuchungsdarstellung pro Kategorie, flexibler Datums-Navigation (−2 Tage bis +5 Tage) sowie Umschaltmöglichkeit zwischen Firmen- oder Gästenamen in der Belegungsanzeige – Belegungen erscheinen mit frei konfigurierbaren Statusfarben hervorgehoben und zeigen die gebuchte Personenanzahl direkt in Klammern.
@@ -29,6 +45,7 @@ Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP un
    ```bash
    git clone https://github.com/rinkelzz/modpms.git
    cd modPMS
+   composer install # nur erforderlich, falls zusätzliche Pakete genutzt werden
    ```
 2. Das Projektverzeichnis als Webroot (z. B. Apache/Nginx) konfigurieren oder über den integrierten PHP-Server starten:
    ```bash
@@ -39,6 +56,21 @@ Ein modulares Property-Management-System (PMS) für Hotels, entwickelt in PHP un
 5. Aus Sicherheitsgründen `public/install.php` nach erfolgreicher Einrichtung entfernen oder sperren.
 
 > **Hinweis:** Nach der Installation werden Zimmerkategorien und Zimmer direkt in der konfigurierten MySQL-Datenbank gespeichert. Passen Sie die Zugangsdaten bei Bedarf in `config/database.php` an.
+
+## Entwicklung & Tests
+
+```bash
+# Abhängigkeiten aktualisieren
+composer install
+
+# Statische Analyse / Coding-Style (optional)
+vendor/bin/phpcs --standard=PSR12 src/
+
+# PHPUnit-Tests (sofern eingerichtet)
+vendor/bin/phpunit
+```
+
+Für Frontend-Anpassungen können SCSS/JS-Assets unter `public/assets/` gepflegt werden. Das Repository enthält derzeit bereits kompilierte Assets; ein optionaler Build-Step lässt sich über NPM ergänzen.
 
 ## Update-Mechanismus
 
