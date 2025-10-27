@@ -13,6 +13,7 @@ use ModPMS\MeldescheinManager;
 use ModPMS\MeldescheinPdfRenderer;
 use ModPMS\RateManager;
 use ModPMS\ReservationManager;
+use ModPMS\ReportManager;
 use ModPMS\ReportPdfRenderer;
 use ModPMS\SumUpClient;
 use ModPMS\TaxCategoryManager;
