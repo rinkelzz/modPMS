@@ -6460,6 +6460,7 @@ if ($pdo !== null) {
         $guestFullName = trim(implode(' ', $guestFullNameParts));
 
         $hasSignedMeldeschein = $reservationId > 0 && isset($meldescheinSignatureReservations[$reservationId]);
+        $isPaidReservation = $reservationStatus === 'bezahlt';
 
         $items = $reservation['items'] ?? [];
         if ($items === []) {
@@ -6623,8 +6624,15 @@ if ($pdo !== null) {
             }
 
             $itemLabel = $baseLabel;
+            $statusMarkers = [];
             if ($hasSignedMeldeschein) {
-                $itemLabel .= ' M';
+                $statusMarkers[] = 'M';
+            }
+            if ($isPaidReservation) {
+                $statusMarkers[] = 'B';
+            }
+            if ($statusMarkers !== []) {
+                $itemLabel .= ' (' . implode(') (', $statusMarkers) . ')';
             }
             if ($itemGuestCount !== null && $itemGuestCount > 0) {
                 $itemLabel .= sprintf(' (%d)', $itemGuestCount);
