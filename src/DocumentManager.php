@@ -369,11 +369,15 @@ class DocumentManager
 
         $companySettings = $this->settingsManager->getMany([
             'document_company_name',
+            'document_company_address',
             'document_company_vat_id',
             'document_company_bank_details',
         ]);
         $documentForPdf['company_name'] = isset($companySettings['document_company_name'])
             ? trim((string) $companySettings['document_company_name'])
+            : '';
+        $documentForPdf['company_address'] = isset($companySettings['document_company_address'])
+            ? trim((string) $companySettings['document_company_address'])
             : '';
         $documentForPdf['company_vat_id'] = isset($companySettings['document_company_vat_id'])
             ? trim((string) $companySettings['document_company_vat_id'])

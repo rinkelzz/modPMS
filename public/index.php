@@ -242,6 +242,7 @@ $documentTemplateFormData = [
 ];
 $invoiceLogoPath = '';
 $documentCompanyName = '';
+$documentCompanyAddress = '';
 $documentCompanyVatId = '';
 $documentCompanyBankDetails = '';
 $mailFromAddress = '';
@@ -772,6 +773,7 @@ if ($settingsManager instanceof SettingManager) {
     $documentSettings = $settingsManager->getMany([
         'invoice_logo_path',
         'document_company_name',
+        'document_company_address',
         'document_company_vat_id',
         'document_company_bank_details',
     ]);
@@ -782,6 +784,10 @@ if ($settingsManager instanceof SettingManager) {
 
     if (isset($documentSettings['document_company_name'])) {
         $documentCompanyName = (string) $documentSettings['document_company_name'];
+    }
+
+    if (isset($documentSettings['document_company_address'])) {
+        $documentCompanyAddress = (string) $documentSettings['document_company_address'];
     }
 
     if (isset($documentSettings['document_company_vat_id'])) {
@@ -1793,12 +1799,18 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             };
 
             $companyNameInput = isset($_POST['document_company_name']) ? trim((string) $_POST['document_company_name']) : '';
+            $addressInput = isset($_POST['document_company_address'])
+                ? (string) $_POST['document_company_address']
+                : '';
             $vatIdInput = isset($_POST['document_company_vat_id']) ? trim((string) $_POST['document_company_vat_id']) : '';
             $bankDetailsInput = isset($_POST['document_company_bank_details'])
                 ? (string) $_POST['document_company_bank_details']
                 : '';
 
             $companyNameSanitized = $truncate($companyNameInput, 191);
+            $addressNormalized = str_replace(["\r\n", "\r"], "\n", $addressInput);
+            $addressNormalized = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', (string) $addressNormalized);
+            $addressSanitized = $truncate(trim((string) $addressNormalized), 1000);
             $vatIdSanitized = $truncate(str_replace(["\r", "\n"], ' ', $vatIdInput), 64);
 
             $bankDetailsNormalized = str_replace(["\r\n", "\r"], "\n", $bankDetailsInput);
@@ -1806,10 +1818,12 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $bankDetailsSanitized = $truncate(trim((string) $bankDetailsNormalized), 1000);
 
             $settingsManager->set('document_company_name', $companyNameSanitized);
+            $settingsManager->set('document_company_address', $addressSanitized);
             $settingsManager->set('document_company_vat_id', $vatIdSanitized);
             $settingsManager->set('document_company_bank_details', $bankDetailsSanitized);
 
             $documentCompanyName = $companyNameSanitized;
+            $documentCompanyAddress = $addressSanitized;
             $documentCompanyVatId = $vatIdSanitized;
             $documentCompanyBankDetails = $bankDetailsSanitized;
 
@@ -11325,6 +11339,16 @@ if ($activeSection === 'reservations') {
                       placeholder="Hotel Beispiel GmbH"
                     >
                     <div class="form-text">Dieser Name erscheint im Kopfbereich des PDFs.</div>
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="document-company-address" class="form-label">Adresse</label>
+                    <textarea
+                      class="form-control"
+                      id="document-company-address"
+                      name="document_company_address"
+                      rows="3"
+                      placeholder="Hotelstraße 1\n12345 Musterstadt"><?= htmlspecialchars($documentCompanyAddress) ?></textarea>
+                    <div class="form-text">Optional. Wird unter dem Firmennamen im PDF angezeigt.</div>
                   </div>
                   <div class="col-12 col-lg-6">
                     <label for="document-company-vat" class="form-label">Umsatzsteuer-ID</label>
