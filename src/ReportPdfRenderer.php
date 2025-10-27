@@ -360,11 +360,16 @@ class ReportPdfRenderer
             foreach (array_values($row) as $index => $value) {
                 $width = $widths[$index] ?? 0.0;
                 $align = $aligns[$index] ?? 'L';
-                $x = $pdf->GetX();
-                $y = $pdf->GetY();
+                $cellX = $pdf->GetX();
+                $cellY = $pdf->GetY();
 
-                $pdf->MultiCell($width, $lineHeight, $this->convertText((string) $value), 1, $align);
-                $pdf->SetXY($x + $width, $y);
+                if ($width > 0.0 && $rowHeight > 0.0) {
+                    $pdf->Rect($cellX, $cellY, $width, $rowHeight);
+                }
+
+                $pdf->SetXY($cellX, $cellY);
+                $pdf->MultiCell($width, $lineHeight, $this->convertText((string) $value), 0, $align);
+                $pdf->SetXY($cellX + $width, $cellY);
             }
 
             $pdf->SetXY($startX, $startY + $rowHeight);
