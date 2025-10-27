@@ -32,14 +32,17 @@ class DocumentPdfRenderer
 
         $pdf = new \FPDF('P', 'mm', 'A4');
         $pdf->SetMargins(15, 20, 15);
+        $pdf->SetAutoPageBreak(true, 30);
         $pdf->AddPage();
 
         $this->renderLogo($pdf, $logoRelativePath);
         $this->renderHeader($pdf, $document);
+        $this->renderCompanyDetails($pdf, $document);
         $this->renderRecipient($pdf, $document);
         $this->renderMeta($pdf, $document);
         $this->renderItems($pdf, $document);
         $this->renderBody($pdf, $document);
+        $this->renderFooter($pdf, $document);
 
         $pdf->Output('F', $targetPath);
 
@@ -75,6 +78,27 @@ class DocumentPdfRenderer
         }
 
         $pdf->Ln(5);
+    }
+
+    private function renderCompanyDetails(\FPDF $pdf, array $document): void
+    {
+        $companyName = trim((string) ($document['company_name'] ?? ''));
+        $vatId = trim((string) ($document['company_vat_id'] ?? ''));
+
+        if ($companyName === '' && $vatId === '') {
+            return;
+        }
+
+        $pdf->SetFont('Arial', '', 11);
+        if ($companyName !== '') {
+            $pdf->Cell(0, 6, $this->convertText($companyName), 0, 1, 'R');
+        }
+
+        if ($vatId !== '') {
+            $pdf->Cell(0, 6, $this->convertText('USt-IdNr.: ' . $vatId), 0, 1, 'R');
+        }
+
+        $pdf->Ln(4);
     }
 
     private function renderRecipient(\FPDF $pdf, array $document): void
@@ -196,6 +220,31 @@ class DocumentPdfRenderer
             $pdf->SetFont('Arial', '', 11);
             $pdf->MultiCell(0, 6, $this->convertText($plainText));
         }
+    }
+
+    private function renderFooter(\FPDF $pdf, array $document): void
+    {
+        $bankDetails = trim((string) ($document['company_bank_details'] ?? ''));
+        if ($bankDetails === '') {
+            return;
+        }
+
+        $lines = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', $bankDetails) ?: []), static fn ($line) => $line !== ''));
+        if ($lines === []) {
+            return;
+        }
+
+        $pdf->SetY(-35);
+        $pdf->SetFont('Arial', 'B', 9);
+        $pdf->SetTextColor(90, 90, 90);
+        $pdf->Cell(0, 5, $this->convertText('Bankverbindung'), 0, 1, 'C');
+
+        $pdf->SetFont('Arial', '', 9);
+        foreach ($lines as $line) {
+            $pdf->Cell(0, 5, $this->convertText($line), 0, 1, 'C');
+        }
+
+        $pdf->SetTextColor(0, 0, 0);
     }
 
     private function convertHtmlToText(string $html): string
