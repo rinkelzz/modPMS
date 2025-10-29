@@ -193,32 +193,14 @@ class SumUpClient
      */
     private function sendCheckoutRequest(array $payload): array
     {
-        $endpoints = [
-            sprintf(
-                '%s/merchants/%s/readers/%s/checkout',
-                self::API_BASE_URL,
-                rawurlencode($this->merchantCode),
-                rawurlencode($this->terminalSerial)
-            ),
-            sprintf(
-                '%s/merchants/%s/terminals/%s/checkout',
-                self::API_BASE_URL,
-                rawurlencode($this->merchantCode),
-                rawurlencode($this->terminalSerial)
-            ),
-        ];
+        $endpoint = sprintf(
+            '%s/merchants/%s/readers/%s/checkout',
+            self::API_BASE_URL,
+            rawurlencode($this->merchantCode),
+            rawurlencode($this->terminalSerial)
+        );
 
-        $response = null;
-
-        foreach ($endpoints as $endpoint) {
-            $response = $this->request('POST', $endpoint, $payload);
-
-            if ($response['status'] !== 404) {
-                return $response;
-            }
-        }
-
-        return $response ?? $this->request('POST', $endpoints[0], $payload);
+        return $this->request('POST', $endpoint, $payload);
     }
 
     private function resolveMinorUnit(string $currency): int
