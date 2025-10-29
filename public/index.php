@@ -209,6 +209,21 @@ $documentStatusBadges = [
     DocumentManager::STATUS_FINALIZED => 'text-bg-success',
     DocumentManager::STATUS_CORRECTED => 'text-bg-warning text-dark',
 ];
+$documentSearchTerm = isset($_GET['document_search']) ? trim((string) $_GET['document_search']) : '';
+$documentSortOptions = [
+    'created_desc' => 'Neueste zuerst',
+    'created_asc' => 'Älteste zuerst',
+    'issue_desc' => 'Ausstellungsdatum (neueste zuerst)',
+    'issue_asc' => 'Ausstellungsdatum (älteste zuerst)',
+    'number_desc' => 'Dokumentnummer (absteigend)',
+    'number_asc' => 'Dokumentnummer (aufsteigend)',
+    'total_desc' => 'Betrag (höchster zuerst)',
+    'total_asc' => 'Betrag (niedrigster zuerst)',
+];
+$documentSort = isset($_GET['document_sort']) ? (string) $_GET['document_sort'] : 'created_desc';
+if (!isset($documentSortOptions[$documentSort])) {
+    $documentSort = 'created_desc';
+}
 $getDefaultPaymentMethods = static function (): array {
     return [
         [
@@ -570,6 +585,20 @@ $buildArticleSelectOptions = null;
 $buildRoomSelectOptions = null;
 $buildRateSelectOptions = null;
 $reservationSearchTerm = isset($_GET['reservation_search']) ? trim((string) $_GET['reservation_search']) : '';
+$reservationSortOptions = [
+    'created_desc' => 'Neueste zuerst',
+    'created_asc' => 'Älteste zuerst',
+    'arrival_asc' => 'Anreise (aufsteigend)',
+    'arrival_desc' => 'Anreise (absteigend)',
+    'departure_asc' => 'Abreise (aufsteigend)',
+    'departure_desc' => 'Abreise (absteigend)',
+    'number_desc' => 'Reservierungsnummer (absteigend)',
+    'number_asc' => 'Reservierungsnummer (aufsteigend)',
+];
+$reservationSort = isset($_GET['reservation_sort']) ? (string) $_GET['reservation_sort'] : 'created_desc';
+if (!isset($reservationSortOptions[$reservationSort])) {
+    $reservationSort = 'created_desc';
+}
 $showArchivedReservations = isset($_GET['show_archived']) && $_GET['show_archived'] === '1';
 $openReservationModalRequested = isset($_GET['openReservationModal']) && $_GET['openReservationModal'] === '1';
 $settingsManager = null;
@@ -6982,7 +7011,10 @@ if ($pdo !== null) {
     }
 
     if ($documentManager instanceof DocumentManager) {
-        $documents = $documentManager->listDocuments();
+        $documents = $documentManager->listDocuments(
+            $documentSearchTerm !== '' ? $documentSearchTerm : null,
+            $documentSort
+        );
         $documentTemplates = $documentManager->listTemplates();
         foreach ($documents as $docRecord) {
             if (!isset($docRecord['id'])) {
@@ -7339,7 +7371,8 @@ if ($pdo !== null) {
         $reservations = $reservationManager->all(
             $reservationSearchTerm !== '' ? $reservationSearchTerm : null,
             $includeArchivedReservations,
-            $showArchivedReservations
+            $showArchivedReservations,
+            $reservationSort
         );
     }
 
@@ -9928,16 +9961,19 @@ if ($activeSection === 'reservations') {
                   <?php if ($showArchivedReservations): ?>
                     <span class="badge text-bg-secondary">Archivansicht</span>
                   <?php endif; ?>
-                  <?php
-                    $archiveToggleParams = ['section' => 'reservations'];
-                    if ($reservationSearchTerm !== '') {
-                        $archiveToggleParams['reservation_search'] = $reservationSearchTerm;
-                    }
-                    if (!$showArchivedReservations) {
-                        $archiveToggleParams['show_archived'] = '1';
-                    }
-                    $archiveToggleUrl = 'index.php?' . http_build_query($archiveToggleParams);
-                  ?>
+                    <?php
+                      $archiveToggleParams = ['section' => 'reservations'];
+                      if ($reservationSearchTerm !== '') {
+                          $archiveToggleParams['reservation_search'] = $reservationSearchTerm;
+                      }
+                      if ($reservationSort !== 'created_desc') {
+                          $archiveToggleParams['reservation_sort'] = $reservationSort;
+                      }
+                      if (!$showArchivedReservations) {
+                          $archiveToggleParams['show_archived'] = '1';
+                      }
+                      $archiveToggleUrl = 'index.php?' . http_build_query($archiveToggleParams);
+                    ?>
                   <a class="btn btn-outline-secondary btn-sm" href="<?= htmlspecialchars($archiveToggleUrl) ?>">
                     <?= $showArchivedReservations ? 'Archiv ausblenden' : 'Archivierte anzeigen' ?>
                   </a>
@@ -9950,13 +9986,21 @@ if ($activeSection === 'reservations') {
                   <?php if ($showArchivedReservations): ?>
                     <input type="hidden" name="show_archived" value="1">
                   <?php endif; ?>
-                  <div class="col-12 col-lg-8">
+                  <div class="col-12 col-lg-6">
                     <label for="reservation-search" class="form-label">Suche nach Gast, Firma oder Reservierungsnummer</label>
                     <input type="search" class="form-control" id="reservation-search" name="reservation_search" placeholder="z. B. Mustermann, Musterfirma oder Res2024000001" value="<?= htmlspecialchars($reservationSearchTerm) ?>">
                   </div>
-                  <div class="col-12 col-lg-4 d-flex gap-2">
-                    <button type="submit" class="btn btn-outline-primary flex-grow-1">Suche</button>
-                    <?php if ($reservationSearchTerm !== ''): ?>
+                  <div class="col-12 col-sm-6 col-lg-3">
+                    <label for="reservation-sort" class="form-label">Sortierung</label>
+                    <select class="form-select" id="reservation-sort" name="reservation_sort">
+                      <?php foreach ($reservationSortOptions as $value => $label): ?>
+                        <option value="<?= htmlspecialchars($value) ?>" <?= $value === $reservationSort ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                  </div>
+                  <div class="col-12 col-sm-6 col-lg-3 d-flex gap-2">
+                    <button type="submit" class="btn btn-outline-primary flex-grow-1">Anwenden</button>
+                    <?php if ($reservationSearchTerm !== '' || $reservationSort !== 'created_desc'): ?>
                       <?php
                         $reservationResetParams = ['section' => 'reservations'];
                         if ($showArchivedReservations) {
@@ -9978,7 +10022,11 @@ if ($activeSection === 'reservations') {
                 <?php if ($pdo === null): ?>
                   <p class="text-muted mb-0">Reservierungen werden geladen, sobald eine Datenbankverbindung besteht.</p>
                 <?php elseif ($reservations === []): ?>
-                  <p class="text-muted mb-0">Noch keine Reservierungen erfasst.</p>
+                  <?php if ($reservationSearchTerm !== ''): ?>
+                    <p class="text-muted mb-0">Keine Reservierungen gefunden.</p>
+                  <?php else: ?>
+                    <p class="text-muted mb-0">Noch keine Reservierungen erfasst.</p>
+                  <?php endif; ?>
                 <?php else: ?>
                   <?php
                     $statusBadgeMap = [];
@@ -10521,10 +10569,36 @@ if ($activeSection === 'reservations') {
                   </div>
                 </div>
               </div>
-              <div class="card-body">
-                <?php if ($documents === []): ?>
-                  <p class="text-muted mb-0">Noch keine Dokumente erstellt. Legen Sie jetzt eine erste Rechnung an.</p>
-                <?php else: ?>
+                <div class="card-body">
+                  <form method="get" class="row g-3 align-items-end mb-3">
+                    <input type="hidden" name="section" value="documents">
+                    <div class="col-12 col-lg-6">
+                      <label for="document-search" class="form-label">Suche nach Empfänger, Nummer oder Reservierung</label>
+                      <input type="search" class="form-control" id="document-search" name="document_search" placeholder="z. B. RE20240001 oder Mustermann" value="<?= htmlspecialchars($documentSearchTerm) ?>">
+                    </div>
+                    <div class="col-12 col-sm-6 col-lg-3">
+                      <label for="document-sort" class="form-label">Sortierung</label>
+                      <select class="form-select" id="document-sort" name="document_sort">
+                        <?php foreach ($documentSortOptions as $value => $label): ?>
+                          <option value="<?= htmlspecialchars($value) ?>" <?= $value === $documentSort ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
+                        <?php endforeach; ?>
+                      </select>
+                    </div>
+                    <div class="col-12 col-sm-6 col-lg-3 d-flex gap-2">
+                      <button type="submit" class="btn btn-outline-primary flex-grow-1">Anwenden</button>
+                      <?php if ($documentSearchTerm !== '' || $documentSort !== 'created_desc'): ?>
+                        <a href="index.php?section=documents" class="btn btn-link">Zurücksetzen</a>
+                      <?php endif; ?>
+                    </div>
+                  </form>
+
+                  <?php if ($documents === []): ?>
+                    <?php if ($documentSearchTerm !== ''): ?>
+                      <p class="text-muted mb-0">Keine Dokumente gefunden.</p>
+                    <?php else: ?>
+                      <p class="text-muted mb-0">Noch keine Dokumente erstellt. Legen Sie jetzt eine erste Rechnung an.</p>
+                    <?php endif; ?>
+                  <?php else: ?>
                   <div class="table-responsive">
                     <table class="table table-sm align-middle">
                       <thead class="table-light">
@@ -10601,7 +10675,9 @@ if ($activeSection === 'reservations') {
 
                             $correctionOfId = isset($document['correction_of_id']) && $document['correction_of_id'] !== null ? (int) $document['correction_of_id'] : null;
                             $correctionReferenceNumber = null;
-                            if ($correctionOfId !== null && isset($documentLookupById[$correctionOfId]['document_number'])) {
+                            if (isset($document['correction_document_number']) && $document['correction_document_number'] !== null) {
+                                $correctionReferenceNumber = (string) $document['correction_document_number'];
+                            } elseif ($correctionOfId !== null && isset($documentLookupById[$correctionOfId]['document_number'])) {
                                 $correctionReferenceNumber = (string) $documentLookupById[$correctionOfId]['document_number'];
                             }
 

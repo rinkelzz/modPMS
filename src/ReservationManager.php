@@ -441,9 +441,15 @@ class ReservationManager
     }
 
     /**
+     * @param string $sort
      * @return array<int, array<string, mixed>>
      */
-    public function all(?string $search = null, bool $includeArchived = false, bool $archivedOnly = false): array
+    public function all(
+        ?string $search = null,
+        bool $includeArchived = false,
+        bool $archivedOnly = false,
+        string $sort = 'created_desc'
+    ): array
     {
         $sql = 'SELECT r.id, r.reservation_number, r.rate_id, r.guest_id, r.room_id, r.category_id, r.room_quantity, r.company_id, r.arrival_date, r.departure_date, r.status, '
             . 'r.price_per_night, r.total_price, r.vat_rate, r.notes, '
@@ -474,19 +480,44 @@ class ReservationManager
         }
 
         if ($search !== null && $search !== '') {
-            $conditions[] = '(g.last_name LIKE :search '
-                . 'OR g.first_name LIKE :search '
-                . 'OR CONCAT_WS(" ", g.first_name, g.last_name) LIKE :search '
-                . 'OR c.name LIKE :search '
-                . 'OR r.reservation_number LIKE :search)';
-            $params['search'] = '%' . $search . '%';
+            $searchTerm = '%' . $search . '%';
+            $searchColumns = [
+                'g.last_name',
+                'g.first_name',
+                "CONCAT_WS(' ', g.first_name, g.last_name)",
+                'c.name',
+                'r.reservation_number',
+            ];
+
+            $searchConditions = [];
+            foreach ($searchColumns as $index => $column) {
+                $placeholder = ':reservation_search_' . $index;
+                $searchConditions[] = $column . ' LIKE ' . $placeholder;
+                $params['reservation_search_' . $index] = $searchTerm;
+            }
+
+            if ($searchConditions !== []) {
+                $conditions[] = '(' . implode(' OR ', $searchConditions) . ')';
+            }
         }
 
         if ($conditions !== []) {
             $sql .= ' WHERE ' . implode(' AND ', $conditions);
         }
 
-        $sql .= ' ORDER BY r.arrival_date ASC, r.departure_date ASC, r.id DESC';
+        $orderings = [
+            'created_desc' => 'r.created_at DESC, r.id DESC',
+            'created_asc' => 'r.created_at ASC, r.id ASC',
+            'arrival_asc' => 'r.arrival_date ASC, r.departure_date ASC, r.id DESC',
+            'arrival_desc' => 'r.arrival_date DESC, r.departure_date DESC, r.id DESC',
+            'departure_asc' => 'r.departure_date ASC, r.arrival_date ASC, r.id DESC',
+            'departure_desc' => 'r.departure_date DESC, r.arrival_date DESC, r.id DESC',
+            'number_desc' => 'r.reservation_number DESC',
+            'number_asc' => 'r.reservation_number ASC',
+        ];
+
+        $orderBy = $orderings[$sort] ?? $orderings['created_desc'];
+        $sql .= ' ORDER BY ' . $orderBy;
 
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
