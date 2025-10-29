@@ -118,21 +118,54 @@ class DocumentManager
     }
 
     /**
+     * @param string $sort
      * @return array<int, array<string, mixed>>
      */
-    public function listDocuments(): array
+    public function listDocuments(?string $search = null, string $sort = 'created_desc'): array
     {
-        $stmt = $this->pdo->query(
-            'SELECT d.*, t.name AS template_name, r.reservation_number
-             FROM documents d
-             LEFT JOIN document_templates t ON t.id = d.template_id
-             LEFT JOIN reservations r ON r.id = d.reservation_id
-             ORDER BY d.created_at DESC'
-        );
+        $sql = 'SELECT d.*, t.name AS template_name, r.reservation_number, correction.document_number AS correction_document_number'
+            . ' FROM documents d'
+            . ' LEFT JOIN document_templates t ON t.id = d.template_id'
+            . ' LEFT JOIN reservations r ON r.id = d.reservation_id'
+            . ' LEFT JOIN documents correction ON correction.id = d.correction_of_id';
 
+        $conditions = [];
+        $params = [];
+
+        if ($search !== null && $search !== '') {
+            $conditions[] = '('
+                . 'd.document_number LIKE :search'
+                . ' OR d.recipient_name LIKE :search'
+                . ' OR d.recipient_address LIKE :search'
+                . ' OR r.reservation_number LIKE :search'
+                . ')';
+            $params['search'] = '%' . $search . '%';
+        }
+
+        if ($conditions !== []) {
+            $sql .= ' WHERE ' . implode(' AND ', $conditions);
+        }
+
+        $orderings = [
+            'created_desc' => 'd.created_at DESC, d.id DESC',
+            'created_asc' => 'd.created_at ASC, d.id ASC',
+            'issue_desc' => 'COALESCE(d.issue_date, d.created_at) DESC, d.id DESC',
+            'issue_asc' => 'COALESCE(d.issue_date, d.created_at) ASC, d.id ASC',
+            'number_desc' => 'd.document_number DESC',
+            'number_asc' => 'd.document_number ASC',
+            'total_desc' => 'COALESCE(d.total_gross, 0) DESC, d.id DESC',
+            'total_asc' => 'COALESCE(d.total_gross, 0) ASC, d.id ASC',
+        ];
+
+        $orderBy = $orderings[$sort] ?? $orderings['created_desc'];
+        $sql .= ' ORDER BY ' . $orderBy;
+
+        $stmt = $this->pdo->prepare($sql);
         if ($stmt === false) {
             return [];
         }
+
+        $stmt->execute($params);
 
         $documents = [];
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -741,6 +774,9 @@ class DocumentManager
         $record['total_vat'] = isset($record['total_vat']) ? (float) $record['total_vat'] : 0.0;
         $record['total_gross'] = isset($record['total_gross']) ? (float) $record['total_gross'] : 0.0;
         $record['items'] = [];
+        $record['correction_document_number'] = isset($record['correction_document_number']) && $record['correction_document_number'] !== null
+            ? (string) $record['correction_document_number']
+            : null;
 
         if (isset($record['items_json']) && $record['items_json'] !== null) {
             try {
