@@ -16402,7 +16402,7 @@ if ($activeSection === 'reservations') {
             var arrivalPair = getDateFieldPair(item, 'arrival');
             var departurePair = getDateFieldPair(item, 'departure');
 
-            if (!categorySelect || !rateSelect || !arrivalPair.hidden || !departurePair.hidden) {
+            if (!categorySelect || !rateSelect) {
               return null;
             }
 
@@ -16418,8 +16418,34 @@ if ($activeSection === 'reservations') {
               quantity = 1;
             }
 
-            var arrivalDate = clampArrivalIso(getIsoFromPair(arrivalPair));
-            var departureDate = ensureDepartureAfter(arrivalDate, getIsoFromPair(departurePair));
+            var arrivalDate = arrivalPair ? clampArrivalIso(getIsoFromPair(arrivalPair)) : '';
+            var departureDate = ensureDepartureAfter(arrivalDate, departurePair ? getIsoFromPair(departurePair) : '');
+
+            if (!arrivalDate || !departureDate) {
+              var legacyArrivalField = item.querySelector('.reservation-item-arrival');
+              var legacyDepartureField = item.querySelector('.reservation-item-departure');
+
+              if (!arrivalDate && legacyArrivalField && typeof legacyArrivalField.value === 'string') {
+                arrivalDate = clampArrivalIso(normalizeDateString(legacyArrivalField.value));
+              }
+
+              var legacyDepartureIso = '';
+              if (legacyDepartureField && typeof legacyDepartureField.value === 'string') {
+                legacyDepartureIso = normalizeDateString(legacyDepartureField.value);
+              }
+
+              if (!departureDate) {
+                departureDate = ensureDepartureAfter(arrivalDate, legacyDepartureIso);
+              }
+
+              if (legacyArrivalField && arrivalDate) {
+                legacyArrivalField.value = arrivalDate;
+              }
+
+              if (legacyDepartureField && departureDate) {
+                legacyDepartureField.value = departureDate;
+              }
+            }
 
             setIsoForPair(arrivalPair, arrivalDate);
             setIsoForPair(departurePair, departureDate);
