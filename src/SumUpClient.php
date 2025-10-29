@@ -380,7 +380,7 @@ class SumUpClient
         }
 
         if (preg_match('/^rdr_[0-9a-z]{26}$/i', $identifier) === 1) {
-            return 'rdr_' . strtolower(substr($identifier, 4));
+            return 'rdr_' . strtoupper(substr($identifier, 4));
         }
 
         return $identifier;
