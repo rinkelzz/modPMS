@@ -47,7 +47,7 @@ class SumUpClient
 
         $credential = trim($credential);
         $merchantCode = trim($merchantCode);
-        $terminalSerial = trim($terminalSerial);
+        $terminalSerial = $this->normaliseReaderIdentifier(trim($terminalSerial));
 
         if ($credential === '') {
             throw new RuntimeException('Missing SumUp credentials.');
@@ -337,12 +337,25 @@ class SumUpClient
             if (is_string($candidate)) {
                 $trimmed = trim($candidate);
                 if ($trimmed !== '') {
-                    return $trimmed;
+                    return $this->normaliseReaderIdentifier($trimmed);
                 }
             }
         }
 
         return null;
+    }
+
+    private function normaliseReaderIdentifier(string $identifier): string
+    {
+        if ($identifier === '') {
+            return $identifier;
+        }
+
+        if (preg_match('/^rdr_/i', $identifier) === 1) {
+            return strtolower($identifier);
+        }
+
+        return $identifier;
     }
 
     /**
