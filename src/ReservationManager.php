@@ -13,7 +13,7 @@ class ReservationManager
     /**
      * @var array<int, string>
      */
-    private const ARCHIVE_STATUSES = ['bezahlt', 'storniert'];
+    private const ARCHIVE_STATUSES = ['storniert', 'bezahlt'];
 
     private PDO $pdo;
 
@@ -332,7 +332,7 @@ class ReservationManager
         try {
             $this->pdo->exec(
                 "UPDATE reservations SET archived_at = COALESCE(updated_at, NOW()), archived_by = COALESCE(updated_by, created_by) "
-                . "WHERE status IN ('bezahlt', 'storniert') AND archived_at IS NULL"
+                . "WHERE status IN ('storniert', 'bezahlt') AND archived_at IS NULL"
             );
         } catch (PDOException $exception) {
             // ignore archive backfills

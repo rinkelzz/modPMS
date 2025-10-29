@@ -564,6 +564,7 @@ $reservations = [];
 $roomLookup = [];
 $guestLookup = [];
 $roomOccupancies = [];
+$calendarReservations = [];
 $categoryOverbookingOccupancies = [];
 $categoryOverbookingStats = [];
 $categoryLookup = [];
@@ -602,6 +603,7 @@ if (!isset($reservationSortOptions[$reservationSort])) {
 $showArchivedReservations = isset($_GET['show_archived']) && $_GET['show_archived'] === '1';
 $openReservationModalRequested = isset($_GET['openReservationModal']) && $_GET['openReservationModal'] === '1';
 $settingsManager = null;
+$includeArchivedReservations = false;
 $reservationStatuses = ['geplant', 'eingecheckt', 'abgereist', 'bezahlt', 'noshow', 'storniert'];
 $reservationStatusBaseMeta = [
     'geplant' => [
@@ -7374,6 +7376,33 @@ if ($pdo !== null) {
             $showArchivedReservations,
             $reservationSort
         );
+
+        $calendarReservations = [];
+        foreach ($reservations as $reservationIndex => $reservationEntry) {
+            if (!is_array($reservationEntry)) {
+                continue;
+            }
+
+            $reservationEntry['__original_index'] = $reservationIndex;
+            $calendarReservations[] = $reservationEntry;
+        }
+
+        if (!$includeArchivedReservations) {
+            $archivedCalendarCandidates = $reservationManager->all(null, true, true, 'arrival_asc');
+
+            foreach ($archivedCalendarCandidates as $archivedReservation) {
+                if (!is_array($archivedReservation)) {
+                    continue;
+                }
+
+                if (($archivedReservation['status'] ?? '') !== 'bezahlt') {
+                    continue;
+                }
+
+                $archivedReservation['__is_calendar_only'] = true;
+                $calendarReservations[] = $archivedReservation;
+            }
+        }
     }
 
     $categoryOverbookingStays = [];
@@ -7435,7 +7464,28 @@ if ($pdo !== null) {
         }
     }
 
-    foreach ($reservations as $index => $reservation) {
+    foreach ($calendarReservations as $calendarReservation) {
+        if (!is_array($calendarReservation)) {
+            continue;
+        }
+
+        $sourceIndex = null;
+        if (array_key_exists('__original_index', $calendarReservation)) {
+            $indexValue = $calendarReservation['__original_index'];
+            if (is_int($indexValue) || (is_string($indexValue) && ctype_digit($indexValue))) {
+                $sourceIndex = (int) $indexValue;
+            }
+            unset($calendarReservation['__original_index']);
+        }
+
+        unset($calendarReservation['__is_calendar_only']);
+
+        $reservation = $calendarReservation;
+        $reservationTarget = null;
+        if ($sourceIndex !== null && isset($reservations[$sourceIndex]) && is_array($reservations[$sourceIndex])) {
+            $reservationTarget =& $reservations[$sourceIndex];
+        }
+
         $reservationId = isset($reservation['id']) ? (int) $reservation['id'] : 0;
         $reservationStatus = isset($reservation['status']) ? (string) $reservation['status'] : 'geplant';
         if (!isset($reservationStatusMeta[$reservationStatus])) {
@@ -7443,8 +7493,10 @@ if ($pdo !== null) {
         }
         $statusMeta = $reservationStatusMeta[$reservationStatus];
 
-        $reservations[$index]['status_label'] = $statusMeta['label'];
-        $reservations[$index]['status_badge_class'] = $statusMeta['badge'];
+        if ($reservationTarget !== null) {
+            $reservationTarget['status_label'] = $statusMeta['label'];
+            $reservationTarget['status_badge_class'] = $statusMeta['badge'];
+        }
 
         $baseLabel = $buildGuestCalendarLabel([
             'company_name' => $reservation['company_name'] ?? '',
@@ -7560,12 +7612,14 @@ if ($pdo !== null) {
             'nightCountLabel' => $nightCountLabel,
         ];
 
-        $reservations[$index]['items'] = $items;
-        $reservations[$index]['rate_name_display'] = $rateName;
-        $reservations[$index]['price_per_night_display'] = $pricePerNightFormatted;
-        $reservations[$index]['total_price_display'] = $totalPriceFormatted;
-        $reservations[$index]['vat_rate_display'] = $vatRateFormatted;
-        $reservations[$index]['night_count_display'] = $nightCountLabel;
+        if ($reservationTarget !== null) {
+            $reservationTarget['items'] = $items;
+            $reservationTarget['rate_name_display'] = $rateName;
+            $reservationTarget['price_per_night_display'] = $pricePerNightFormatted;
+            $reservationTarget['total_price_display'] = $totalPriceFormatted;
+            $reservationTarget['vat_rate_display'] = $vatRateFormatted;
+            $reservationTarget['night_count_display'] = $nightCountLabel;
+        }
 
         foreach ($items as $item) {
             $itemCategoryId = isset($item['category_id']) ? (int) $item['category_id'] : 0;
