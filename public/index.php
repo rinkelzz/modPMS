@@ -653,8 +653,12 @@ $normalizeSumUpReaderId = static function (?string $value): string {
         return '';
     }
 
+    if (preg_match('/^rdr_[0-9a-z]{26}$/i', $identifier) === 1) {
+        return 'rdr_' . strtolower(substr($identifier, 4));
+    }
+
     if (preg_match('/^rdr_/i', $identifier) === 1) {
-        return strtolower($identifier);
+        return 'rdr_' . substr($identifier, 4);
     }
 
     return $identifier;

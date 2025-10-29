@@ -16,6 +16,8 @@ class SumUpClient
 
     private string $terminalSerial;
 
+    private string $configuredReaderIdentifier;
+
     private string $authMethod;
 
     private ?string $resolvedReaderId = null;
@@ -47,7 +49,10 @@ class SumUpClient
 
         $credential = trim($credential);
         $merchantCode = trim($merchantCode);
-        $terminalSerial = $this->normaliseReaderIdentifier(trim($terminalSerial));
+        $terminalSerial = trim($terminalSerial);
+        $terminalSerial = $this->stripWhitespace($terminalSerial);
+        $configuredIdentifier = $terminalSerial;
+        $terminalSerial = $this->normaliseReaderIdentifier($terminalSerial);
 
         if ($credential === '') {
             throw new RuntimeException('Missing SumUp credentials.');
@@ -64,6 +69,7 @@ class SumUpClient
         $this->credential = $credential;
         $this->merchantCode = $merchantCode;
         $this->terminalSerial = $terminalSerial;
+        $this->configuredReaderIdentifier = $configuredIdentifier;
         $this->authMethod = $authMethod;
     }
 
@@ -192,6 +198,7 @@ class SumUpClient
                 'auth_method' => $this->authMethod,
                 'merchant_code' => $this->merchantCode,
                 'terminal_serial' => $this->terminalSerial,
+                'configured_reader_identifier' => $this->configuredReaderIdentifier,
             ],
         ];
     }
@@ -246,52 +253,27 @@ class SumUpClient
             ];
         }
 
-        $configuredIdentifier = $this->terminalSerial;
+        $readerCandidates = $this->buildReaderIdentifierCandidates();
+        $readerProbe = null;
 
-        $readerEndpoint = sprintf(
-            '%s/merchants/%s/readers/%s',
-            self::API_BASE_URL,
-            rawurlencode($this->merchantCode),
-            rawurlencode($configuredIdentifier)
-        );
+        foreach ($readerCandidates as $candidate) {
+            $candidateValue = $candidate['value'];
+            $candidateSource = $candidate['source'];
 
-        $readerProbe = $this->request('GET', $readerEndpoint);
-        $this->readerProbe = $readerProbe;
-
-        if ($this->isSuccessfulStatus($readerProbe['status'])) {
-            $this->resolvedReaderId = $configuredIdentifier;
-            $this->readerResolutionSource = 'configured';
-
-            return [
-                'reader_id' => $this->resolvedReaderId,
-                'source' => $this->readerResolutionSource,
-                'reader_probe' => $this->readerProbe,
-                'terminal_probe' => $this->terminalProbe,
-            ];
-        }
-
-        if ($readerProbe['status'] !== 404) {
-            throw new RuntimeException(
-                $this->formatReaderVerificationError($configuredIdentifier, $readerProbe, null)
+            $readerEndpoint = sprintf(
+                '%s/merchants/%s/readers/%s',
+                self::API_BASE_URL,
+                rawurlencode($this->merchantCode),
+                rawurlencode($candidateValue)
             );
-        }
 
-        $terminalEndpoint = sprintf(
-            '%s/merchants/%s/terminals/%s',
-            self::API_BASE_URL,
-            rawurlencode($this->merchantCode),
-            rawurlencode($configuredIdentifier)
-        );
+            $probe = $this->request('GET', $readerEndpoint);
+            $this->readerProbe = $probe;
+            $readerProbe = $probe;
 
-        $terminalProbe = $this->request('GET', $terminalEndpoint);
-        $this->terminalProbe = $terminalProbe;
-
-        if ($this->isSuccessfulStatus($terminalProbe['status'])) {
-            $resolvedReaderId = $this->extractReaderIdFromTerminalResponse($terminalProbe['body'] ?? null);
-
-            if ($resolvedReaderId !== null) {
-                $this->resolvedReaderId = $resolvedReaderId;
-                $this->readerResolutionSource = 'terminal_lookup';
+            if ($this->isSuccessfulStatus($probe['status'])) {
+                $this->resolvedReaderId = $this->normaliseReaderIdentifier($candidateValue);
+                $this->readerResolutionSource = $candidateSource;
 
                 return [
                     'reader_id' => $this->resolvedReaderId,
@@ -300,10 +282,56 @@ class SumUpClient
                     'terminal_probe' => $this->terminalProbe,
                 ];
             }
+
+            if (!in_array($probe['status'], [400, 404], true)) {
+                throw new RuntimeException(
+                    $this->formatReaderVerificationError($candidateValue, $probe, null)
+                );
+            }
+        }
+
+        $terminalProbe = null;
+        $terminalCandidates = $this->buildTerminalIdentifierCandidates();
+
+        foreach ($terminalCandidates as $terminalCandidate) {
+            $terminalEndpoint = sprintf(
+                '%s/merchants/%s/terminals/%s',
+                self::API_BASE_URL,
+                rawurlencode($this->merchantCode),
+                rawurlencode($terminalCandidate)
+            );
+
+            $probe = $this->request('GET', $terminalEndpoint);
+            $this->terminalProbe = $probe;
+            $terminalProbe = $probe;
+
+            if ($this->isSuccessfulStatus($probe['status'])) {
+                $resolvedReaderId = $this->extractReaderIdFromTerminalResponse($probe['body'] ?? null);
+
+                if ($resolvedReaderId !== null) {
+                    $this->resolvedReaderId = $resolvedReaderId;
+                    $this->readerResolutionSource = 'terminal_lookup';
+
+                    return [
+                        'reader_id' => $this->resolvedReaderId,
+                        'source' => $this->readerResolutionSource,
+                        'reader_probe' => $this->readerProbe,
+                        'terminal_probe' => $this->terminalProbe,
+                    ];
+                }
+            }
+
+            if (!in_array($probe['status'], [400, 404], true)) {
+                break;
+            }
         }
 
         throw new RuntimeException(
-            $this->formatReaderVerificationError($configuredIdentifier, $readerProbe, $terminalProbe)
+            $this->formatReaderVerificationError(
+                $this->configuredReaderIdentifier,
+                $readerProbe,
+                $terminalProbe
+            )
         );
     }
 
@@ -351,11 +379,115 @@ class SumUpClient
             return $identifier;
         }
 
-        if (preg_match('/^rdr_/i', $identifier) === 1) {
-            return strtolower($identifier);
+        if (preg_match('/^rdr_[0-9a-z]{26}$/i', $identifier) === 1) {
+            return 'rdr_' . strtolower(substr($identifier, 4));
         }
 
         return $identifier;
+    }
+
+    private function stripWhitespace(string $value): string
+    {
+        if ($value === '') {
+            return '';
+        }
+
+        $stripped = preg_replace('/\s+/', '', $value);
+
+        return $stripped !== null ? $stripped : '';
+    }
+
+    /**
+     * @return array<int,array{value:string,source:string}>
+     */
+    private function buildReaderIdentifierCandidates(): array
+    {
+        $candidates = [];
+        $seen = [];
+
+        $append = static function (string $value, string $source) use (&$candidates, &$seen): void {
+            if ($value === '') {
+                return;
+            }
+
+            if (isset($seen[$value])) {
+                return;
+            }
+
+            $seen[$value] = true;
+            $candidates[] = ['value' => $value, 'source' => $source];
+        };
+
+        $configured = $this->configuredReaderIdentifier;
+        $normalized = $this->terminalSerial;
+
+        $append($configured, 'configured');
+        if ($normalized !== $configured) {
+            $append($normalized, 'normalized');
+        }
+
+        $prefixNormalized = preg_replace('/^rdr_/i', 'rdr_', $configured, 1);
+        if (is_string($prefixNormalized)) {
+            $append($prefixNormalized, 'prefix_normalized');
+        }
+
+        $typeIdNormalized = $this->normaliseReaderIdentifier($configured);
+        if ($typeIdNormalized !== '') {
+            $append($typeIdNormalized, 'typeid_normalized');
+        }
+
+        $uppercaseConfigured = strtoupper($configured);
+        if ($uppercaseConfigured !== $configured) {
+            $append($uppercaseConfigured, 'uppercase');
+        }
+
+        $uppercaseNormalized = strtoupper($normalized);
+        if ($uppercaseNormalized !== '' && $uppercaseNormalized !== $uppercaseConfigured) {
+            $append($uppercaseNormalized, 'uppercase_normalized');
+        }
+
+        $lowercaseConfigured = strtolower($configured);
+        if ($lowercaseConfigured !== $configured) {
+            $append($lowercaseConfigured, 'lowercase');
+        }
+
+        return $candidates;
+    }
+
+    /**
+     * @return string[]
+     */
+    private function buildTerminalIdentifierCandidates(): array
+    {
+        $candidates = [];
+        $seen = [];
+
+        $append = static function (string $value) use (&$candidates, &$seen): void {
+            if ($value === '') {
+                return;
+            }
+
+            if (isset($seen[$value])) {
+                return;
+            }
+
+            $seen[$value] = true;
+            $candidates[] = $value;
+        };
+
+        $configured = $this->configuredReaderIdentifier;
+        $normalized = $this->terminalSerial;
+
+        $append($configured);
+        $append($normalized);
+        $append($this->normaliseReaderIdentifier($configured));
+        $append($this->normaliseReaderIdentifier($normalized));
+        $append(strtoupper($configured));
+        $append(strtoupper($normalized));
+        $append(strtolower($configured));
+        $append(strtolower($normalized));
+
+        return $candidates;
     }
 
     /**
