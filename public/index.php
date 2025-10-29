@@ -16247,6 +16247,8 @@ if ($activeSection === 'reservations') {
             if (reservationIdInput) {
               reservationIdInput.value = reservationIdState;
             }
+
+            applyStatusButtonState(reservationIdState !== '' ? getStatusValue() : '');
           }
 
           function getReservationId() {
@@ -16258,6 +16260,8 @@ if ($activeSection === 'reservations') {
             if (statusInput) {
               statusInput.value = statusValueState;
             }
+
+            applyStatusButtonState(statusValueState);
           }
 
           function getStatusValue() {
@@ -16402,6 +16406,8 @@ if ($activeSection === 'reservations') {
               button.classList.add('btn-outline-secondary');
               button.disabled = true;
             });
+
+            applyStatusButtonState('');
           }
 
           function applyStatusButtonState(activeStatus) {
@@ -16477,6 +16483,8 @@ if ($activeSection === 'reservations') {
             }
 
             setStatusValue(data.status || '');
+
+            applyStatusButtonState(data.status || '');
 
             if (detailElements.title) {
               detailElements.title.textContent = data.guestLabel || data.guestName || 'Reservierung';
