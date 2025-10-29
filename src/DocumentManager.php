@@ -133,13 +133,24 @@ class DocumentManager
         $params = [];
 
         if ($search !== null && $search !== '') {
-            $conditions[] = '('
-                . 'd.document_number LIKE :search'
-                . ' OR d.recipient_name LIKE :search'
-                . ' OR d.recipient_address LIKE :search'
-                . ' OR r.reservation_number LIKE :search'
-                . ')';
-            $params['search'] = '%' . $search . '%';
+            $searchTerm = '%' . $search . '%';
+            $searchColumns = [
+                'd.document_number',
+                'd.recipient_name',
+                'd.recipient_address',
+                'r.reservation_number',
+            ];
+
+            $searchConditions = [];
+            foreach ($searchColumns as $index => $column) {
+                $placeholder = ':document_search_' . $index;
+                $searchConditions[] = $column . ' LIKE ' . $placeholder;
+                $params['document_search_' . $index] = $searchTerm;
+            }
+
+            if ($searchConditions !== []) {
+                $conditions[] = '(' . implode(' OR ', $searchConditions) . ')';
+            }
         }
 
         if ($conditions !== []) {

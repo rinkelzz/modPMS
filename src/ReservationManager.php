@@ -480,12 +480,25 @@ class ReservationManager
         }
 
         if ($search !== null && $search !== '') {
-            $conditions[] = '(g.last_name LIKE :search '
-                . 'OR g.first_name LIKE :search '
-                . 'OR CONCAT_WS(" ", g.first_name, g.last_name) LIKE :search '
-                . 'OR c.name LIKE :search '
-                . 'OR r.reservation_number LIKE :search)';
-            $params['search'] = '%' . $search . '%';
+            $searchTerm = '%' . $search . '%';
+            $searchColumns = [
+                'g.last_name',
+                'g.first_name',
+                "CONCAT_WS(' ', g.first_name, g.last_name)",
+                'c.name',
+                'r.reservation_number',
+            ];
+
+            $searchConditions = [];
+            foreach ($searchColumns as $index => $column) {
+                $placeholder = ':reservation_search_' . $index;
+                $searchConditions[] = $column . ' LIKE ' . $placeholder;
+                $params['reservation_search_' . $index] = $searchTerm;
+            }
+
+            if ($searchConditions !== []) {
+                $conditions[] = '(' . implode(' OR ', $searchConditions) . ')';
+            }
         }
 
         if ($conditions !== []) {
