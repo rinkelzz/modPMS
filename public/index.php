@@ -642,7 +642,29 @@ $calculateContrastColor = static function (string $hex): string {
     return $luminance > 0.6 ? '#111827' : '#ffffff';
 };
 
-$parsePaymentMethods = static function (?string $value): array {
+$normalizeSumUpReaderId = static function (?string $value): string {
+    $identifier = trim((string) ($value ?? ''));
+    if ($identifier === '') {
+        return '';
+    }
+
+    $identifier = preg_replace('/\s+/', '', $identifier);
+    if ($identifier === null || $identifier === '') {
+        return '';
+    }
+
+    if (preg_match('/^rdr_[0-9a-z]{26}$/i', $identifier) === 1) {
+        return 'rdr_' . strtoupper(substr($identifier, 4));
+    }
+
+    if (preg_match('/^rdr_/i', $identifier) === 1) {
+        return 'rdr_' . substr($identifier, 4);
+    }
+
+    return $identifier;
+};
+
+$parsePaymentMethods = static function (?string $value) use ($normalizeSumUpReaderId): array {
     if ($value === null) {
         return [];
     }
@@ -672,7 +694,7 @@ $parsePaymentMethods = static function (?string $value): array {
         $id = isset($entry['id']) ? trim((string) $entry['id']) : '';
         $label = isset($entry['label']) ? trim((string) $entry['label']) : '';
         $type = isset($entry['type']) ? strtolower(trim((string) $entry['type'])) : 'other';
-        $terminal = isset($entry['terminal_serial']) ? trim((string) $entry['terminal_serial']) : '';
+        $terminal = isset($entry['terminal_serial']) ? $normalizeSumUpReaderId($entry['terminal_serial']) : '';
 
         if ($id === '' || $label === '') {
             continue;
@@ -979,7 +1001,7 @@ if ($settingsManager instanceof SettingManager) {
             $label = isset($method['label']) ? trim((string) $method['label']) : '';
             $type = isset($method['type']) ? strtolower((string) $method['type']) : 'other';
             $terminalSerial = isset($method['terminal_serial']) && $method['terminal_serial'] !== null
-                ? trim((string) $method['terminal_serial'])
+                ? $normalizeSumUpReaderId($method['terminal_serial'])
                 : null;
 
             if ($id === '' || $label === '') {
@@ -1048,7 +1070,7 @@ if ($settingsManager instanceof SettingManager) {
     }
 
     if (isset($sumupSettings['sumup_default_terminal'])) {
-        $sumupDefaultTerminal = trim((string) $sumupSettings['sumup_default_terminal']);
+        $sumupDefaultTerminal = $normalizeSumUpReaderId($sumupSettings['sumup_default_terminal']);
     }
 
     if (isset($sumupSettings['sumup_application_id'])) {
@@ -2093,7 +2115,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 if ($typeValue !== 'sumup') {
                     $terminalValue = '';
                 } else {
-                    $terminalValue = preg_replace('/\s+/', '', $terminalValue);
+                    $terminalValue = $normalizeSumUpReaderId($terminalValue);
                 }
 
                 $normalizedMethods[] = [
@@ -2129,8 +2151,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $sumupCredentialInput = trim((string) ($_POST['sumup_credential'] ?? ''));
             $sumupMerchantCodeInput = trim((string) ($_POST['sumup_merchant_code'] ?? ''));
             $sumupMerchantCodeInput = preg_replace('/\s+/', '', $sumupMerchantCodeInput);
-            $sumupDefaultTerminalInput = trim((string) ($_POST['sumup_default_terminal'] ?? ''));
-            $sumupDefaultTerminalInput = preg_replace('/\s+/', '', $sumupDefaultTerminalInput);
+            $sumupDefaultTerminalInput = $normalizeSumUpReaderId($_POST['sumup_default_terminal'] ?? '');
             $sumupApplicationIdInput = trim((string) ($_POST['sumup_application_id'] ?? ''));
             $sumupAffiliateKeyInput = trim((string) ($_POST['sumup_affiliate_key'] ?? ''));
 
@@ -3922,11 +3943,10 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $terminalSerial = isset($paymentMethodData['terminal_serial']) && $paymentMethodData['terminal_serial'] !== null
                         ? (string) $paymentMethodData['terminal_serial']
                         : $sumupDefaultTerminal;
-                    $terminalSerial = trim((string) $terminalSerial);
-                    $terminalSerial = preg_replace('/\s+/', '', $terminalSerial);
+                    $terminalSerial = $normalizeSumUpReaderId($terminalSerial);
 
                     if ($terminalSerial === '') {
-                        throw new RuntimeException('Für SumUp-Zahlungen ist eine Terminal-Seriennummer erforderlich.');
+                        throw new RuntimeException('Für SumUp-Zahlungen ist eine Reader-ID erforderlich.');
                     }
 
                     $grossAmount = isset($document['total_gross']) ? (float) $document['total_gross'] : 0.0;
@@ -3947,7 +3967,6 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                         $currency,
                         $externalId,
                         $description,
-                        null,
                         $sumupApplicationId !== '' ? $sumupApplicationId : null,
                         $sumupAffiliateKey !== '' ? $sumupAffiliateKey : null
                     );
@@ -3963,6 +3982,30 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                             }
                         }
                         $errorMessage .= sprintf(' (HTTP %d)', (int) $response['status']);
+                        if (isset($response['request']) && is_array($response['request'])) {
+                            $requestMeta = $response['request'];
+                            if (isset($requestMeta['url']) && $requestMeta['url'] !== '') {
+                                $errorMessage .= ' Endpoint: ' . (string) $requestMeta['url'];
+                            }
+                            if (isset($requestMeta['reader_id']) && $requestMeta['reader_id'] !== '') {
+                                $errorMessage .= ' Reader-ID: ' . (string) $requestMeta['reader_id'];
+                            }
+                            if (isset($requestMeta['reader_resolution']) && $requestMeta['reader_resolution'] !== '') {
+                                $errorMessage .= ' (Quelle: ' . (string) $requestMeta['reader_resolution'] . ')';
+                            }
+                            if (isset($requestMeta['reader_probe']) && is_array($requestMeta['reader_probe'])) {
+                                $probe = $requestMeta['reader_probe'];
+                                if (isset($probe['status'])) {
+                                    $errorMessage .= sprintf(' Reader-Prüfung: HTTP %d.', (int) $probe['status']);
+                                }
+                            }
+                            if (isset($requestMeta['terminal_probe']) && is_array($requestMeta['terminal_probe'])) {
+                                $probe = $requestMeta['terminal_probe'];
+                                if (isset($probe['status'])) {
+                                    $errorMessage .= sprintf(' Terminal-Prüfung: HTTP %d.', (int) $probe['status']);
+                                }
+                            }
+                        }
                         throw new RuntimeException($errorMessage);
                     }
 
@@ -4005,6 +4048,9 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
                     if (isset($response['raw'])) {
                         $paymentDetails['raw_response'] = (string) $response['raw'];
+                    }
+                    if (isset($response['request']) && is_array($response['request'])) {
+                        $paymentDetails['request'] = $response['request'];
                     }
                 }
 
@@ -12275,7 +12321,7 @@ if ($activeSection === 'reservations') {
             <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
               <div>
                 <h2 class="h5 mb-1">Zahlungsarten &amp; SumUp</h2>
-                <p class="text-muted mb-0">Verfügbare Zahlungsarten festlegen und SumUp-Terminals konfigurieren.</p>
+                <p class="text-muted mb-0">Verfügbare Zahlungsarten festlegen und SumUp-Reader konfigurieren.</p>
               </div>
               <span class="badge text-bg-success">Zahlungen</span>
             </div>
@@ -12321,9 +12367,9 @@ if ($activeSection === 'reservations') {
                             <button type="button" class="btn btn-outline-danger w-100" data-remove-payment-method>Entfernen</button>
                           </div>
                           <div class="col-12 col-md-6" data-payment-terminal-field <?= $methodTypeValue === 'sumup' ? '' : 'style="display: none;"' ?>>
-                            <label class="form-label">Terminal-Seriennummer</label>
-                            <input type="text" class="form-control" name="payment_methods[terminal_serial][]" value="<?= htmlspecialchars($methodTerminalValue) ?>" placeholder="z. B. ABCDEF123456">
-                            <div class="form-text">Erforderlich für Kartenzahlungen über SumUp.</div>
+                            <label class="form-label">Reader-ID</label>
+                            <input type="text" class="form-control" name="payment_methods[terminal_serial][]" value="<?= htmlspecialchars($methodTerminalValue) ?>" placeholder="z. B. RDR123456">
+                            <div class="form-text">Erforderlich: Die von SumUp ausgegebene Reader-ID.</div>
                           </div>
                         </div>
                       </div>
@@ -12353,9 +12399,9 @@ if ($activeSection === 'reservations') {
                           <button type="button" class="btn btn-outline-danger w-100" data-remove-payment-method>Entfernen</button>
                         </div>
                         <div class="col-12 col-md-6" data-payment-terminal-field style="display: none;">
-                          <label class="form-label">Terminal-Seriennummer</label>
-                          <input type="text" class="form-control" name="payment_methods[terminal_serial][]" placeholder="z. B. ABCDEF123456">
-                          <div class="form-text">Erforderlich für Kartenzahlungen über SumUp.</div>
+                          <label class="form-label">Reader-ID</label>
+                          <input type="text" class="form-control" name="payment_methods[terminal_serial][]" placeholder="z. B. RDR123456">
+                          <div class="form-text">Erforderlich: Die von SumUp ausgegebene Reader-ID.</div>
                         </div>
                       </div>
                     </div>
@@ -12372,16 +12418,16 @@ if ($activeSection === 'reservations') {
                     <div class="col-md-8">
                       <label for="sumup-credential" class="form-label">API-Key oder Access Token</label>
                       <textarea class="form-control" id="sumup-credential" name="sumup_credential" rows="2" placeholder="sum_sk_…"><?= htmlspecialchars($sumupCredential) ?></textarea>
-                      <div class="form-text">Der geheime SumUp-Schlüssel wird benötigt, um Beträge an das Terminal zu senden.</div>
+                      <div class="form-text">Der geheime SumUp-Schlüssel wird benötigt, um Beträge an den Reader zu senden.</div>
                     </div>
                     <div class="col-md-4">
                       <label for="sumup-merchant-code" class="form-label">Händlercode (optional)</label>
                       <input type="text" class="form-control" id="sumup-merchant-code" name="sumup_merchant_code" value="<?= htmlspecialchars($sumupMerchantCode) ?>" placeholder="z. B. MCRXXXX">
                     </div>
                     <div class="col-md-4">
-                      <label for="sumup-default-terminal" class="form-label">Standard-Terminal</label>
-                      <input type="text" class="form-control" id="sumup-default-terminal" name="sumup_default_terminal" value="<?= htmlspecialchars($sumupDefaultTerminal) ?>" placeholder="Seriennummer">
-                      <div class="form-text">Wird verwendet, wenn bei einer Zahlungsart kein Terminal hinterlegt ist.</div>
+                      <label for="sumup-default-terminal" class="form-label">Standard-Reader-ID</label>
+                      <input type="text" class="form-control" id="sumup-default-terminal" name="sumup_default_terminal" value="<?= htmlspecialchars($sumupDefaultTerminal) ?>" placeholder="Reader-ID">
+                      <div class="form-text">Wird verwendet, wenn bei einer Zahlungsart keine Reader-ID hinterlegt ist.</div>
                     </div>
                     <div class="col-md-4">
                       <label for="sumup-application-id" class="form-label">Anwendungskennung</label>

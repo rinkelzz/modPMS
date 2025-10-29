@@ -16,7 +16,23 @@ class SumUpClient
 
     private string $terminalSerial;
 
+    private string $configuredReaderIdentifier;
+
     private string $authMethod;
+
+    private ?string $resolvedReaderId = null;
+
+    private ?string $readerResolutionSource = null;
+
+    /**
+     * @var array<string,mixed>|null
+     */
+    private ?array $readerProbe = null;
+
+    /**
+     * @var array<string,mixed>|null
+     */
+    private ?array $terminalProbe = null;
 
     public function __construct(
         string $credential,
@@ -34,6 +50,9 @@ class SumUpClient
         $credential = trim($credential);
         $merchantCode = trim($merchantCode);
         $terminalSerial = trim($terminalSerial);
+        $terminalSerial = $this->stripWhitespace($terminalSerial);
+        $configuredIdentifier = $terminalSerial;
+        $terminalSerial = $this->normaliseReaderIdentifier($terminalSerial);
 
         if ($credential === '') {
             throw new RuntimeException('Missing SumUp credentials.');
@@ -50,6 +69,7 @@ class SumUpClient
         $this->credential = $credential;
         $this->merchantCode = $merchantCode;
         $this->terminalSerial = $terminalSerial;
+        $this->configuredReaderIdentifier = $configuredIdentifier;
         $this->authMethod = $authMethod;
     }
 
@@ -61,7 +81,6 @@ class SumUpClient
         string $currency = 'EUR',
         ?string $externalId = null,
         ?string $description = null,
-        ?float $tipAmount = null,
         ?string $affiliateAppId = null,
         ?string $affiliateKey = null
     ): array {
@@ -71,27 +90,14 @@ class SumUpClient
 
         $currency = strtoupper($currency);
         $minorUnit = $this->resolveMinorUnit($currency);
-        $totalAmount = $amount;
-
-        if ($tipAmount !== null && $tipAmount > 0) {
-            $totalAmount += $tipAmount;
-        }
-
         $payload = [
             'total_amount' => [
-                'value' => $this->toMinorUnits($totalAmount, $minorUnit),
+                'value' => $this->toMinorUnits($amount, $minorUnit),
                 'minor_unit' => $minorUnit,
                 'currency' => $currency,
             ],
+            'payment_type' => 'CARD_PRESENT',
         ];
-
-        if ($tipAmount !== null && $tipAmount > 0) {
-            $payload['tip_amount'] = [
-                'value' => $this->toMinorUnits($tipAmount, $minorUnit),
-                'minor_unit' => $minorUnit,
-                'currency' => $currency,
-            ];
-        }
 
         if ($externalId !== null && $externalId !== '') {
             $payload['checkout_reference'] = $externalId;
@@ -118,14 +124,7 @@ class SumUpClient
             $payload['affiliate'] = $affiliatePayload;
         }
 
-        $endpoint = sprintf(
-            '%s/merchants/%s/readers/%s/checkout',
-            self::API_BASE_URL,
-            rawurlencode($this->merchantCode),
-            rawurlencode($this->terminalSerial)
-        );
-
-        return $this->request('POST', $endpoint, $payload);
+        return $this->sendCheckoutRequest($payload);
     }
 
     /**
@@ -199,6 +198,7 @@ class SumUpClient
                 'auth_method' => $this->authMethod,
                 'merchant_code' => $this->merchantCode,
                 'terminal_serial' => $this->terminalSerial,
+                'configured_reader_identifier' => $this->configuredReaderIdentifier,
             ],
         ];
     }
@@ -206,6 +206,371 @@ class SumUpClient
     private function buildAuthorizationHeader(): string
     {
         return 'Bearer ' . $this->credential;
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     * @return array{status:int, body:array<string,mixed>, raw:string, request:array<string,mixed>}
+     */
+    private function sendCheckoutRequest(array $payload): array
+    {
+        $resolution = $this->resolveReaderIdentifier();
+
+        $endpoint = sprintf(
+            '%s/merchants/%s/readers/%s/checkout',
+            self::API_BASE_URL,
+            rawurlencode($this->merchantCode),
+            rawurlencode($resolution['reader_id'])
+        );
+
+        $response = $this->request('POST', $endpoint, $payload);
+
+        $response['request']['reader_id'] = $resolution['reader_id'];
+        $response['request']['reader_resolution'] = $resolution['source'];
+
+        if ($resolution['reader_probe'] !== null) {
+            $response['request']['reader_probe'] = $this->summarizeProbe($resolution['reader_probe']);
+        }
+
+        if ($resolution['terminal_probe'] !== null) {
+            $response['request']['terminal_probe'] = $this->summarizeProbe($resolution['terminal_probe']);
+        }
+
+        return $response;
+    }
+
+    /**
+     * @return array{reader_id:string, source:string, reader_probe:array<string,mixed>|null, terminal_probe:array<string,mixed>|null}
+     */
+    private function resolveReaderIdentifier(): array
+    {
+        if ($this->resolvedReaderId !== null) {
+            return [
+                'reader_id' => $this->resolvedReaderId,
+                'source' => $this->readerResolutionSource ?? 'configured',
+                'reader_probe' => $this->readerProbe,
+                'terminal_probe' => $this->terminalProbe,
+            ];
+        }
+
+        $readerCandidates = $this->buildReaderIdentifierCandidates();
+        $readerProbe = null;
+
+        foreach ($readerCandidates as $candidate) {
+            $candidateValue = $candidate['value'];
+            $candidateSource = $candidate['source'];
+
+            $readerEndpoint = sprintf(
+                '%s/merchants/%s/readers/%s',
+                self::API_BASE_URL,
+                rawurlencode($this->merchantCode),
+                rawurlencode($candidateValue)
+            );
+
+            $probe = $this->request('GET', $readerEndpoint);
+            $this->readerProbe = $probe;
+            $readerProbe = $probe;
+
+            if ($this->isSuccessfulStatus($probe['status'])) {
+                $this->resolvedReaderId = $this->normaliseReaderIdentifier($candidateValue);
+                $this->readerResolutionSource = $candidateSource;
+
+                return [
+                    'reader_id' => $this->resolvedReaderId,
+                    'source' => $this->readerResolutionSource,
+                    'reader_probe' => $this->readerProbe,
+                    'terminal_probe' => $this->terminalProbe,
+                ];
+            }
+
+            if (!in_array($probe['status'], [400, 404], true)) {
+                throw new RuntimeException(
+                    $this->formatReaderVerificationError($candidateValue, $probe, null)
+                );
+            }
+        }
+
+        $terminalProbe = null;
+        $terminalCandidates = $this->buildTerminalIdentifierCandidates();
+
+        foreach ($terminalCandidates as $terminalCandidate) {
+            $terminalEndpoint = sprintf(
+                '%s/merchants/%s/terminals/%s',
+                self::API_BASE_URL,
+                rawurlencode($this->merchantCode),
+                rawurlencode($terminalCandidate)
+            );
+
+            $probe = $this->request('GET', $terminalEndpoint);
+            $this->terminalProbe = $probe;
+            $terminalProbe = $probe;
+
+            if ($this->isSuccessfulStatus($probe['status'])) {
+                $resolvedReaderId = $this->extractReaderIdFromTerminalResponse($probe['body'] ?? null);
+
+                if ($resolvedReaderId !== null) {
+                    $this->resolvedReaderId = $resolvedReaderId;
+                    $this->readerResolutionSource = 'terminal_lookup';
+
+                    return [
+                        'reader_id' => $this->resolvedReaderId,
+                        'source' => $this->readerResolutionSource,
+                        'reader_probe' => $this->readerProbe,
+                        'terminal_probe' => $this->terminalProbe,
+                    ];
+                }
+            }
+
+            if (!in_array($probe['status'], [400, 404], true)) {
+                break;
+            }
+        }
+
+        throw new RuntimeException(
+            $this->formatReaderVerificationError(
+                $this->configuredReaderIdentifier,
+                $readerProbe,
+                $terminalProbe
+            )
+        );
+    }
+
+    /**
+     * @param mixed $response
+     */
+    private function extractReaderIdFromTerminalResponse($response): ?string
+    {
+        if (!is_array($response)) {
+            return null;
+        }
+
+        $candidates = [];
+
+        if (isset($response['reader_id'])) {
+            $candidates[] = $response['reader_id'];
+        }
+
+        if (isset($response['readerId'])) {
+            $candidates[] = $response['readerId'];
+        }
+
+        if (isset($response['reader']) && is_array($response['reader'])) {
+            $readerData = $response['reader'];
+            if (isset($readerData['id'])) {
+                $candidates[] = $readerData['id'];
+            }
+        }
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate)) {
+                $trimmed = trim($candidate);
+                if ($trimmed !== '') {
+                    return $this->normaliseReaderIdentifier($trimmed);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function normaliseReaderIdentifier(string $identifier): string
+    {
+        if ($identifier === '') {
+            return $identifier;
+        }
+
+        if (preg_match('/^rdr_[0-9a-z]{26}$/i', $identifier) === 1) {
+            return 'rdr_' . strtoupper(substr($identifier, 4));
+        }
+
+        return $identifier;
+    }
+
+    private function stripWhitespace(string $value): string
+    {
+        if ($value === '') {
+            return '';
+        }
+
+        $stripped = preg_replace('/\s+/', '', $value);
+
+        return $stripped !== null ? $stripped : '';
+    }
+
+    /**
+     * @return array<int,array{value:string,source:string}>
+     */
+    private function buildReaderIdentifierCandidates(): array
+    {
+        $candidates = [];
+        $seen = [];
+
+        $append = static function (string $value, string $source) use (&$candidates, &$seen): void {
+            if ($value === '') {
+                return;
+            }
+
+            if (isset($seen[$value])) {
+                return;
+            }
+
+            $seen[$value] = true;
+            $candidates[] = ['value' => $value, 'source' => $source];
+        };
+
+        $configured = $this->configuredReaderIdentifier;
+        $normalized = $this->terminalSerial;
+
+        $append($configured, 'configured');
+        if ($normalized !== $configured) {
+            $append($normalized, 'normalized');
+        }
+
+        $prefixNormalized = preg_replace('/^rdr_/i', 'rdr_', $configured, 1);
+        if (is_string($prefixNormalized)) {
+            $append($prefixNormalized, 'prefix_normalized');
+        }
+
+        $typeIdNormalized = $this->normaliseReaderIdentifier($configured);
+        if ($typeIdNormalized !== '') {
+            $append($typeIdNormalized, 'typeid_normalized');
+        }
+
+        $uppercaseConfigured = strtoupper($configured);
+        if ($uppercaseConfigured !== $configured) {
+            $append($uppercaseConfigured, 'uppercase');
+        }
+
+        $uppercaseNormalized = strtoupper($normalized);
+        if ($uppercaseNormalized !== '' && $uppercaseNormalized !== $uppercaseConfigured) {
+            $append($uppercaseNormalized, 'uppercase_normalized');
+        }
+
+        $lowercaseConfigured = strtolower($configured);
+        if ($lowercaseConfigured !== $configured) {
+            $append($lowercaseConfigured, 'lowercase');
+        }
+
+        return $candidates;
+    }
+
+    /**
+     * @return string[]
+     */
+    private function buildTerminalIdentifierCandidates(): array
+    {
+        $candidates = [];
+        $seen = [];
+
+        $append = static function (string $value) use (&$candidates, &$seen): void {
+            if ($value === '') {
+                return;
+            }
+
+            if (isset($seen[$value])) {
+                return;
+            }
+
+            $seen[$value] = true;
+            $candidates[] = $value;
+        };
+
+        $configured = $this->configuredReaderIdentifier;
+        $normalized = $this->terminalSerial;
+
+        $append($configured);
+        $append($normalized);
+        $append($this->normaliseReaderIdentifier($configured));
+        $append($this->normaliseReaderIdentifier($normalized));
+        $append(strtoupper($configured));
+        $append(strtoupper($normalized));
+        $append(strtolower($configured));
+        $append(strtolower($normalized));
+
+        return $candidates;
+    }
+
+    /**
+     * @param array<string,mixed> $probe
+     * @return array<string,mixed>
+     */
+    private function summarizeProbe(array $probe): array
+    {
+        $summary = [
+            'status' => (int) ($probe['status'] ?? 0),
+        ];
+
+        if (isset($probe['request']['url'])) {
+            $summary['url'] = (string) $probe['request']['url'];
+        }
+
+        if (isset($probe['body']) && is_array($probe['body'])) {
+            $summary['body'] = $probe['body'];
+        } elseif (isset($probe['raw'])) {
+            $summary['raw'] = (string) $probe['raw'];
+        }
+
+        return $summary;
+    }
+
+    private function isSuccessfulStatus(int $status): bool
+    {
+        return $status >= 200 && $status < 300;
+    }
+
+    /**
+     * @param array<string,mixed>|null $readerProbe
+     * @param array<string,mixed>|null $terminalProbe
+     */
+    private function formatReaderVerificationError(
+        string $configuredIdentifier,
+        ?array $readerProbe,
+        ?array $terminalProbe
+    ): string {
+        $message = sprintf(
+            'SumUp-Reader konnte nicht verifiziert werden. Bitte prüfen Sie Händlercode und Reader-ID "%s".',
+            $configuredIdentifier
+        );
+
+        if ($readerProbe !== null) {
+            $message .= sprintf(
+                ' Reader-Endpunkt lieferte HTTP %d.',
+                (int) ($readerProbe['status'] ?? 0)
+            );
+
+            $readerBody = $readerProbe['body'] ?? [];
+            if (is_array($readerBody)) {
+                $detail = $readerBody['message']
+                    ?? $readerBody['error_message']
+                    ?? $readerBody['error_description']
+                    ?? null;
+
+                if (is_string($detail) && $detail !== '') {
+                    $message .= ' ' . $detail;
+                }
+            }
+        }
+
+        if ($terminalProbe !== null) {
+            $message .= sprintf(
+                ' Terminal-Abfrage lieferte HTTP %d.',
+                (int) ($terminalProbe['status'] ?? 0)
+            );
+
+            $terminalBody = $terminalProbe['body'] ?? [];
+            if (is_array($terminalBody)) {
+                $detail = $terminalBody['message']
+                    ?? $terminalBody['error_message']
+                    ?? $terminalBody['error_description']
+                    ?? null;
+
+                if (is_string($detail) && $detail !== '') {
+                    $message .= ' ' . $detail;
+                }
+            }
+        }
+
+        return $message;
     }
 
     private function resolveMinorUnit(string $currency): int
