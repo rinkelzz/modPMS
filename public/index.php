@@ -15756,22 +15756,40 @@ if ($activeSection === 'reservations') {
 
           function sanitizeDateDisplayInput(input) {
             if (!input || typeof input.value !== 'string') {
-              return;
+              return '';
             }
 
             var previousValue = input.value;
-            var sanitized = previousValue.replace(/[^0-9.\/]/g, '').replace(/[\/]/g, '.');
+            var digits = previousValue.replace(/\D/g, '').slice(0, 8);
+            var parts = [];
+
+            if (digits.length > 0) {
+              parts.push(digits.slice(0, Math.min(2, digits.length)));
+            }
+
+            if (digits.length > 2) {
+              parts.push(digits.slice(2, Math.min(4, digits.length)));
+            }
+
+            if (digits.length > 4) {
+              parts.push(digits.slice(4, Math.min(8, digits.length)));
+            }
+
+            var sanitized = parts.join('.');
 
             if (sanitized !== previousValue) {
               input.value = sanitized;
               if (typeof input.selectionStart === 'number' && typeof input.selectionEnd === 'number') {
                 try {
-                  input.setSelectionRange(sanitized.length, sanitized.length);
+                  var caret = sanitized.length;
+                  input.setSelectionRange(caret, caret);
                 } catch (error) {
                   // ignore selection errors on unsupported browsers
                 }
               }
             }
+
+            return sanitized;
           }
 
           function bindItemDateBehaviour(item) {
@@ -15845,8 +15863,8 @@ if ($activeSection === 'reservations') {
 
             if (arrivalPair.display) {
               arrivalPair.display.addEventListener('input', function () {
-                sanitizeDateDisplayInput(arrivalPair.display);
-                if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(arrivalPair.display.value.trim())) {
+                var sanitized = sanitizeDateDisplayInput(arrivalPair.display);
+                if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(sanitized.trim())) {
                   sync(false);
                 }
               });
@@ -15858,8 +15876,8 @@ if ($activeSection === 'reservations') {
 
             if (departurePair.display) {
               departurePair.display.addEventListener('input', function () {
-                sanitizeDateDisplayInput(departurePair.display);
-                if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(departurePair.display.value.trim())) {
+                var sanitized = sanitizeDateDisplayInput(departurePair.display);
+                if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(sanitized.trim())) {
                   sync(false);
                 }
               });
