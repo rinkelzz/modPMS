@@ -14559,14 +14559,48 @@ if ($activeSection === 'reservations') {
                           <input type="number" class="form-control" name="reservation_categories[<?= $categoryIndex ?>][occupancy]" min="1" value="<?= htmlspecialchars($occupancyValue) ?>" <?= $pdo === null ? 'disabled' : 'required' ?>>
                           <div class="form-text">Gäste für dieses Zimmer.</div>
                         </div>
+                        <?php
+                          $roomArrivalDisplay = $roomArrivalValue !== '' ? ($formatDateLabel($roomArrivalValue) ?? '') : '';
+                          $roomDepartureDisplay = $roomDepartureValue !== '' ? ($formatDateLabel($roomDepartureValue) ?? '') : '';
+                        ?>
                         <div class="col-12 col-lg-4 mt-2">
                           <label class="form-label">Zimmer-Anreise</label>
-                          <input type="date" class="form-control reservation-item-arrival" name="reservation_categories[<?= $categoryIndex ?>][arrival_date]" value="<?= htmlspecialchars($roomArrivalValue) ?>" min="<?= htmlspecialchars($todayDateValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                          <input
+                            type="text"
+                            class="form-control reservation-date-display reservation-item-arrival-display"
+                            value="<?= htmlspecialchars($roomArrivalDisplay) ?>"
+                            placeholder="tt.mm.jjjj"
+                            autocomplete="off"
+                            inputmode="numeric"
+                            <?= $pdo === null ? 'disabled' : '' ?>
+                          >
+                          <input
+                            type="hidden"
+                            class="reservation-date-value reservation-item-arrival-value"
+                            name="reservation_categories[<?= $categoryIndex ?>][arrival_date]"
+                            value="<?= htmlspecialchars($roomArrivalValue) ?>"
+                            <?= $pdo === null ? 'disabled' : '' ?>
+                          >
                           <div class="form-text">Standard ist die Reservierungs-Anreise.</div>
                         </div>
                         <div class="col-12 col-lg-4 mt-2">
                           <label class="form-label">Zimmer-Abreise</label>
-                          <input type="date" class="form-control reservation-item-departure" name="reservation_categories[<?= $categoryIndex ?>][departure_date]" value="<?= htmlspecialchars($roomDepartureValue) ?>" min="<?= htmlspecialchars($departureMinValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                          <input
+                            type="text"
+                            class="form-control reservation-date-display reservation-item-departure-display"
+                            value="<?= htmlspecialchars($roomDepartureDisplay) ?>"
+                            placeholder="tt.mm.jjjj"
+                            autocomplete="off"
+                            inputmode="numeric"
+                            <?= $pdo === null ? 'disabled' : '' ?>
+                          >
+                          <input
+                            type="hidden"
+                            class="reservation-date-value reservation-item-departure-value"
+                            name="reservation_categories[<?= $categoryIndex ?>][departure_date]"
+                            value="<?= htmlspecialchars($roomDepartureValue) ?>"
+                            <?= $pdo === null ? 'disabled' : '' ?>
+                          >
                           <div class="form-text">Standard ist die Reservierungs-Abreise.</div>
                         </div>
                         <div class="col-12 col-xl-4 mt-2">
@@ -14705,14 +14739,52 @@ if ($activeSection === 'reservations') {
                       <input type="number" class="form-control" name="reservation_categories[__INDEX__][occupancy]" min="1" value="1" <?= $pdo === null ? 'disabled' : 'required' ?>>
                       <div class="form-text">Gäste für dieses Zimmer.</div>
                     </div>
+                    <?php
+                      $defaultArrivalDisplay = $reservationFormData['arrival_date'] !== ''
+                          ? ($formatDateLabel($reservationFormData['arrival_date']) ?? '')
+                          : '';
+                      $defaultDepartureDisplay = $reservationFormData['departure_date'] !== ''
+                          ? ($formatDateLabel($reservationFormData['departure_date']) ?? '')
+                          : '';
+                    ?>
                     <div class="col-12 col-lg-4 mt-2">
                       <label class="form-label">Zimmer-Anreise</label>
-                      <input type="date" class="form-control reservation-item-arrival" name="reservation_categories[__INDEX__][arrival_date]" value="<?= htmlspecialchars((string) $reservationFormData['arrival_date']) ?>" min="<?= htmlspecialchars($todayDateValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <input
+                        type="text"
+                        class="form-control reservation-date-display reservation-item-arrival-display"
+                        value="<?= htmlspecialchars($defaultArrivalDisplay) ?>"
+                        placeholder="tt.mm.jjjj"
+                        autocomplete="off"
+                        inputmode="numeric"
+                        <?= $pdo === null ? 'disabled' : '' ?>
+                      >
+                      <input
+                        type="hidden"
+                        class="reservation-date-value reservation-item-arrival-value"
+                        name="reservation_categories[__INDEX__][arrival_date]"
+                        value="<?= htmlspecialchars((string) $reservationFormData['arrival_date']) ?>"
+                        <?= $pdo === null ? 'disabled' : '' ?>
+                      >
                       <div class="form-text">Standard ist die Reservierungs-Anreise.</div>
                     </div>
                     <div class="col-12 col-lg-4 mt-2">
                       <label class="form-label">Zimmer-Abreise</label>
-                      <input type="date" class="form-control reservation-item-departure" name="reservation_categories[__INDEX__][departure_date]" value="<?= htmlspecialchars((string) $reservationFormData['departure_date']) ?>" min="<?= htmlspecialchars($todayDateValue) ?>" <?= $pdo === null ? 'disabled' : '' ?>>
+                      <input
+                        type="text"
+                        class="form-control reservation-date-display reservation-item-departure-display"
+                        value="<?= htmlspecialchars($defaultDepartureDisplay) ?>"
+                        placeholder="tt.mm.jjjj"
+                        autocomplete="off"
+                        inputmode="numeric"
+                        <?= $pdo === null ? 'disabled' : '' ?>
+                      >
+                      <input
+                        type="hidden"
+                        class="reservation-date-value reservation-item-departure-value"
+                        name="reservation_categories[__INDEX__][departure_date]"
+                        value="<?= htmlspecialchars((string) $reservationFormData['departure_date']) ?>"
+                        <?= $pdo === null ? 'disabled' : '' ?>
+                      >
                       <div class="form-text">Standard ist die Reservierungs-Abreise.</div>
                     </div>
                     <div class="col-12 col-xl-4 mt-2">
@@ -15298,6 +15370,106 @@ if ($activeSection === 'reservations') {
             return value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           }
 
+          function getDateFieldPair(item, type) {
+            if (!item) {
+              return { display: null, hidden: null };
+            }
+
+            return {
+              display: item.querySelector('.reservation-item-' + type + '-display'),
+              hidden: item.querySelector('.reservation-item-' + type + '-value')
+            };
+          }
+
+          function setIsoForPair(pair, iso) {
+            if (!pair) {
+              return '';
+            }
+
+            var normalized = normalizeDateString(typeof iso === 'string' ? iso : '');
+
+            if (pair.hidden) {
+              pair.hidden.value = normalized;
+            }
+
+            if (pair.display) {
+              pair.display.value = normalized ? formatDateDisplay(normalized) : '';
+            }
+
+            return normalized;
+          }
+
+          function getIsoFromPair(pair) {
+            if (!pair) {
+              return '';
+            }
+
+            var displayValue = pair.display && typeof pair.display.value === 'string'
+              ? pair.display.value.trim()
+              : '';
+            var hiddenValue = pair.hidden && typeof pair.hidden.value === 'string'
+              ? pair.hidden.value.trim()
+              : '';
+
+            var iso = '';
+            if (displayValue !== '') {
+              iso = normalizeDateString(displayValue);
+            } else if (hiddenValue !== '') {
+              iso = normalizeDateString(hiddenValue);
+            }
+
+            if (pair.hidden) {
+              pair.hidden.value = iso;
+            }
+
+            if (pair.display) {
+              pair.display.value = iso ? formatDateDisplay(iso) : '';
+            }
+
+            return iso;
+          }
+
+          function clampArrivalIso(iso) {
+            var normalized = normalizeDateString(typeof iso === 'string' ? iso : '');
+            if (!normalized) {
+              return '';
+            }
+
+            var dateObj = parseISODate(normalized);
+            if (!(dateObj instanceof Date)) {
+              return '';
+            }
+
+            return normalized;
+          }
+
+          function ensureDepartureAfter(arrivalIso, departureIso) {
+            var normalizedArrival = normalizeDateString(typeof arrivalIso === 'string' ? arrivalIso : '');
+            var normalizedDeparture = normalizeDateString(typeof departureIso === 'string' ? departureIso : '');
+
+            if (!normalizedArrival) {
+              return normalizedDeparture;
+            }
+
+            var arrivalDate = parseISODate(normalizedArrival);
+            if (!(arrivalDate instanceof Date)) {
+              return normalizedDeparture;
+            }
+
+            if (!normalizedDeparture) {
+              var minimumDeparture = addDays(arrivalDate, 1);
+              return minimumDeparture instanceof Date ? formatISODate(minimumDeparture) : '';
+            }
+
+            var departureDate = parseISODate(normalizedDeparture);
+            if (!(departureDate instanceof Date) || !isBefore(arrivalDate, departureDate)) {
+              var nextDay = addDays(arrivalDate, 1);
+              return nextDay instanceof Date ? formatISODate(nextDay) : '';
+            }
+
+            return normalizedDeparture;
+          }
+
           function triggerGrandTotalUpdate() {
             document.dispatchEvent(new CustomEvent('reservation:grand-total-recalculate'));
           }
@@ -15367,69 +15539,27 @@ if ($activeSection === 'reservations') {
               return;
             }
 
-            var arrivalField = item.querySelector('.reservation-item-arrival');
-            var departureField = item.querySelector('.reservation-item-departure');
+            var arrivalPair = getDateFieldPair(item, 'arrival');
+            var departurePair = getDateFieldPair(item, 'departure');
 
-            var arrivalDateObj = null;
-            var normalizedArrivalValue = '';
-
-            if (arrivalField && arrivalField.value) {
-              normalizedArrivalValue = normalizeDateString(arrivalField.value);
-              if (arrivalField.value !== normalizedArrivalValue) {
-                arrivalField.value = normalizedArrivalValue;
-              }
-
-              if (normalizedArrivalValue) {
-                arrivalDateObj = parseISODate(normalizedArrivalValue);
-              }
+            var arrivalIso = getIsoFromPair(arrivalPair);
+            if (arrivalIso) {
+              arrivalIso = clampArrivalIso(arrivalIso);
             }
 
-            if (arrivalField) {
-              if (!arrivalDateObj || !isBefore(arrivalDateObj, todayUtcDate)) {
-                arrivalField.setAttribute('min', todayIsoString);
-              } else {
-                arrivalField.removeAttribute('min');
+            var departureIso = getIsoFromPair(departurePair);
+            if (arrivalIso) {
+              departureIso = ensureDepartureAfter(arrivalIso, departureIso);
+            } else if (departureIso) {
+              var departureDate = parseISODate(departureIso);
+              if (departureDate instanceof Date && isBefore(departureDate, todayUtcDate)) {
+                var minDeparture = addDays(todayUtcDate, 1);
+                departureIso = minDeparture instanceof Date ? formatISODate(minDeparture) : '';
               }
             }
 
-            if (!departureField) {
-              return;
-            }
-
-            var minDepartureDate = new Date(todayUtcDate.getTime());
-            if (arrivalDateObj instanceof Date) {
-              var nextDay = addDays(arrivalDateObj, 1);
-              if (nextDay instanceof Date && isBefore(minDepartureDate, nextDay)) {
-                minDepartureDate = nextDay;
-              }
-            }
-
-            var departureMinValue = formatISODate(minDepartureDate);
-            if (departureMinValue) {
-              departureField.setAttribute('min', departureMinValue);
-            } else {
-              departureField.removeAttribute('min');
-            }
-
-            var departureDateObj = null;
-            if (departureField && departureField.value) {
-              var normalizedDepartureValue = normalizeDateString(departureField.value);
-              if (departureField.value !== normalizedDepartureValue) {
-                departureField.value = normalizedDepartureValue;
-              }
-
-              if (normalizedDepartureValue) {
-                departureDateObj = parseISODate(normalizedDepartureValue);
-              }
-            }
-
-            if (departureDateObj instanceof Date) {
-              if (arrivalDateObj instanceof Date && isOnOrBefore(departureDateObj, arrivalDateObj)) {
-                departureField.value = departureMinValue;
-              } else if (isBefore(departureDateObj, minDepartureDate)) {
-                departureField.value = departureMinValue;
-              }
-            }
+            setIsoForPair(arrivalPair, arrivalIso);
+            setIsoForPair(departurePair, departureIso);
           }
 
           function updateRoomOptions(item) {
@@ -15439,26 +15569,20 @@ if ($activeSection === 'reservations') {
 
             var categorySelect = item.querySelector('select[name$="[category_id]"]');
             var roomSelect = item.querySelector('.reservation-room-select');
-            var arrivalField = item.querySelector('.reservation-item-arrival');
-            var departureField = item.querySelector('.reservation-item-departure');
+            var arrivalPair = getDateFieldPair(item, 'arrival');
+            var departurePair = getDateFieldPair(item, 'departure');
 
-            if (!categorySelect || !roomSelect || !arrivalField || !departureField) {
+            if (!categorySelect || !roomSelect || !arrivalPair.hidden || !departurePair.hidden) {
               return;
             }
 
             var categoryId = parseInt(categorySelect.value || '', 10);
-            var arrivalRawValue = arrivalField.value || '';
-            var departureRawValue = departureField.value || '';
-            var arrivalValue = normalizeDateString(arrivalRawValue);
-            var departureValue = normalizeDateString(departureRawValue);
+            var arrivalValue = clampArrivalIso(getIsoFromPair(arrivalPair));
+            var departureValue = ensureDepartureAfter(arrivalValue, getIsoFromPair(departurePair));
 
-            if (arrivalField.value !== arrivalValue) {
-              arrivalField.value = arrivalValue;
-            }
+            setIsoForPair(arrivalPair, arrivalValue);
+            setIsoForPair(departurePair, departureValue);
 
-            if (departureField.value !== departureValue) {
-              departureField.value = departureValue;
-            }
             var currentValue = roomSelect.value || '';
             var currentLabel = '';
             if (currentValue) {
@@ -15488,7 +15612,7 @@ if ($activeSection === 'reservations') {
 
             var params = new URLSearchParams({
               ajax: 'available_rooms',
-              categoryId: categoryId,
+              categoryId: String(categoryId),
               arrivalDate: arrivalValue,
               departureDate: departureValue
             });
@@ -15553,50 +15677,53 @@ if ($activeSection === 'reservations') {
               return;
             }
 
-            var arrivalField = item.querySelector('.reservation-item-arrival');
-            var departureField = item.querySelector('.reservation-item-departure');
+            var arrivalPair = getDateFieldPair(item, 'arrival');
+            var departurePair = getDateFieldPair(item, 'departure');
 
-            function sync() {
+            function sync(triggerEvent) {
+              var arrivalIso = clampArrivalIso(getIsoFromPair(arrivalPair));
+              var departureIso = ensureDepartureAfter(arrivalIso, getIsoFromPair(departurePair));
+
+              setIsoForPair(arrivalPair, arrivalIso);
+              setIsoForPair(departurePair, departureIso);
+
               updateItemDateLimits(item);
               updateRoomOptions(item);
               recalculateArticlesForItem(item);
-            }
 
-            if (arrivalField) {
-              arrivalField.addEventListener('change', function () {
-                var normalizedArrival = normalizeDateString(arrivalField.value || '');
-                if (arrivalField.value !== normalizedArrival) {
-                  arrivalField.value = normalizedArrival;
-                }
-
-                var parsedArrival = normalizedArrival ? parseISODate(normalizedArrival) : null;
-                if (parsedArrival instanceof Date && isBefore(parsedArrival, todayUtcDate)) {
-                  arrivalField.value = todayIsoString;
-                }
-                sync();
+              if (triggerEvent) {
                 document.dispatchEvent(new CustomEvent('reservation:categories-changed'));
-              });
+              }
             }
 
-            if (departureField) {
-              departureField.addEventListener('change', function () {
-                var normalizedDeparture = normalizeDateString(departureField.value || '');
-                if (departureField.value !== normalizedDeparture) {
-                  departureField.value = normalizedDeparture;
-                }
-                sync();
-                document.dispatchEvent(new CustomEvent('reservation:categories-changed'));
-              });
+            if (arrivalPair.display) {
+              arrivalPair.display.addEventListener('change', function () { sync(true); });
+              arrivalPair.display.addEventListener('blur', function () { sync(true); });
             }
 
-            sync();
+            if (departurePair.display) {
+              departurePair.display.addEventListener('change', function () { sync(true); });
+              departurePair.display.addEventListener('blur', function () { sync(true); });
+            }
+
+            setIsoForPair(arrivalPair, arrivalPair.hidden ? arrivalPair.hidden.value : '');
+            setIsoForPair(departurePair, departurePair.hidden ? departurePair.hidden.value : '');
+
+            sync(false);
           }
 
           function getItemNights(item) {
-            var arrivalField = item.querySelector('.reservation-item-arrival');
-            var departureField = item.querySelector('.reservation-item-departure');
-            var arrival = arrivalField && arrivalField.value ? parseISODate(arrivalField.value) : null;
-            var departure = departureField && departureField.value ? parseISODate(departureField.value) : null;
+            var arrivalPair = getDateFieldPair(item, 'arrival');
+            var departurePair = getDateFieldPair(item, 'departure');
+
+            var arrivalIso = clampArrivalIso(getIsoFromPair(arrivalPair));
+            var departureIso = ensureDepartureAfter(arrivalIso, getIsoFromPair(departurePair));
+
+            setIsoForPair(arrivalPair, arrivalIso);
+            setIsoForPair(departurePair, departureIso);
+
+            var arrival = arrivalIso ? parseISODate(arrivalIso) : null;
+            var departure = departureIso ? parseISODate(departureIso) : null;
 
             if (!(arrival instanceof Date) || !(departure instanceof Date)) {
               return 0;
@@ -15976,6 +16103,20 @@ if ($activeSection === 'reservations') {
             });
           updateRemoveButtons();
 
+          var reservationForm = document.getElementById('reservation-form');
+          if (reservationForm) {
+            reservationForm.addEventListener('submit', function () {
+              container.querySelectorAll('.reservation-category-item').forEach(function (item) {
+                var arrivalPair = getDateFieldPair(item, 'arrival');
+                var departurePair = getDateFieldPair(item, 'departure');
+                var arrivalIso = clampArrivalIso(getIsoFromPair(arrivalPair));
+                var departureIso = ensureDepartureAfter(arrivalIso, getIsoFromPair(departurePair));
+                setIsoForPair(arrivalPair, arrivalIso);
+                setIsoForPair(departurePair, departureIso);
+              });
+            });
+          }
+
           document.addEventListener('reservation:master-dates-changed', function () {
             container.querySelectorAll('.reservation-category-item').forEach(function (item) {
               updateItemDateLimits(item);
@@ -16065,36 +16206,41 @@ if ($activeSection === 'reservations') {
           }
 
           function collectItemPayload(item) {
+            if (!item) {
+              return null;
+            }
+
             var categorySelect = item.querySelector('select[name$="[category_id]"]');
+            var roomSelect = item.querySelector('.reservation-room-select');
             var rateSelect = item.querySelector('.reservation-item-rate');
             var quantityInput = item.querySelector('input[name$="[room_quantity]"]');
-            var arrivalField = item.querySelector('.reservation-item-arrival');
-            var departureField = item.querySelector('.reservation-item-departure');
+            var arrivalPair = getDateFieldPair(item, 'arrival');
+            var departurePair = getDateFieldPair(item, 'departure');
 
-            if (!categorySelect || !rateSelect || !quantityInput || !arrivalField || !departureField) {
+            if (!categorySelect || !rateSelect || !arrivalPair.hidden || !departurePair.hidden) {
               return null;
             }
 
             var categoryId = parseInt(categorySelect.value || '', 10);
             var rateId = parseInt(rateSelect.value || '', 10);
-            var quantity = parseInt(quantityInput.value || '1', 10);
-            var arrivalDate = normalizeDateString(arrivalField.value || '');
-            var departureDate = normalizeDateString(departureField.value || '');
+            var quantity = parseInt(quantityInput && quantityInput.value ? quantityInput.value : '1', 10);
 
-            if (arrivalField.value !== arrivalDate) {
-              arrivalField.value = arrivalDate;
+            if (!Number.isFinite(quantity) || quantity <= 0) {
+              quantity = 1;
             }
 
-            if (departureField.value !== departureDate) {
-              departureField.value = departureDate;
+            if (roomSelect && roomSelect.value !== '') {
+              quantity = 1;
             }
+
+            var arrivalDate = clampArrivalIso(getIsoFromPair(arrivalPair));
+            var departureDate = ensureDepartureAfter(arrivalDate, getIsoFromPair(departurePair));
+
+            setIsoForPair(arrivalPair, arrivalDate);
+            setIsoForPair(departurePair, departureDate);
 
             if (Number.isNaN(categoryId) || categoryId <= 0 || Number.isNaN(rateId) || rateId <= 0 || !arrivalDate || !departureDate) {
               return null;
-            }
-
-            if (Number.isNaN(quantity) || quantity <= 0) {
-              quantity = 1;
             }
 
             return {
@@ -16189,7 +16335,7 @@ if ($activeSection === 'reservations') {
               return;
             }
 
-            if (target.matches('.reservation-item-rate') || target.matches('.reservation-item-arrival') || target.matches('.reservation-item-departure') || target.matches('input[name$="[room_quantity]"]')) {
+            if (target.matches('.reservation-item-rate') || target.matches('.reservation-item-arrival-display') || target.matches('.reservation-item-departure-display') || target.matches('input[name$="[room_quantity]"]')) {
               var item = target.closest('.reservation-category-item');
               if (item) {
                 setItemFeedback(item, 'Berechnet die Preise für diese Zeile basierend auf Rate und Zeitraum.', 'muted');
