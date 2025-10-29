@@ -1204,13 +1204,34 @@ $guestSalutations = ['Herr', 'Frau', 'Divers'];
 $guestPurposeOptions = ['privat', 'geschäftlich'];
 $userRoles = ['admin', 'mitarbeiter'];
 
-$normalizeDateInput = static function (string $value): ?string {
+$parseDateInput = static function (string $value): ?DateTimeImmutable {
+    $trimmed = trim($value);
+    if ($trimmed === '') {
+        return null;
+    }
+
+    $patterns = ['Y-m-d', 'd.m.Y', 'd/m/Y', 'd-m-Y'];
+    foreach ($patterns as $pattern) {
+        $date = DateTimeImmutable::createFromFormat('!' . $pattern, $trimmed);
+        if ($date instanceof DateTimeImmutable) {
+            return $date;
+        }
+    }
+
+    try {
+        return new DateTimeImmutable($trimmed);
+    } catch (Throwable $exception) {
+        return null;
+    }
+};
+
+$normalizeDateInput = static function (string $value) use ($parseDateInput): ?string {
     if ($value === '') {
         return null;
     }
 
-    $date = DateTimeImmutable::createFromFormat('Y-m-d', $value);
-    if ($date === false) {
+    $date = $parseDateInput($value);
+    if ($date === null) {
         return null;
     }
 
@@ -1265,16 +1286,17 @@ $formatCurrencyWithCode = static function (?float $value, string $currency): str
     return number_format($value, 2, ',', '.') . ' ' . $normalizedCurrency;
 };
 
-$formatDateLabel = static function (?string $value): ?string {
+$formatDateLabel = static function (?string $value) use ($parseDateInput): ?string {
     if ($value === null || $value === '') {
         return null;
     }
 
-    try {
-        return (new DateTimeImmutable($value))->format('d.m.Y');
-    } catch (Throwable $exception) {
+    $date = $parseDateInput($value);
+    if ($date === null) {
         return null;
     }
+
+    return $date->format('d.m.Y');
 };
 
 $signatureInviteBaseUrl = (static function (): string {
@@ -14976,12 +14998,66 @@ if ($activeSection === 'reservations') {
           return luminance > 0.5 ? '#111827' : '#ffffff';
         }
 
+        function normalizeDateString(value) {
+          if (typeof value !== 'string') {
+            return '';
+          }
+
+          var trimmed = value.trim();
+          if (trimmed === '') {
+            return '';
+          }
+
+          var isoMatch = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+          if (isoMatch) {
+            var isoMonth = isoMatch[2].length === 1 ? '0' + isoMatch[2] : isoMatch[2];
+            var isoDay = isoMatch[3].length === 1 ? '0' + isoMatch[3] : isoMatch[3];
+            return isoMatch[1] + '-' + isoMonth + '-' + isoDay;
+          }
+
+          var altMatch = trimmed.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})$/);
+          if (altMatch) {
+            var day = altMatch[1].length === 1 ? '0' + altMatch[1] : altMatch[1];
+            var month = altMatch[2].length === 1 ? '0' + altMatch[2] : altMatch[2];
+            return altMatch[3] + '-' + month + '-' + day;
+          }
+
+          return '';
+        }
+
+        function formatDateDisplay(value) {
+          if (typeof value !== 'string') {
+            return '';
+          }
+
+          var trimmed = value.trim();
+          if (trimmed === '') {
+            return '';
+          }
+
+          var normalized = normalizeDateString(trimmed);
+          if (normalized) {
+            var normalizedParts = normalized.split('-');
+            return normalizedParts[2] + '.' + normalizedParts[1] + '.' + normalizedParts[0];
+          }
+
+          var fallbackMatch = trimmed.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})$/);
+          if (fallbackMatch) {
+            var fallbackDay = fallbackMatch[1].length === 1 ? '0' + fallbackMatch[1] : fallbackMatch[1];
+            var fallbackMonth = fallbackMatch[2].length === 1 ? '0' + fallbackMatch[2] : fallbackMatch[2];
+            return fallbackDay + '.' + fallbackMonth + '.' + fallbackMatch[3];
+          }
+
+          return trimmed;
+        }
+
         function parseISODate(value) {
-          if (typeof value !== 'string' || value.trim() === '') {
+          var normalized = normalizeDateString(typeof value === 'string' ? value : '');
+          if (!normalized) {
             return null;
           }
 
-          var parts = value.split('-');
+          var parts = normalized.split('-');
           if (parts.length !== 3) {
             return null;
           }
@@ -15295,9 +15371,17 @@ if ($activeSection === 'reservations') {
             var departureField = item.querySelector('.reservation-item-departure');
 
             var arrivalDateObj = null;
+            var normalizedArrivalValue = '';
 
             if (arrivalField && arrivalField.value) {
-              arrivalDateObj = parseISODate(arrivalField.value);
+              normalizedArrivalValue = normalizeDateString(arrivalField.value);
+              if (arrivalField.value !== normalizedArrivalValue) {
+                arrivalField.value = normalizedArrivalValue;
+              }
+
+              if (normalizedArrivalValue) {
+                arrivalDateObj = parseISODate(normalizedArrivalValue);
+              }
             }
 
             if (arrivalField) {
@@ -15328,8 +15412,15 @@ if ($activeSection === 'reservations') {
             }
 
             var departureDateObj = null;
-            if (departureField.value) {
-              departureDateObj = parseISODate(departureField.value);
+            if (departureField && departureField.value) {
+              var normalizedDepartureValue = normalizeDateString(departureField.value);
+              if (departureField.value !== normalizedDepartureValue) {
+                departureField.value = normalizedDepartureValue;
+              }
+
+              if (normalizedDepartureValue) {
+                departureDateObj = parseISODate(normalizedDepartureValue);
+              }
             }
 
             if (departureDateObj instanceof Date) {
@@ -15356,8 +15447,18 @@ if ($activeSection === 'reservations') {
             }
 
             var categoryId = parseInt(categorySelect.value || '', 10);
-            var arrivalValue = arrivalField.value || '';
-            var departureValue = departureField.value || '';
+            var arrivalRawValue = arrivalField.value || '';
+            var departureRawValue = departureField.value || '';
+            var arrivalValue = normalizeDateString(arrivalRawValue);
+            var departureValue = normalizeDateString(departureRawValue);
+
+            if (arrivalField.value !== arrivalValue) {
+              arrivalField.value = arrivalValue;
+            }
+
+            if (departureField.value !== departureValue) {
+              departureField.value = departureValue;
+            }
             var currentValue = roomSelect.value || '';
             var currentLabel = '';
             if (currentValue) {
@@ -15463,7 +15564,12 @@ if ($activeSection === 'reservations') {
 
             if (arrivalField) {
               arrivalField.addEventListener('change', function () {
-                var parsedArrival = arrivalField.value ? parseISODate(arrivalField.value) : null;
+                var normalizedArrival = normalizeDateString(arrivalField.value || '');
+                if (arrivalField.value !== normalizedArrival) {
+                  arrivalField.value = normalizedArrival;
+                }
+
+                var parsedArrival = normalizedArrival ? parseISODate(normalizedArrival) : null;
                 if (parsedArrival instanceof Date && isBefore(parsedArrival, todayUtcDate)) {
                   arrivalField.value = todayIsoString;
                 }
@@ -15474,6 +15580,10 @@ if ($activeSection === 'reservations') {
 
             if (departureField) {
               departureField.addEventListener('change', function () {
+                var normalizedDeparture = normalizeDateString(departureField.value || '');
+                if (departureField.value !== normalizedDeparture) {
+                  departureField.value = normalizedDeparture;
+                }
                 sync();
                 document.dispatchEvent(new CustomEvent('reservation:categories-changed'));
               });
@@ -15968,8 +16078,16 @@ if ($activeSection === 'reservations') {
             var categoryId = parseInt(categorySelect.value || '', 10);
             var rateId = parseInt(rateSelect.value || '', 10);
             var quantity = parseInt(quantityInput.value || '1', 10);
-            var arrivalDate = arrivalField.value;
-            var departureDate = departureField.value;
+            var arrivalDate = normalizeDateString(arrivalField.value || '');
+            var departureDate = normalizeDateString(departureField.value || '');
+
+            if (arrivalField.value !== arrivalDate) {
+              arrivalField.value = arrivalDate;
+            }
+
+            if (departureField.value !== departureDate) {
+              departureField.value = departureDate;
+            }
 
             if (Number.isNaN(categoryId) || categoryId <= 0 || Number.isNaN(rateId) || rateId <= 0 || !arrivalDate || !departureDate) {
               return null;
@@ -16307,8 +16425,22 @@ if ($activeSection === 'reservations') {
           }
 
           function formatStay(data) {
-            var arrival = data && data.arrivalDateFormatted ? data.arrivalDateFormatted : '';
-            var departure = data && data.departureDateFormatted ? data.departureDateFormatted : '';
+            var arrival = '';
+            var departure = '';
+
+            if (data) {
+              if (typeof data.arrivalDateFormatted === 'string' && data.arrivalDateFormatted !== '') {
+                arrival = data.arrivalDateFormatted;
+              } else if (typeof data.arrivalDate === 'string') {
+                arrival = formatDateDisplay(data.arrivalDate);
+              }
+
+              if (typeof data.departureDateFormatted === 'string' && data.departureDateFormatted !== '') {
+                departure = data.departureDateFormatted;
+              } else if (typeof data.departureDate === 'string') {
+                departure = formatDateDisplay(data.departureDate);
+              }
+            }
 
             if (arrival && departure) {
               return arrival + ' – ' + departure;
