@@ -6546,6 +6546,112 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             header('Location: index.php?section=reservations');
             exit;
 
+        case 'reservation_status_update':
+            $redirectSectionInput = isset($_POST['redirect_section']) ? (string) $_POST['redirect_section'] : '';
+            $redirectSection = array_key_exists($redirectSectionInput, $navItems) ? $redirectSectionInput : 'dashboard';
+            if ($redirectSection === '') {
+                $redirectSection = 'dashboard';
+            }
+
+            $redirectDateInput = isset($_POST['redirect_date']) ? trim((string) $_POST['redirect_date']) : '';
+            $redirectDisplayInput = isset($_POST['redirect_display']) ? trim((string) $_POST['redirect_display']) : '';
+
+            $redirectParams = [];
+            if ($redirectSection === 'dashboard') {
+                $redirectParams['section'] = 'dashboard';
+
+                $normalizedRedirectDate = $redirectDateInput !== '' ? $normalizeDateInput($redirectDateInput) : null;
+                if ($normalizedRedirectDate !== null) {
+                    $redirectParams['date'] = $normalizedRedirectDate;
+                }
+
+                if ($redirectDisplayInput !== '' && array_key_exists($redirectDisplayInput, $calendarOccupancyDisplayOptions)) {
+                    $redirectParams['occupancyDisplay'] = $redirectDisplayInput;
+                }
+            } else {
+                $redirectParams['section'] = $redirectSection;
+            }
+
+            $redirectUrl = 'index.php';
+            if ($redirectParams !== []) {
+                $redirectUrl .= '?' . http_build_query($redirectParams);
+            }
+
+            if ($reservationManager === null) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Der Reservierungsstatus konnte nicht aktualisiert werden, da die Reservierungsverwaltung nicht verfügbar ist.',
+                ];
+
+                header('Location: ' . $redirectUrl);
+                exit;
+            }
+
+            $reservationId = (int) ($_POST['id'] ?? 0);
+            $statusInput = isset($_POST['status']) ? (string) $_POST['status'] : '';
+
+            if ($reservationId <= 0) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Der Reservierungsstatus konnte nicht aktualisiert werden, da keine gültige Reservierung übermittelt wurde.',
+                ];
+
+                header('Location: ' . $redirectUrl);
+                exit;
+            }
+
+            if (!in_array($statusInput, $reservationStatuses, true)) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Der ausgewählte Status ist ungültig.',
+                ];
+
+                header('Location: ' . $redirectUrl);
+                exit;
+            }
+
+            if ($statusInput === 'bezahlt') {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Der Status „Bezahlt“ kann nur durch eine finalisierte Rechnung gesetzt werden.',
+                ];
+
+                header('Location: ' . $redirectUrl);
+                exit;
+            }
+
+            $reservation = $reservationManager->find($reservationId);
+            if ($reservation === null) {
+                $_SESSION['alert'] = [
+                    'type' => 'danger',
+                    'message' => 'Die ausgewählte Reservierung wurde nicht gefunden.',
+                ];
+
+                header('Location: ' . $redirectUrl);
+                exit;
+            }
+
+            $currentStatus = isset($reservation['status']) ? (string) $reservation['status'] : '';
+            if ($currentStatus === $statusInput) {
+                $_SESSION['alert'] = [
+                    'type' => 'info',
+                    'message' => 'Der Reservierungsstatus ist bereits gesetzt.',
+                ];
+
+                header('Location: ' . $redirectUrl);
+                exit;
+            }
+
+            $reservationManager->updateStatus($reservationId, $statusInput, $currentUserId);
+            $_SESSION['redirect_reservation'] = $reservationId;
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'Reservierungsstatus wurde aktualisiert.',
+            ];
+
+            header('Location: ' . $redirectUrl);
+            exit;
+
         case 'reports_breakfast':
             $activeSection = 'reports';
 
@@ -14707,7 +14813,13 @@ if ($activeSection === 'reservations') {
                 <label for="reservation-status" class="form-label">Status *</label>
                 <select class="form-select" id="reservation-status" name="status" required <?= $pdo === null ? 'disabled' : '' ?>>
                   <?php foreach ($reservationStatuses as $statusOption): ?>
-                    <?php $statusLabel = $reservationStatusMeta[$statusOption]['label'] ?? ucfirst($statusOption); ?>
+                    <?php
+                      if ($statusOption === 'bezahlt' && $reservationFormData['status'] !== 'bezahlt') {
+                          continue;
+                      }
+
+                      $statusLabel = $reservationStatusMeta[$statusOption]['label'] ?? ucfirst($statusOption);
+                    ?>
                     <option value="<?= htmlspecialchars($statusOption) ?>" <?= $reservationFormData['status'] === $statusOption ? 'selected' : '' ?>><?= htmlspecialchars($statusLabel) ?></option>
                   <?php endforeach; ?>
                 </select>
@@ -14800,7 +14912,13 @@ if ($activeSection === 'reservations') {
               <span class="fw-semibold me-2">Status setzen:</span>
               <div class="btn-group flex-wrap" role="group" data-detail="status-buttons">
                 <?php foreach ($reservationStatuses as $statusOption): ?>
-                  <?php $statusLabel = $reservationStatusMeta[$statusOption]['label'] ?? ucfirst($statusOption); ?>
+                  <?php
+                    if ($statusOption === 'bezahlt') {
+                        continue;
+                    }
+
+                    $statusLabel = $reservationStatusMeta[$statusOption]['label'] ?? ucfirst($statusOption);
+                  ?>
                   <button type="button" class="btn btn-outline-secondary" data-status-action="<?= htmlspecialchars($statusOption) ?>"><?= htmlspecialchars($statusLabel) ?></button>
                 <?php endforeach; ?>
               </div>
