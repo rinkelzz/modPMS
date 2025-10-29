@@ -14569,9 +14569,22 @@ if ($activeSection === 'reservations') {
                             type="text"
                             class="form-control reservation-date-display reservation-item-arrival-display"
                             value="<?= htmlspecialchars($roomArrivalDisplay) ?>"
-                            placeholder="tt.mm.jjjj"
+                            placeholder="dd.mm.yyyy"
                             autocomplete="off"
                             inputmode="numeric"
+                            pattern="\d{1,2}\.\d{1,2}\.\d{4}"
+                            maxlength="10"
+                            title="Format: dd.mm.yyyy"
+                            <?= $pdo === null ? 'disabled' : '' ?>
+                          >
+                          <input
+                            type="date"
+                            class="reservation-date-picker reservation-item-arrival-picker"
+                            value="<?= htmlspecialchars($roomArrivalValue) ?>"
+                            min="<?= htmlspecialchars($todayDateValue) ?>"
+                            tabindex="-1"
+                            aria-hidden="true"
+                            style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;"
                             <?= $pdo === null ? 'disabled' : '' ?>
                           >
                           <input
@@ -14589,9 +14602,22 @@ if ($activeSection === 'reservations') {
                             type="text"
                             class="form-control reservation-date-display reservation-item-departure-display"
                             value="<?= htmlspecialchars($roomDepartureDisplay) ?>"
-                            placeholder="tt.mm.jjjj"
+                            placeholder="dd.mm.yyyy"
                             autocomplete="off"
                             inputmode="numeric"
+                            pattern="\d{1,2}\.\d{1,2}\.\d{4}"
+                            maxlength="10"
+                            title="Format: dd.mm.yyyy"
+                            <?= $pdo === null ? 'disabled' : '' ?>
+                          >
+                          <input
+                            type="date"
+                            class="reservation-date-picker reservation-item-departure-picker"
+                            value="<?= htmlspecialchars($roomDepartureValue) ?>"
+                            min="<?= htmlspecialchars($departureMinValue) ?>"
+                            tabindex="-1"
+                            aria-hidden="true"
+                            style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;"
                             <?= $pdo === null ? 'disabled' : '' ?>
                           >
                           <input
@@ -14753,9 +14779,22 @@ if ($activeSection === 'reservations') {
                         type="text"
                         class="form-control reservation-date-display reservation-item-arrival-display"
                         value="<?= htmlspecialchars($defaultArrivalDisplay) ?>"
-                        placeholder="tt.mm.jjjj"
+                        placeholder="dd.mm.yyyy"
                         autocomplete="off"
                         inputmode="numeric"
+                        pattern="\d{1,2}\.\d{1,2}\.\d{4}"
+                        maxlength="10"
+                        title="Format: dd.mm.yyyy"
+                        <?= $pdo === null ? 'disabled' : '' ?>
+                      >
+                      <input
+                        type="date"
+                        class="reservation-date-picker reservation-item-arrival-picker"
+                        value="<?= htmlspecialchars((string) $reservationFormData['arrival_date']) ?>"
+                        min="<?= htmlspecialchars($todayDateValue) ?>"
+                        tabindex="-1"
+                        aria-hidden="true"
+                        style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;"
                         <?= $pdo === null ? 'disabled' : '' ?>
                       >
                       <input
@@ -14773,9 +14812,22 @@ if ($activeSection === 'reservations') {
                         type="text"
                         class="form-control reservation-date-display reservation-item-departure-display"
                         value="<?= htmlspecialchars($defaultDepartureDisplay) ?>"
-                        placeholder="tt.mm.jjjj"
+                        placeholder="dd.mm.yyyy"
                         autocomplete="off"
                         inputmode="numeric"
+                        pattern="\d{1,2}\.\d{1,2}\.\d{4}"
+                        maxlength="10"
+                        title="Format: dd.mm.yyyy"
+                        <?= $pdo === null ? 'disabled' : '' ?>
+                      >
+                      <input
+                        type="date"
+                        class="reservation-date-picker reservation-item-departure-picker"
+                        value="<?= htmlspecialchars((string) $reservationFormData['departure_date']) ?>"
+                        min="<?= htmlspecialchars($todayDateValue) ?>"
+                        tabindex="-1"
+                        aria-hidden="true"
+                        style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;"
                         <?= $pdo === null ? 'disabled' : '' ?>
                       >
                       <input
@@ -15372,12 +15424,13 @@ if ($activeSection === 'reservations') {
 
           function getDateFieldPair(item, type) {
             if (!item) {
-              return { display: null, hidden: null };
+              return { display: null, hidden: null, picker: null };
             }
 
             return {
               display: item.querySelector('.reservation-item-' + type + '-display'),
-              hidden: item.querySelector('.reservation-item-' + type + '-value')
+              hidden: item.querySelector('.reservation-item-' + type + '-value'),
+              picker: item.querySelector('.reservation-item-' + type + '-picker')
             };
           }
 
@@ -15396,6 +15449,10 @@ if ($activeSection === 'reservations') {
               pair.display.value = normalized ? formatDateDisplay(normalized) : '';
             }
 
+            if (pair.picker) {
+              pair.picker.value = normalized;
+            }
+
             return normalized;
           }
 
@@ -15410,10 +15467,15 @@ if ($activeSection === 'reservations') {
             var hiddenValue = pair.hidden && typeof pair.hidden.value === 'string'
               ? pair.hidden.value.trim()
               : '';
+            var pickerValue = pair.picker && typeof pair.picker.value === 'string'
+              ? pair.picker.value.trim()
+              : '';
 
             var iso = '';
             if (displayValue !== '') {
               iso = normalizeDateString(displayValue);
+            } else if (pickerValue !== '') {
+              iso = normalizeDateString(pickerValue);
             } else if (hiddenValue !== '') {
               iso = normalizeDateString(hiddenValue);
             }
@@ -15424,6 +15486,10 @@ if ($activeSection === 'reservations') {
 
             if (pair.display) {
               pair.display.value = iso ? formatDateDisplay(iso) : '';
+            }
+
+            if (pair.picker) {
+              pair.picker.value = iso;
             }
 
             return iso;
@@ -15560,6 +15626,22 @@ if ($activeSection === 'reservations') {
 
             setIsoForPair(arrivalPair, arrivalIso);
             setIsoForPair(departurePair, departureIso);
+
+            if (arrivalPair && arrivalPair.picker) {
+              arrivalPair.picker.min = todayIsoString;
+            }
+
+            if (departurePair && departurePair.picker) {
+              var fallbackMin = todayIsoString;
+              if (arrivalIso) {
+                var ensuredMin = ensureDepartureAfter(arrivalIso, arrivalIso);
+                if (ensuredMin) {
+                  fallbackMin = ensuredMin;
+                }
+              }
+
+              departurePair.picker.min = fallbackMin;
+            }
           }
 
           function updateRoomOptions(item) {
@@ -15672,6 +15754,44 @@ if ($activeSection === 'reservations') {
               });
           }
 
+          function sanitizeDateDisplayInput(input) {
+            if (!input || typeof input.value !== 'string') {
+              return '';
+            }
+
+            var previousValue = input.value;
+            var digits = previousValue.replace(/\D/g, '').slice(0, 8);
+            var parts = [];
+
+            if (digits.length > 0) {
+              parts.push(digits.slice(0, Math.min(2, digits.length)));
+            }
+
+            if (digits.length > 2) {
+              parts.push(digits.slice(2, Math.min(4, digits.length)));
+            }
+
+            if (digits.length > 4) {
+              parts.push(digits.slice(4, Math.min(8, digits.length)));
+            }
+
+            var sanitized = parts.join('.');
+
+            if (sanitized !== previousValue) {
+              input.value = sanitized;
+              if (typeof input.selectionStart === 'number' && typeof input.selectionEnd === 'number') {
+                try {
+                  var caret = sanitized.length;
+                  input.setSelectionRange(caret, caret);
+                } catch (error) {
+                  // ignore selection errors on unsupported browsers
+                }
+              }
+            }
+
+            return sanitized;
+          }
+
           function bindItemDateBehaviour(item) {
             if (!item) {
               return;
@@ -15687,6 +15807,23 @@ if ($activeSection === 'reservations') {
               setIsoForPair(arrivalPair, arrivalIso);
               setIsoForPair(departurePair, departureIso);
 
+              if (arrivalPair && arrivalPair.picker) {
+                arrivalPair.picker.min = todayIsoString;
+              }
+
+              if (departurePair && departurePair.picker) {
+                var departureMin = '';
+                if (arrivalIso) {
+                  departureMin = ensureDepartureAfter(arrivalIso, arrivalIso);
+                }
+
+                if (!departureMin) {
+                  departureMin = todayIsoString;
+                }
+
+                departurePair.picker.min = departureMin;
+              }
+
               updateItemDateLimits(item);
               updateRoomOptions(item);
               recalculateArticlesForItem(item);
@@ -15696,14 +15833,80 @@ if ($activeSection === 'reservations') {
               }
             }
 
+            function openPairPicker(pair) {
+              if (!pair || !pair.picker || pair.picker.disabled) {
+                return;
+              }
+
+              var isoForPicker = getIsoFromPair(pair);
+              if (pair.picker.value !== isoForPicker) {
+                pair.picker.value = isoForPicker;
+              }
+
+              try {
+                if (typeof pair.picker.showPicker === 'function') {
+                  pair.picker.showPicker();
+                  return;
+                }
+              } catch (error) {
+                // ignore, fallback below
+              }
+
+              try {
+                pair.picker.focus({ preventScroll: true });
+              } catch (error) {
+                pair.picker.focus();
+              }
+
+              pair.picker.click();
+            }
+
             if (arrivalPair.display) {
+              arrivalPair.display.addEventListener('input', function () {
+                var sanitized = sanitizeDateDisplayInput(arrivalPair.display);
+                if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(sanitized.trim())) {
+                  sync(false);
+                }
+              });
               arrivalPair.display.addEventListener('change', function () { sync(true); });
               arrivalPair.display.addEventListener('blur', function () { sync(true); });
+              arrivalPair.display.addEventListener('focus', function () { openPairPicker(arrivalPair); });
+              arrivalPair.display.addEventListener('click', function () { openPairPicker(arrivalPair); });
             }
 
             if (departurePair.display) {
+              departurePair.display.addEventListener('input', function () {
+                var sanitized = sanitizeDateDisplayInput(departurePair.display);
+                if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(sanitized.trim())) {
+                  sync(false);
+                }
+              });
               departurePair.display.addEventListener('change', function () { sync(true); });
               departurePair.display.addEventListener('blur', function () { sync(true); });
+              departurePair.display.addEventListener('focus', function () { openPairPicker(departurePair); });
+              departurePair.display.addEventListener('click', function () { openPairPicker(departurePair); });
+            }
+
+            if (arrivalPair.picker) {
+              arrivalPair.picker.addEventListener('input', function () {
+                setIsoForPair(arrivalPair, arrivalPair.picker.value || '');
+                sync(false);
+              });
+              arrivalPair.picker.addEventListener('change', function () {
+                setIsoForPair(arrivalPair, arrivalPair.picker.value || '');
+                sync(true);
+              });
+            }
+
+            if (departurePair.picker) {
+              departurePair.picker.addEventListener('input', function () {
+                setIsoForPair(departurePair, departurePair.picker.value || '');
+                sync(false);
+              });
+              departurePair.picker.addEventListener('change', function () {
+                setIsoForPair(departurePair, departurePair.picker.value || '');
+                sync(true);
+              });
             }
 
             setIsoForPair(arrivalPair, arrivalPair.hidden ? arrivalPair.hidden.value : '');
@@ -16217,7 +16420,7 @@ if ($activeSection === 'reservations') {
             var arrivalPair = getDateFieldPair(item, 'arrival');
             var departurePair = getDateFieldPair(item, 'departure');
 
-            if (!categorySelect || !rateSelect || !arrivalPair.hidden || !departurePair.hidden) {
+            if (!categorySelect || !rateSelect) {
               return null;
             }
 
@@ -16233,8 +16436,34 @@ if ($activeSection === 'reservations') {
               quantity = 1;
             }
 
-            var arrivalDate = clampArrivalIso(getIsoFromPair(arrivalPair));
-            var departureDate = ensureDepartureAfter(arrivalDate, getIsoFromPair(departurePair));
+            var arrivalDate = arrivalPair ? clampArrivalIso(getIsoFromPair(arrivalPair)) : '';
+            var departureDate = ensureDepartureAfter(arrivalDate, departurePair ? getIsoFromPair(departurePair) : '');
+
+            if (!arrivalDate || !departureDate) {
+              var legacyArrivalField = item.querySelector('.reservation-item-arrival');
+              var legacyDepartureField = item.querySelector('.reservation-item-departure');
+
+              if (!arrivalDate && legacyArrivalField && typeof legacyArrivalField.value === 'string') {
+                arrivalDate = clampArrivalIso(normalizeDateString(legacyArrivalField.value));
+              }
+
+              var legacyDepartureIso = '';
+              if (legacyDepartureField && typeof legacyDepartureField.value === 'string') {
+                legacyDepartureIso = normalizeDateString(legacyDepartureField.value);
+              }
+
+              if (!departureDate) {
+                departureDate = ensureDepartureAfter(arrivalDate, legacyDepartureIso);
+              }
+
+              if (legacyArrivalField && arrivalDate) {
+                legacyArrivalField.value = arrivalDate;
+              }
+
+              if (legacyDepartureField && departureDate) {
+                legacyDepartureField.value = departureDate;
+              }
+            }
 
             setIsoForPair(arrivalPair, arrivalDate);
             setIsoForPair(departurePair, departureDate);
