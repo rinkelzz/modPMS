@@ -1198,6 +1198,34 @@ $buildRateSelectOptions = static function (?int $selectedRateId) use ($rates): s
 
 $reservationRateOptionsHtml = $buildRateSelectOptions(null);
 
+$resolveRateById = static function (int $rateId) use (&$rateLookup, $rateManager): ?array {
+    if ($rateId <= 0) {
+        return null;
+    }
+
+    if (isset($rateLookup[$rateId]) && is_array($rateLookup[$rateId])) {
+        return $rateLookup[$rateId];
+    }
+
+    if (!$rateManager instanceof RateManager) {
+        return null;
+    }
+
+    try {
+        $rate = $rateManager->find($rateId);
+    } catch (Throwable $exception) {
+        $rate = null;
+    }
+
+    if (is_array($rate)) {
+        $rateLookup[$rateId] = $rate;
+
+        return $rate;
+    }
+
+    return null;
+};
+
 $categoryStatuses = ['aktiv', 'inaktiv'];
 $roomStatuses = ['frei', 'belegt', 'wartung'];
 $guestSalutations = ['Herr', 'Frau', 'Divers'];
@@ -1796,7 +1824,9 @@ if ($pdo !== null && isset($_GET['ajax'])) {
                 $normalizedArrival = $normalizeDateInput($arrivalInput);
                 $normalizedDeparture = $normalizeDateInput($departureInput);
 
-                if ($categoryId <= 0 || $rateId <= 0 || !isset($rateLookup[$rateId]) || $normalizedArrival === null || $normalizedDeparture === null) {
+                $rateData = $resolveRateById($rateId);
+
+                if ($categoryId <= 0 || $rateId <= 0 || $rateData === null || $normalizedArrival === null || $normalizedDeparture === null) {
                     continue;
                 }
 
@@ -6133,7 +6163,7 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $quantityValue = 1;
                 }
 
-                if ($rateIdValue <= 0 || !isset($rateLookup[$rateIdValue])) {
+                if ($rateIdValue <= 0 || $resolveRateById($rateIdValue) === null) {
                     $categoryValidationErrors = true;
                     continue;
                 }
@@ -6539,24 +6569,45 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 break;
             }
 
-            $reservationIdentifierRaw = isset($_POST['id']) ? trim((string) $_POST['id']) : '';
+            $identifierFields = ['id', 'reservation_id', 'reservationId', 'reservation_number', 'reservationNumber'];
+            $reservationIdentifierRaw = '';
+            foreach ($identifierFields as $identifierField) {
+                if (!isset($_POST[$identifierField])) {
+                    continue;
+                }
+
+                $candidateValue = trim((string) $_POST[$identifierField]);
+                if ($candidateValue === '') {
+                    continue;
+                }
+
+                $reservationIdentifierRaw = $candidateValue;
+                break;
+            }
+
+            $normalizedIdentifier = ltrim($reservationIdentifierRaw);
+            $normalizedIdentifier = ltrim($normalizedIdentifier, "# \t\n\r\0\x0B");
             $reservation = null;
 
-            if ($reservationIdentifierRaw !== '') {
-                if (ctype_digit($reservationIdentifierRaw)) {
-                    $reservationIdCandidate = (int) $reservationIdentifierRaw;
+            if ($normalizedIdentifier !== '') {
+                if (ctype_digit($normalizedIdentifier)) {
+                    $reservationIdCandidate = (int) $normalizedIdentifier;
                     if ($reservationIdCandidate > 0) {
                         $reservation = $reservationManager->find($reservationIdCandidate);
                     }
                 }
 
                 if ($reservation === null) {
+                    $reservation = $reservationManager->findByNumber($normalizedIdentifier);
+                }
+
+                if ($reservation === null && $normalizedIdentifier !== $reservationIdentifierRaw) {
                     $reservation = $reservationManager->findByNumber($reservationIdentifierRaw);
                 }
             }
 
             if ($reservation === null) {
-                if ($reservationIdentifierRaw === '') {
+                if ($normalizedIdentifier === '') {
                     $alert = [
                         'type' => 'danger',
                         'message' => 'Die Reservierung konnte nicht gelöscht werden, da keine gültige ID oder Reservierungsnummer übermittelt wurde.',
@@ -7675,10 +7726,13 @@ if ($pdo !== null) {
         if ($rateIdValue !== null) {
             if (isset($reservation['rate_name']) && $reservation['rate_name'] !== null && $reservation['rate_name'] !== '') {
                 $rateName = (string) $reservation['rate_name'];
-            } elseif ($rateIdValue > 0 && isset($rateLookup[$rateIdValue]['name'])) {
-                $rateName = (string) $rateLookup[$rateIdValue]['name'];
-            } else {
-                $rateName = 'Rate #' . $rateIdValue;
+            } elseif ($rateIdValue > 0) {
+                $rateMeta = $resolveRateById($rateIdValue);
+                if (is_array($rateMeta) && isset($rateMeta['name']) && $rateMeta['name'] !== null && $rateMeta['name'] !== '') {
+                    $rateName = (string) $rateMeta['name'];
+                } else {
+                    $rateName = 'Rate #' . $rateIdValue;
+                }
             }
         }
         if ($rateName === '') {
@@ -7863,8 +7917,11 @@ if ($pdo !== null) {
             $itemRateName = '';
             if (isset($item['rate_name']) && $item['rate_name'] !== null && $item['rate_name'] !== '') {
                 $itemRateName = (string) $item['rate_name'];
-            } elseif ($itemRateId > 0 && isset($rateLookup[$itemRateId]['name'])) {
-                $itemRateName = (string) $rateLookup[$itemRateId]['name'];
+            } elseif ($itemRateId > 0) {
+                $itemRateMeta = $resolveRateById($itemRateId);
+                if (is_array($itemRateMeta) && isset($itemRateMeta['name']) && $itemRateMeta['name'] !== null && $itemRateMeta['name'] !== '') {
+                    $itemRateName = (string) $itemRateMeta['name'];
+                }
             }
 
             if ($itemRateName === '') {
@@ -10501,8 +10558,11 @@ if ($activeSection === 'reservations') {
                                 $itemRateName = '';
                                 if (isset($item['rate_name']) && $item['rate_name'] !== null && $item['rate_name'] !== '') {
                                     $itemRateName = (string) $item['rate_name'];
-                                } elseif ($itemRateId > 0 && isset($rateLookup[$itemRateId]['name'])) {
-                                    $itemRateName = (string) $rateLookup[$itemRateId]['name'];
+                                } elseif ($itemRateId > 0) {
+                                    $itemRateMeta = $resolveRateById($itemRateId);
+                                    if (is_array($itemRateMeta) && isset($itemRateMeta['name']) && $itemRateMeta['name'] !== null && $itemRateMeta['name'] !== '') {
+                                        $itemRateName = (string) $itemRateMeta['name'];
+                                    }
                                 }
                                 if ($itemRateName === '') {
                                     $itemRateName = 'Keine Rate zugewiesen';
