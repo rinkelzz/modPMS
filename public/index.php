@@ -1210,7 +1210,7 @@ $parseDateInput = static function (string $value): ?DateTimeImmutable {
         return null;
     }
 
-    $patterns = ['Y-m-d', 'd.m.Y', 'd/m/Y', 'd-m-Y'];
+$patterns = ['Y-m-d', 'd.m.Y', 'd/m/Y', 'd-m-Y', 'd.m.y', 'd/m/y', 'd-m-y'];
     foreach ($patterns as $pattern) {
         $date = DateTimeImmutable::createFromFormat('!' . $pattern, $trimmed);
         if ($date instanceof DateTimeImmutable) {
@@ -15139,11 +15139,20 @@ if ($activeSection === 'reservations') {
             return isoMatch[1] + '-' + isoMonth + '-' + isoDay;
           }
 
-          var altMatch = trimmed.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})$/);
+          var altMatch = trimmed.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2}|\d{4})$/);
           if (altMatch) {
             var day = altMatch[1].length === 1 ? '0' + altMatch[1] : altMatch[1];
             var month = altMatch[2].length === 1 ? '0' + altMatch[2] : altMatch[2];
-            return altMatch[3] + '-' + month + '-' + day;
+            var year = altMatch[3];
+
+            if (year.length === 2) {
+              var yearNumber = parseInt(year, 10);
+              if (!Number.isNaN(yearNumber)) {
+                year = String(yearNumber <= 69 ? 2000 + yearNumber : 1900 + yearNumber);
+              }
+            }
+
+            return year + '-' + month + '-' + day;
           }
 
           return '';
@@ -15864,7 +15873,7 @@ if ($activeSection === 'reservations') {
             if (arrivalPair.display) {
               arrivalPair.display.addEventListener('input', function () {
                 var sanitized = sanitizeDateDisplayInput(arrivalPair.display);
-                if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(sanitized.trim())) {
+                if (normalizeDateString(sanitized.trim())) {
                   sync(false);
                 }
               });
@@ -15877,7 +15886,7 @@ if ($activeSection === 'reservations') {
             if (departurePair.display) {
               departurePair.display.addEventListener('input', function () {
                 var sanitized = sanitizeDateDisplayInput(departurePair.display);
-                if (/^\d{1,2}\.\d{1,2}\.\d{4}$/.test(sanitized.trim())) {
+                if (normalizeDateString(sanitized.trim())) {
                   sync(false);
                 }
               });
