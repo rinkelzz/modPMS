@@ -19,15 +19,30 @@ class RoomManager
     public function all(): array
     {
         $statement = $this->pdo->query(
-            'SELECT r.id, r.room_number AS number, r.category_id, r.status, r.floor, r.notes, rc.name AS category_name
+            'SELECT r.id, r.room_number, r.room_number AS number, r.category_id, r.status, r.floor, r.notes, rc.name AS category_name
              FROM rooms r
              LEFT JOIN room_categories rc ON rc.id = r.category_id
              ORDER BY CAST(r.room_number AS UNSIGNED), r.room_number'
         );
 
         $rooms = $statement ? $statement->fetchAll() : [];
+        if (!is_array($rooms)) {
+            return [];
+        }
 
-        return is_array($rooms) ? $rooms : [];
+        foreach ($rooms as $index => $room) {
+            if (!is_array($room)) {
+                continue;
+            }
+
+            if (!isset($room['room_number']) && isset($room['number'])) {
+                $rooms[$index]['room_number'] = $room['number'];
+            } elseif (isset($room['room_number']) && (!isset($room['number']) || $room['number'] === null)) {
+                $rooms[$index]['number'] = $room['room_number'];
+            }
+        }
+
+        return $rooms;
     }
 
     public function find(int $id): ?array
