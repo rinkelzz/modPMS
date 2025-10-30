@@ -7672,9 +7672,9 @@ if ($pdo !== null) {
         unset($calendarReservation['__is_calendar_only']);
 
         $reservation = $calendarReservation;
-        $reservationTarget = null;
+        $reservationTargetIndex = null;
         if ($sourceIndex !== null && isset($reservations[$sourceIndex]) && is_array($reservations[$sourceIndex])) {
-            $reservationTarget =& $reservations[$sourceIndex];
+            $reservationTargetIndex = $sourceIndex;
         }
 
         $reservationId = isset($reservation['id']) ? (int) $reservation['id'] : 0;
@@ -7684,9 +7684,9 @@ if ($pdo !== null) {
         }
         $statusMeta = $reservationStatusMeta[$reservationStatus];
 
-        if ($reservationTarget !== null) {
-            $reservationTarget['status_label'] = $statusMeta['label'];
-            $reservationTarget['status_badge_class'] = $statusMeta['badge'];
+        if ($reservationTargetIndex !== null) {
+            $reservations[$reservationTargetIndex]['status_label'] = $statusMeta['label'];
+            $reservations[$reservationTargetIndex]['status_badge_class'] = $statusMeta['badge'];
         }
 
         $baseLabel = $buildGuestCalendarLabel([
@@ -7806,13 +7806,13 @@ if ($pdo !== null) {
             'nightCountLabel' => $nightCountLabel,
         ];
 
-        if ($reservationTarget !== null) {
-            $reservationTarget['items'] = $items;
-            $reservationTarget['rate_name_display'] = $rateName;
-            $reservationTarget['price_per_night_display'] = $pricePerNightFormatted;
-            $reservationTarget['total_price_display'] = $totalPriceFormatted;
-            $reservationTarget['vat_rate_display'] = $vatRateFormatted;
-            $reservationTarget['night_count_display'] = $nightCountLabel;
+        if ($reservationTargetIndex !== null) {
+            $reservations[$reservationTargetIndex]['items'] = $items;
+            $reservations[$reservationTargetIndex]['rate_name_display'] = $rateName;
+            $reservations[$reservationTargetIndex]['price_per_night_display'] = $pricePerNightFormatted;
+            $reservations[$reservationTargetIndex]['total_price_display'] = $totalPriceFormatted;
+            $reservations[$reservationTargetIndex]['vat_rate_display'] = $vatRateFormatted;
+            $reservations[$reservationTargetIndex]['night_count_display'] = $nightCountLabel;
         }
 
         foreach ($items as $item) {
