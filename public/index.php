@@ -10315,9 +10315,26 @@ if ($activeSection === 'reservations') {
                         </tr>
                       </thead>
                       <tbody>
-                        <?php foreach ($reservations as $reservation): ?>
-                          <?php
-                            $guestFirst = trim((string) ($reservation['guest_first_name'] ?? ''));
+                          <?php foreach ($reservations as $reservation): ?>
+                            <?php
+                              if (!is_array($reservation)) {
+                                  continue;
+                              }
+
+                              $reservationId = isset($reservation['id']) ? (int) $reservation['id'] : 0;
+                              $reservationNumber = isset($reservation['reservation_number'])
+                                  ? trim((string) $reservation['reservation_number'])
+                                  : '';
+                              $reservationHasIdentifier = $reservationId > 0 || $reservationNumber !== '';
+                              $reservationEditUrl = '';
+                              if ($reservationId > 0) {
+                                  $reservationEditUrl = 'index.php?section=reservations&editReservation=' . $reservationId;
+                              } elseif ($reservationNumber !== '') {
+                                  $reservationEditUrl = 'index.php?section=reservations&editReservation='
+                                      . rawurlencode($reservationNumber);
+                              }
+
+                              $guestFirst = trim((string) ($reservation['guest_first_name'] ?? ''));
                             $guestLast = trim((string) ($reservation['guest_last_name'] ?? ''));
                             $guestDisplay = trim(implode(' ', array_filter([$guestFirst, $guestLast], static fn ($value) => $value !== '')));
                             if ($guestDisplay === '') {
@@ -10764,23 +10781,28 @@ if ($activeSection === 'reservations') {
                             </td>
                             <td class="text-end">
                               <div class="d-flex justify-content-end gap-2 flex-wrap">
-                                <a class="btn btn-outline-secondary btn-sm" href="index.php?section=reservations&amp;editReservation=<?= (int) $reservation['id'] ?>">Bearbeiten</a>
-                                <div class="btn-group">
-                                  <button class="btn btn-outline-primary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                                    Dokumente
-                                  </button>
-                                  <ul class="dropdown-menu dropdown-menu-end">
-                                    <li><a class="dropdown-item" href="index.php?section=documents&amp;createDocument=invoice&amp;reservationId=<?= (int) $reservation['id'] ?>">Rechnung erstellen</a></li>
-                                    <li><a class="dropdown-item" href="index.php?section=documents&amp;createDocument=offer&amp;reservationId=<?= (int) $reservation['id'] ?>">Angebot erstellen</a></li>
-                                  </ul>
+                                  <a class="btn btn-outline-secondary btn-sm<?= $reservationEditUrl === '' ? ' disabled' : '' ?>"<?= $reservationEditUrl === '' ? '' : ' href="' . htmlspecialchars($reservationEditUrl, ENT_QUOTES) . '"' ?>>Bearbeiten</a>
+                                  <div class="btn-group">
+                                    <button class="btn btn-outline-primary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false"<?= $reservationId <= 0 ? ' disabled' : '' ?>>
+                                      Dokumente
+                                    </button>
+                                    <ul class="dropdown-menu dropdown-menu-end">
+                                      <li><a class="dropdown-item<?= $reservationId <= 0 ? ' disabled' : '' ?>"<?= $reservationId > 0 ? ' href="index.php?section=documents&amp;createDocument=invoice&amp;reservationId=' . (int) $reservationId . '"' : '' ?>>Rechnung erstellen</a></li>
+                                      <li><a class="dropdown-item<?= $reservationId <= 0 ? ' disabled' : '' ?>"<?= $reservationId > 0 ? ' href="index.php?section=documents&amp;createDocument=offer&amp;reservationId=' . (int) $reservationId . '"' : '' ?>>Angebot erstellen</a></li>
+                                    </ul>
+                                  </div>
+                                  <form method="post" class="d-inline" onsubmit="return confirm('Reservierung wirklich löschen?');">
+                                    <input type="hidden" name="form" value="reservation_delete">
+                                    <?php if ($reservationId > 0): ?>
+                                      <input type="hidden" name="id" value="<?= $reservationId ?>">
+                                    <?php endif; ?>
+                                    <?php if ($reservationNumber !== ''): ?>
+                                      <input type="hidden" name="reservation_number" value="<?= htmlspecialchars($reservationNumber) ?>">
+                                    <?php endif; ?>
+                                    <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null || !$reservationHasIdentifier ? 'disabled' : '' ?>>Löschen</button>
+                                  </form>
                                 </div>
-                                <form method="post" class="d-inline" onsubmit="return confirm('Reservierung wirklich löschen?');">
-                                  <input type="hidden" name="form" value="reservation_delete">
-                                  <input type="hidden" name="id" value="<?= (int) $reservation['id'] ?>">
-                                  <button type="submit" class="btn btn-outline-danger btn-sm" <?= $pdo === null ? 'disabled' : '' ?>>Löschen</button>
-                                </form>
-                              </div>
-                            </td>
+                              </td>
                           </tr>
                         <?php endforeach; ?>
                       </tbody>
