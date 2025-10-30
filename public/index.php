@@ -9440,7 +9440,20 @@ if ($pdo !== null && isset($_GET['editReservation']) && $reservationFormData['id
             ];
         }
     } else {
-        $reservationToEdit = $reservationManager->find((int) $_GET['editReservation']);
+        $reservationToEdit = null;
+        $editReservationRaw = trim((string) $_GET['editReservation']);
+        if ($editReservationRaw !== '') {
+            if (ctype_digit($editReservationRaw)) {
+                $reservationIdCandidate = (int) $editReservationRaw;
+                if ($reservationIdCandidate > 0) {
+                    $reservationToEdit = $reservationManager->find($reservationIdCandidate);
+                }
+            }
+
+            if ($reservationToEdit === null) {
+                $reservationToEdit = $reservationManager->findByNumber($editReservationRaw);
+            }
+        }
 
         if ($reservationToEdit) {
             $itemsForForm = $reservationToEdit['items'] ?? [];

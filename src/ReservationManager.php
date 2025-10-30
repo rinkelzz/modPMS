@@ -581,6 +581,32 @@ class ReservationManager
     }
 
     /**
+     * @return array<string, mixed>|null
+     */
+    public function findByNumber(string $reservationNumber): ?array
+    {
+        $reservationNumber = trim($reservationNumber);
+        if ($reservationNumber === '') {
+            return null;
+        }
+
+        $stmt = $this->pdo->prepare('SELECT id FROM reservations WHERE reservation_number = :reservation_number');
+        $stmt->execute(['reservation_number' => $reservationNumber]);
+
+        $reservationId = $stmt->fetchColumn();
+        if ($reservationId === false) {
+            return null;
+        }
+
+        $reservationId = (int) $reservationId;
+        if ($reservationId <= 0) {
+            return null;
+        }
+
+        return $this->find($reservationId);
+    }
+
+    /**
      * @param array<string, mixed> $payload
      */
     public function create(array $payload): int
