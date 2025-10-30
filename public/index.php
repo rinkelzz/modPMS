@@ -6539,26 +6539,38 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 break;
             }
 
-            $reservationId = (int) ($_POST['id'] ?? 0);
+            $reservationIdentifierRaw = isset($_POST['id']) ? trim((string) $_POST['id']) : '';
+            $reservation = null;
 
-            if ($reservationId <= 0) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die Reservierung konnte nicht gelöscht werden, da keine gültige ID übermittelt wurde.',
-                ];
-                break;
+            if ($reservationIdentifierRaw !== '') {
+                if (ctype_digit($reservationIdentifierRaw)) {
+                    $reservationIdCandidate = (int) $reservationIdentifierRaw;
+                    if ($reservationIdCandidate > 0) {
+                        $reservation = $reservationManager->find($reservationIdCandidate);
+                    }
+                }
+
+                if ($reservation === null) {
+                    $reservation = $reservationManager->findByNumber($reservationIdentifierRaw);
+                }
             }
 
-            $reservation = $reservationManager->find($reservationId);
             if ($reservation === null) {
-                $alert = [
-                    'type' => 'danger',
-                    'message' => 'Die ausgewählte Reservierung wurde nicht gefunden.',
-                ];
+                if ($reservationIdentifierRaw === '') {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die Reservierung konnte nicht gelöscht werden, da keine gültige ID oder Reservierungsnummer übermittelt wurde.',
+                    ];
+                } else {
+                    $alert = [
+                        'type' => 'danger',
+                        'message' => 'Die ausgewählte Reservierung wurde nicht gefunden.',
+                    ];
+                }
                 break;
             }
 
-            $reservationManager->delete($reservationId);
+            $reservationManager->delete((int) $reservation['id']);
 
             $_SESSION['alert'] = [
                 'type' => 'success',
