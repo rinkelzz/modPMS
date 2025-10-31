@@ -10116,6 +10116,8 @@ if ($activeSection === 'reservations') {
                                             $occupantLabel = 'Belegt';
                                         }
 
+                                        $occupantOutputLabel = $occupantLabel;
+
                                         $occupantTitleParts = [];
                                         if (is_array($occupantData)) {
                                             if (!empty($occupantData['statusLabel'])) {
@@ -10183,6 +10185,9 @@ if ($activeSection === 'reservations') {
                                                 if ($continuesRight) {
                                                     $occupantClasses[] = 'occupancy-entry-range-continue-right';
                                                 }
+                                                if ($continuesLeft) {
+                                                    $occupantOutputLabel = '';
+                                                }
                                             }
                                         }
 
@@ -10201,7 +10206,7 @@ if ($activeSection === 'reservations') {
                                             }
                                         }
                                       ?>
-                                      <div class="<?= $classAttr ?>"<?= $actionAttributes ?><?= $styleAttr ?>><?= htmlspecialchars($occupantLabel) ?></div>
+                                      <div class="<?= $classAttr ?>"<?= $actionAttributes ?><?= $styleAttr ?>><?= htmlspecialchars($occupantOutputLabel) ?></div>
                                   <?php endforeach; ?>
                                   <?php else: ?>
                                     <?php if ($roomStatus === 'wartung'): ?>
@@ -10258,6 +10263,8 @@ if ($activeSection === 'reservations') {
                                         $entryLabel = 'Überbuchung';
                                     }
 
+                                    $entryOutputLabel = $entryLabel;
+
                                     $entryTitleParts = [];
                                     if (!empty($entry['statusLabel'])) {
                                         $entryTitleParts[] = 'Status: ' . $entry['statusLabel'];
@@ -10311,6 +10318,9 @@ if ($activeSection === 'reservations') {
                                         if ($entryContinuesRight) {
                                             $entryClasses[] = 'occupancy-entry-range-continue-right';
                                         }
+                                        if ($entryContinuesLeft) {
+                                            $entryOutputLabel = '';
+                                        }
                                     }
                                     $entryClassAttr = htmlspecialchars(implode(' ', $entryClasses));
                                     $entryActionAttributes = sprintf(' role="button" tabindex="0" data-reservation=\'%s\'%s', $entryDataAttr, $entryAttributes);
@@ -10324,7 +10334,7 @@ if ($activeSection === 'reservations') {
                                         $entryActionAttributes .= ' data-calendar-continues-right="1"';
                                     }
                                   ?>
-                                  <div class="<?= $entryClassAttr ?>"<?= $entryActionAttributes ?><?= $entryStyleAttr ?>><?= htmlspecialchars($entryLabel) ?></div>
+                                  <div class="<?= $entryClassAttr ?>"<?= $entryActionAttributes ?><?= $entryStyleAttr ?>><?= htmlspecialchars($entryOutputLabel) ?></div>
                                 <?php endforeach; ?>
                                 <?php if ($overbookingEntries === []): ?>
                                   <?php foreach ($overbookingLabels as $entryLabel): ?>
