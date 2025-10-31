@@ -8371,6 +8371,8 @@ if ($pdo !== null) {
                     continue;
                 }
 
+                $rangeIdsEnding = [];
+
                 foreach ($cell['entries'] as $entryIndex => &$entry) {
                     $rangeId = isset($entry['calendarRangeId']) ? (string) $entry['calendarRangeId'] : '';
                     if ($rangeId === '') {
@@ -8390,8 +8392,18 @@ if ($pdo !== null) {
                     }
 
                     $entry['calendarSlot'] = $activeRangeSlots[$rangeId];
+
+                    if (empty($entry['calendarContinuesRight'])) {
+                        $rangeIdsEnding[] = $rangeId;
+                    }
                 }
                 unset($entry);
+
+                if ($rangeIdsEnding !== []) {
+                    foreach ($rangeIdsEnding as $endingRangeId) {
+                        unset($activeRangeSlots[$endingRangeId]);
+                    }
+                }
 
                 usort($cell['entries'], static function (array $a, array $b): int {
                     $slotA = $a['calendarSlot'] ?? null;
@@ -10429,6 +10441,9 @@ if ($activeSection === 'reservations') {
                               <span class="visually-hidden">Überbuchungen am <?= htmlspecialchars($day['date']) ?></span>
                               <?php if ($overbookingQuantity > 0): ?>
                                 <div class="overbooking-quantity badge text-bg-danger">+<?= $overbookingQuantity ?></div>
+                                <?php if ($overbookingEntries !== [] || $overbookingLabels !== []): ?>
+                                  <div class="overbooking-entry-stack">
+                                <?php endif; ?>
                                 <?php foreach ($overbookingEntries as $entry): ?>
                                   <?php
                                     $entryLabel = (string) ($entry['label'] ?? '');
@@ -10513,6 +10528,12 @@ if ($activeSection === 'reservations') {
                                     }
                                     if (isset($entry['calendarSlot'])) {
                                         $entryActionAttributes .= ' data-calendar-slot="' . htmlspecialchars((string) (int) $entry['calendarSlot']) . '"';
+                                        $slotRow = (int) $entry['calendarSlot'] + 1;
+                                        if ($entryStyleAttr === '') {
+                                            $entryStyleAttr = ' style="--calendar-slot-row:' . $slotRow . ';"';
+                                        } else {
+                                            $entryStyleAttr = substr($entryStyleAttr, 0, -1) . ' --calendar-slot-row:' . $slotRow . ';"';
+                                        }
                                     }
                                   ?>
                                   <div class="<?= $entryClassAttr ?>"<?= $entryActionAttributes ?><?= $entryStyleAttr ?>><?= htmlspecialchars($entryOutputLabel) ?></div>
@@ -10521,6 +10542,9 @@ if ($activeSection === 'reservations') {
                                   <?php foreach ($overbookingLabels as $entryLabel): ?>
                                     <div class="occupancy-entry"><?= htmlspecialchars((string) $entryLabel) ?></div>
                                   <?php endforeach; ?>
+                                <?php endif; ?>
+                                <?php if ($overbookingEntries !== [] || $overbookingLabels !== []): ?>
+                                  </div>
                                 <?php endif; ?>
                               <?php else: ?>
                                 <span class="text-muted small">Keine</span>

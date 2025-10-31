@@ -409,6 +409,23 @@ body {
     color: inherit;
 }
 
+.room-calendar-cell.overbooking .overbooking-entry-stack {
+    display: grid;
+    grid-auto-rows: minmax(var(--occupancy-entry-min-height), auto);
+    align-content: start;
+    gap: 0.35rem;
+}
+
+.room-calendar-cell.overbooking .overbooking-entry-stack .occupancy-entry {
+    margin-top: 0;
+    grid-column: 1;
+    grid-row: var(--calendar-slot-row, auto);
+}
+
+.room-calendar-cell.overbooking .overbooking-entry-stack .occupancy-entry + .occupancy-entry {
+    margin-top: 0;
+}
+
 .room-calendar-cell.overbooking.overbooking-empty {
     background-color: #fff7ed;
     color: #a16207;
