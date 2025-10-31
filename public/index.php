@@ -8356,6 +8356,94 @@ if ($pdo !== null) {
         }
     }
 
+    if ($categoryOverbookingOccupancies !== []) {
+        foreach ($categoryOverbookingOccupancies as $categoryId => &$dates) {
+            if (!is_array($dates) || $dates === []) {
+                continue;
+            }
+
+            ksort($dates);
+
+            $activeRangeSlots = [];
+
+            foreach ($dates as $dateKey => &$cell) {
+                if (!isset($cell['entries']) || !is_array($cell['entries']) || $cell['entries'] === []) {
+                    continue;
+                }
+
+                foreach ($cell['entries'] as $entryIndex => &$entry) {
+                    $rangeId = isset($entry['calendarRangeId']) ? (string) $entry['calendarRangeId'] : '';
+                    if ($rangeId === '') {
+                        continue;
+                    }
+
+                    if (!isset($activeRangeSlots[$rangeId])) {
+                        $usedSlots = array_values($activeRangeSlots);
+                        sort($usedSlots);
+
+                        $slot = 0;
+                        while (in_array($slot, $usedSlots, true)) {
+                            $slot++;
+                        }
+
+                        $activeRangeSlots[$rangeId] = $slot;
+                    }
+
+                    $entry['calendarSlot'] = $activeRangeSlots[$rangeId];
+                }
+                unset($entry);
+
+                usort($cell['entries'], static function (array $a, array $b): int {
+                    $slotA = $a['calendarSlot'] ?? null;
+                    $slotB = $b['calendarSlot'] ?? null;
+
+                    if ($slotA === null && $slotB === null) {
+                        return 0;
+                    }
+
+                    if ($slotA === null) {
+                        return 1;
+                    }
+
+                    if ($slotB === null) {
+                        return -1;
+                    }
+
+                    if ($slotA === $slotB) {
+                        $rangeA = (string) ($a['calendarRangeId'] ?? '');
+                        $rangeB = (string) ($b['calendarRangeId'] ?? '');
+                        if ($rangeA !== '' && $rangeB !== '') {
+                            $comparison = $rangeA <=> $rangeB;
+                            if ($comparison !== 0) {
+                                return $comparison;
+                            }
+                        }
+
+                        $labelA = (string) ($a['label'] ?? '');
+                        $labelB = (string) ($b['label'] ?? '');
+
+                        return $labelA <=> $labelB;
+                    }
+
+                    return $slotA <=> $slotB;
+                });
+
+                foreach ($cell['entries'] as $entry) {
+                    $rangeId = isset($entry['calendarRangeId']) ? (string) $entry['calendarRangeId'] : '';
+                    if ($rangeId === '') {
+                        continue;
+                    }
+
+                    if (empty($entry['calendarContinuesRight'])) {
+                        unset($activeRangeSlots[$rangeId]);
+                    }
+                }
+            }
+            unset($cell);
+        }
+        unset($dates);
+    }
+
     $calendarRangeItemMap = [];
 
     foreach ($roomOccupancies as $roomId => $dates) {
@@ -10422,6 +10510,9 @@ if ($activeSection === 'reservations') {
                                     }
                                     if ($entryContinuesRight) {
                                         $entryActionAttributes .= ' data-calendar-continues-right="1"';
+                                    }
+                                    if (isset($entry['calendarSlot'])) {
+                                        $entryActionAttributes .= ' data-calendar-slot="' . htmlspecialchars((string) (int) $entry['calendarSlot']) . '"';
                                     }
                                   ?>
                                   <div class="<?= $entryClassAttr ?>"<?= $entryActionAttributes ?><?= $entryStyleAttr ?>><?= htmlspecialchars($entryOutputLabel) ?></div>
