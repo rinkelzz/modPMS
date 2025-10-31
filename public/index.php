@@ -1423,7 +1423,7 @@ if ($settingsManager instanceof SettingManager) {
 $overnightVatRateValue = number_format($overnightVatRate, 2, '.', '');
 $overnightVatRateLabel = $formatPercent($overnightVatRate);
 
-$computeReservationPricing = static function (?RateManager $rateManager, array $categoryItems): array {
+$computeReservationPricing = static function (?RateManager $rateManager, array $categoryItems) use ($resolveRateById): array {
     $overallArrival = null;
     $overallDeparture = null;
     $overallTotal = 0.0;
@@ -1502,6 +1502,37 @@ $computeReservationPricing = static function (?RateManager $rateManager, array $
                 }
 
                 $overallTotal += $itemTotal;
+            }
+        }
+
+        if ($itemTotal === null && $rateId > 0 && $itemNights !== null && $itemNights > 0) {
+            $rateData = null;
+            if (isset($resolveRateById) && is_callable($resolveRateById)) {
+                try {
+                    $rateData = $resolveRateById($rateId);
+                } catch (Throwable $exception) {
+                    $rateData = null;
+                }
+            }
+
+            if (is_array($rateData)) {
+                $categoryPrices = isset($rateData['category_prices']) && is_array($rateData['category_prices'])
+                    ? $rateData['category_prices']
+                    : [];
+
+                $basePrice = null;
+                if (isset($categoryPrices[$categoryId])) {
+                    $basePrice = (float) $categoryPrices[$categoryId];
+                } elseif (isset($rateData['base_price'])) {
+                    $basePrice = (float) $rateData['base_price'];
+                }
+
+                if ($basePrice !== null) {
+                    $calculatedTotal = $basePrice * $itemNights * $quantity;
+                    $itemTotal = round($calculatedTotal, 2);
+                    $itemPricePerNight = round($basePrice, 2);
+                    $overallTotal += $itemTotal;
+                }
             }
         }
 
