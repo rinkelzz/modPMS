@@ -15985,17 +15985,120 @@ if ($activeSection === 'reservations') {
                 return;
               }
 
+              var picker = pair.picker;
               var isoForPicker = getIsoFromPair(pair);
-              if (pair.picker.value !== isoForPicker) {
-                pair.picker.value = isoForPicker;
+              if (picker.value !== isoForPicker) {
+                picker.value = isoForPicker;
               }
 
-              if (typeof pair.picker.showPicker === 'function') {
+              if (typeof picker.showPicker === 'function') {
                 try {
-                  pair.picker.showPicker();
+                  picker.showPicker();
+                  return;
                 } catch (error) {
                   // ignore browsers that throw when showPicker is unsupported
                 }
+              }
+
+              if (picker.getAttribute('data-picker-fallback-active') === '1') {
+                try {
+                  picker.focus({ preventScroll: true });
+                } catch (focusError) {
+                  picker.focus();
+                }
+                return;
+              }
+
+              var originalTabIndex = picker.getAttribute('tabindex');
+              var originalAriaHidden = picker.getAttribute('aria-hidden');
+              var originalStyle = picker.getAttribute('style');
+              var display = pair.display;
+              var cleanedUp = false;
+
+              function restorePickerStyles() {
+                if (originalStyle !== null) {
+                  picker.setAttribute('style', originalStyle);
+                } else {
+                  picker.removeAttribute('style');
+                }
+
+                if (originalTabIndex !== null) {
+                  picker.setAttribute('tabindex', originalTabIndex);
+                } else {
+                  picker.removeAttribute('tabindex');
+                }
+
+                if (originalAriaHidden !== null) {
+                  picker.setAttribute('aria-hidden', originalAriaHidden);
+                } else {
+                  picker.removeAttribute('aria-hidden');
+                }
+              }
+
+              function cleanupFallback() {
+                if (cleanedUp) {
+                  return;
+                }
+
+                cleanedUp = true;
+                picker.removeEventListener('blur', handleBlur);
+                picker.removeEventListener('keydown', handleKeydown);
+                picker.removeEventListener('change', handleChange);
+                picker.removeAttribute('data-picker-fallback-active');
+                picker.classList.remove('form-control', 'reservation-date-picker-fallback');
+
+                if (display) {
+                  display.classList.remove('d-none');
+                }
+
+                restorePickerStyles();
+              }
+
+              function handleBlur() {
+                cleanupFallback();
+              }
+
+              function handleKeydown(event) {
+                if (event && event.key === 'Escape') {
+                  picker.value = isoForPicker;
+                  setIsoForPair(pair, picker.value || '');
+                  cleanupFallback();
+                }
+              }
+
+              function handleChange() {
+                // allow existing change handlers to run before cleaning up
+                window.setTimeout(cleanupFallback, 0);
+              }
+
+              picker.setAttribute('data-picker-fallback-active', '1');
+              picker.classList.add('form-control', 'reservation-date-picker-fallback');
+              picker.removeAttribute('tabindex');
+              picker.removeAttribute('aria-hidden');
+              picker.style.position = 'relative';
+              picker.style.left = '0';
+              picker.style.width = '100%';
+              picker.style.height = '';
+              picker.style.opacity = '1';
+              picker.style.pointerEvents = 'auto';
+              picker.style.marginTop = display ? '0.25rem' : '';
+              picker.style.top = '';
+              picker.style.right = '';
+              picker.style.bottom = '';
+              picker.style.zIndex = '';
+
+              if (display) {
+                display.classList.add('d-none');
+              }
+
+              picker.addEventListener('blur', handleBlur);
+              picker.addEventListener('keydown', handleKeydown);
+              picker.addEventListener('change', handleChange);
+
+              try {
+                picker.focus({ preventScroll: true });
+              } catch (focusError) {
+                picker.focus();
               }
             }
 
