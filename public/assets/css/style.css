@@ -417,14 +417,22 @@ body {
     background-color: #e0f2fe;
 }
 
+
 .room-calendar-cell .occupancy-entry {
     font-weight: 600;
     font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    white-space: nowrap;
 }
 
 .room-calendar-cell .occupancy-entry-action {
     --occupancy-entry-padding-x: 0.5rem;
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     border-radius: 0.5rem;
     padding: 0.25rem var(--occupancy-entry-padding-x);
     background-color: rgba(37, 99, 235, 0.12);
