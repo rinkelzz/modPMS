@@ -15296,6 +15296,18 @@ if ($activeSection === 'reservations') {
           return '';
         }
 
+        function getDateFieldPair(item, type) {
+          if (!item) {
+            return { display: null, hidden: null, picker: null };
+          }
+
+          return {
+            display: item.querySelector('.reservation-item-' + type + '-display'),
+            hidden: item.querySelector('.reservation-item-' + type + '-value'),
+            picker: item.querySelector('.reservation-item-' + type + '-picker')
+          };
+        }
+
         function formatDateDisplay(value) {
           if (typeof value !== 'string') {
             return '';
@@ -15567,18 +15579,6 @@ if ($activeSection === 'reservations') {
             }
 
             return value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-          }
-
-          function getDateFieldPair(item, type) {
-            if (!item) {
-              return { display: null, hidden: null, picker: null };
-            }
-
-            return {
-              display: item.querySelector('.reservation-item-' + type + '-display'),
-              hidden: item.querySelector('.reservation-item-' + type + '-value'),
-              picker: item.querySelector('.reservation-item-' + type + '-picker')
-            };
           }
 
           function setIsoForPair(pair, iso) {
