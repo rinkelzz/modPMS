@@ -415,6 +415,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INDEX idx_install_reservation_items_primary_guest (primary_guest_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
 
+                $reservationItemColumns = [];
+                foreach ($pdo->query('SHOW COLUMNS FROM `reservation_items`') as $column) {
+                    if (isset($column['Field'])) {
+                        $reservationItemColumns[] = $column['Field'];
+                    }
+                }
+
+                $reservationItemColumnDefinitions = [
+                    'rate_id' => 'ALTER TABLE `reservation_items` ADD COLUMN rate_id INT UNSIGNED NULL AFTER room_id',
+                    'arrival_date' => 'ALTER TABLE `reservation_items` ADD COLUMN arrival_date DATE NULL AFTER room_quantity',
+                    'departure_date' => 'ALTER TABLE `reservation_items` ADD COLUMN departure_date DATE NULL AFTER arrival_date',
+                    'price_per_night' => 'ALTER TABLE `reservation_items` ADD COLUMN price_per_night DECIMAL(10,2) NULL AFTER departure_date',
+                    'total_price' => 'ALTER TABLE `reservation_items` ADD COLUMN total_price DECIMAL(10,2) NULL AFTER price_per_night',
+                    'occupancy' => 'ALTER TABLE `reservation_items` ADD COLUMN occupancy INT UNSIGNED NOT NULL DEFAULT 1 AFTER room_quantity',
+                    'primary_guest_id' => 'ALTER TABLE `reservation_items` ADD COLUMN primary_guest_id INT UNSIGNED NULL AFTER occupancy',
+                ];
+
+                foreach ($reservationItemColumnDefinitions as $columnName => $alterSql) {
+                    if (!in_array($columnName, $reservationItemColumns, true)) {
+                        $pdo->exec($alterSql);
+                    }
+                }
+
                 $pdo->exec('CREATE TABLE IF NOT EXISTS reservation_item_articles (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     reservation_item_id INT UNSIGNED NOT NULL,
