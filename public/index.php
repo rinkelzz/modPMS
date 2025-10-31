@@ -15990,22 +15990,13 @@ if ($activeSection === 'reservations') {
                 pair.picker.value = isoForPicker;
               }
 
-              try {
-                if (typeof pair.picker.showPicker === 'function') {
+              if (typeof pair.picker.showPicker === 'function') {
+                try {
                   pair.picker.showPicker();
-                  return;
+                } catch (error) {
+                  // ignore browsers that throw when showPicker is unsupported
                 }
-              } catch (error) {
-                // ignore, fallback below
               }
-
-              try {
-                pair.picker.focus({ preventScroll: true });
-              } catch (error) {
-                pair.picker.focus();
-              }
-
-              pair.picker.click();
             }
 
             if (arrivalPair.display) {
