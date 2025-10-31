@@ -15390,6 +15390,47 @@ if ($activeSection === 'reservations') {
           return first.getTime() <= second.getTime();
         }
 
+        function clampArrivalIso(iso) {
+          var normalized = normalizeDateString(typeof iso === 'string' ? iso : '');
+          if (!normalized) {
+            return '';
+          }
+
+          var dateObj = parseISODate(normalized);
+          if (!(dateObj instanceof Date)) {
+            return '';
+          }
+
+          return normalized;
+        }
+
+        function ensureDepartureAfter(arrivalIso, departureIso) {
+          var normalizedArrival = normalizeDateString(typeof arrivalIso === 'string' ? arrivalIso : '');
+          var normalizedDeparture = normalizeDateString(typeof departureIso === 'string' ? departureIso : '');
+
+          if (!normalizedArrival) {
+            return normalizedDeparture;
+          }
+
+          var arrivalDate = parseISODate(normalizedArrival);
+          if (!(arrivalDate instanceof Date)) {
+            return normalizedDeparture;
+          }
+
+          if (!normalizedDeparture) {
+            var minimumDeparture = addDays(arrivalDate, 1);
+            return minimumDeparture instanceof Date ? formatISODate(minimumDeparture) : '';
+          }
+
+          var departureDate = parseISODate(normalizedDeparture);
+          if (!(departureDate instanceof Date) || !isBefore(arrivalDate, departureDate)) {
+            var nextDay = addDays(arrivalDate, 1);
+            return nextDay instanceof Date ? formatISODate(nextDay) : '';
+          }
+
+          return normalizedDeparture;
+        }
+
         var now = new Date();
         var todayUtcDate = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
         var todayIsoString = formatISODate(todayUtcDate);
@@ -15640,47 +15681,6 @@ if ($activeSection === 'reservations') {
             }
 
             return iso;
-          }
-
-          function clampArrivalIso(iso) {
-            var normalized = normalizeDateString(typeof iso === 'string' ? iso : '');
-            if (!normalized) {
-              return '';
-            }
-
-            var dateObj = parseISODate(normalized);
-            if (!(dateObj instanceof Date)) {
-              return '';
-            }
-
-            return normalized;
-          }
-
-          function ensureDepartureAfter(arrivalIso, departureIso) {
-            var normalizedArrival = normalizeDateString(typeof arrivalIso === 'string' ? arrivalIso : '');
-            var normalizedDeparture = normalizeDateString(typeof departureIso === 'string' ? departureIso : '');
-
-            if (!normalizedArrival) {
-              return normalizedDeparture;
-            }
-
-            var arrivalDate = parseISODate(normalizedArrival);
-            if (!(arrivalDate instanceof Date)) {
-              return normalizedDeparture;
-            }
-
-            if (!normalizedDeparture) {
-              var minimumDeparture = addDays(arrivalDate, 1);
-              return minimumDeparture instanceof Date ? formatISODate(minimumDeparture) : '';
-            }
-
-            var departureDate = parseISODate(normalizedDeparture);
-            if (!(departureDate instanceof Date) || !isBefore(arrivalDate, departureDate)) {
-              var nextDay = addDays(arrivalDate, 1);
-              return nextDay instanceof Date ? formatISODate(nextDay) : '';
-            }
-
-            return normalizedDeparture;
           }
 
           function triggerGrandTotalUpdate() {
