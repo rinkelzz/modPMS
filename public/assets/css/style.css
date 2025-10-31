@@ -427,6 +427,7 @@ body {
     justify-content: center;
     text-align: center;
     white-space: nowrap;
+    width: 100%;
 }
 
 .room-calendar-cell .occupancy-entry-action {
@@ -467,43 +468,45 @@ body {
     position: relative;
     z-index: 1;
     border-radius: 0.75rem;
+    overflow: visible;
+}
+
+.room-calendar-cell .occupancy-entry-range::before {
+    content: "";
+    position: absolute;
+    top: calc(-1 * var(--calendar-border-width));
+    bottom: calc(-1 * var(--calendar-border-width));
+    left: 0;
+    right: 0;
+    border-radius: inherit;
+    background-color: inherit;
+    z-index: -1;
 }
 
 .room-calendar-cell .occupancy-entry-range-continue-left {
     border-top-left-radius: 0;
     border-bottom-left-radius: 0;
-    margin-left: calc(-1 * (var(--calendar-cell-padding-x) + var(--calendar-border-width)));
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-left::before {
+    left: calc(-1 * (var(--calendar-cell-padding-x) + var(--calendar-border-width)));
 }
 
 .room-calendar-cell .occupancy-entry-range-continue-right {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
-    margin-right: calc(-1 * (var(--calendar-cell-padding-x) + var(--calendar-border-width)));
 }
 
-.room-calendar-cell .occupancy-entry-range::before,
-.room-calendar-cell .occupancy-entry-range::after {
-    content: "";
-    position: absolute;
-    top: calc(-1 * var(--calendar-border-width));
-    bottom: calc(-1 * var(--calendar-border-width));
-    width: calc(var(--calendar-cell-padding-x) + var(--occupancy-entry-padding-x, 0.5rem) + var(--calendar-border-width));
-    background-color: inherit;
-    display: none;
-    pointer-events: none;
-    z-index: -1;
+.room-calendar-cell .occupancy-entry-range-continue-right::before {
+    right: calc(-1 * (var(--calendar-cell-padding-x) + var(--calendar-border-width)));
 }
 
 .room-calendar-cell .occupancy-entry-range-continue-left::before {
-    display: block;
-    left: calc(-1 * (var(--calendar-cell-padding-x) + var(--occupancy-entry-padding-x, 0.5rem) + var(--calendar-border-width)));
     border-top-left-radius: inherit;
     border-bottom-left-radius: inherit;
 }
 
-.room-calendar-cell .occupancy-entry-range-continue-right::after {
-    display: block;
-    right: calc(-1 * (var(--calendar-cell-padding-x) + var(--occupancy-entry-padding-x, 0.5rem) + var(--calendar-border-width)));
+.room-calendar-cell .occupancy-entry-range-continue-right::before {
     border-top-right-radius: inherit;
     border-bottom-right-radius: inherit;
 }
