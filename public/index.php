@@ -10269,10 +10269,11 @@ if ($activeSection === 'reservations') {
                                                     $occupantClasses[] = 'occupancy-entry-range-continue-right';
                                                 }
                                             }
+                                        }
 
-                                            if (!$shouldShowOccupantLabel) {
-                                                $occupantOutputLabel = '';
-                                            }
+                                        if (!$shouldShowOccupantLabel) {
+                                            $occupantOutputLabel = "\u{00A0}";
+                                            $occupantClasses[] = 'occupancy-entry-label-hidden';
                                         }
 
                                         $classAttr = htmlspecialchars(implode(' ', $occupantClasses));
@@ -10408,7 +10409,8 @@ if ($activeSection === 'reservations') {
                                         }
                                     }
                                     if (!$shouldShowEntryLabel) {
-                                        $entryOutputLabel = '';
+                                        $entryOutputLabel = "\u{00A0}";
+                                        $entryClasses[] = 'occupancy-entry-label-hidden';
                                     }
                                     $entryClassAttr = htmlspecialchars(implode(' ', $entryClasses));
                                     $entryActionAttributes = sprintf(' role="button" tabindex="0" data-reservation=\'%s\'%s', $entryDataAttr, $entryAttributes);
