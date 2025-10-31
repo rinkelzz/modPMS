@@ -8200,6 +8200,39 @@ if ($pdo !== null) {
                         $entry['type'] = 'room';
                     }
 
+                    $continuesLeft = false;
+                    if ($arrival instanceof DateTimeImmutable) {
+                        $continuesLeft = $cursor > $arrival;
+                    } else {
+                        $continuesLeft = $cursor > $effectiveStart;
+                    }
+
+                    $nextCursor = $cursor->modify('+1 day');
+                    $continuesRight = false;
+                    if ($departure instanceof DateTimeImmutable) {
+                        $continuesRight = $nextCursor < $departure;
+                    } else {
+                        $continuesRight = $nextCursor < $effectiveEnd;
+                    }
+
+                    $rangeParts = ['room:' . $roomId, 'type:' . ($entry['type'] ?? 'room')];
+                    if (isset($entry['reservationId']) && $entry['reservationId'] !== null) {
+                        $rangeParts[] = 'reservation:' . (string) $entry['reservationId'];
+                    }
+                    if (!empty($entry['reservationNumber'])) {
+                        $rangeParts[] = 'number:' . (string) $entry['reservationNumber'];
+                    }
+                    if (isset($entry['itemId']) && $entry['itemId'] !== null) {
+                        $rangeParts[] = 'item:' . (string) $entry['itemId'];
+                    }
+                    if ($stay['label'] !== '') {
+                        $rangeParts[] = 'label:' . (string) $stay['label'];
+                    }
+
+                    $entry['calendarContinuesLeft'] = $continuesLeft;
+                    $entry['calendarContinuesRight'] = $continuesRight;
+                    $entry['calendarRangeId'] = hash('sha256', implode('|', $rangeParts));
+
                     $roomOccupancies[$roomId][$dateKey][] = $entry;
                 }
             }
@@ -8279,6 +8312,39 @@ if ($pdo !== null) {
                     if (!isset($entry['roomId'])) {
                         $entry['roomId'] = null;
                     }
+
+                    $continuesLeft = false;
+                    if ($arrival instanceof DateTimeImmutable) {
+                        $continuesLeft = $cursor > $arrival;
+                    } else {
+                        $continuesLeft = $cursor > $effectiveStart;
+                    }
+
+                    $nextCursor = $cursor->modify('+1 day');
+                    $continuesRight = false;
+                    if ($departure instanceof DateTimeImmutable) {
+                        $continuesRight = $nextCursor < $departure;
+                    } else {
+                        $continuesRight = $nextCursor < $effectiveEnd;
+                    }
+
+                    $rangeParts = ['category:' . $categoryId, 'type:overbooking'];
+                    if (isset($entry['reservationId']) && $entry['reservationId'] !== null) {
+                        $rangeParts[] = 'reservation:' . (string) $entry['reservationId'];
+                    }
+                    if (!empty($entry['reservationNumber'])) {
+                        $rangeParts[] = 'number:' . (string) $entry['reservationNumber'];
+                    }
+                    if (isset($entry['itemId']) && $entry['itemId'] !== null) {
+                        $rangeParts[] = 'item:' . (string) $entry['itemId'];
+                    }
+                    if ($stay['label'] !== '') {
+                        $rangeParts[] = 'label:' . (string) $stay['label'];
+                    }
+
+                    $entry['calendarContinuesLeft'] = $continuesLeft;
+                    $entry['calendarContinuesRight'] = $continuesRight;
+                    $entry['calendarRangeId'] = hash('sha256', implode('|', $rangeParts));
 
                     $categoryOverbookingOccupancies[$categoryId][$dateKey]['labels'][] = $stay['label'];
                     $categoryOverbookingOccupancies[$categoryId][$dateKey]['quantity'] += $stayQuantity;
@@ -10106,10 +10172,33 @@ if ($activeSection === 'reservations') {
                                             $occupantClasses[] = 'status-colored';
                                         }
 
+                                        if ($occupantData !== null) {
+                                            $continuesLeft = !empty($occupantData['calendarContinuesLeft']);
+                                            $continuesRight = !empty($occupantData['calendarContinuesRight']);
+                                            if ($continuesLeft || $continuesRight) {
+                                                $occupantClasses[] = 'occupancy-entry-range';
+                                                if ($continuesLeft) {
+                                                    $occupantClasses[] = 'occupancy-entry-range-continue-left';
+                                                }
+                                                if ($continuesRight) {
+                                                    $occupantClasses[] = 'occupancy-entry-range-continue-right';
+                                                }
+                                            }
+                                        }
+
                                         $classAttr = htmlspecialchars(implode(' ', $occupantClasses));
                                         $actionAttributes = $occupantAttributes;
                                         if ($occupantData !== null) {
                                             $actionAttributes = sprintf(' role="button" tabindex="0" data-reservation=\'%s\'%s', $occupantDataAttr, $occupantAttributes);
+                                            if (!empty($occupantData['calendarRangeId'])) {
+                                                $actionAttributes .= ' data-calendar-range="' . htmlspecialchars((string) $occupantData['calendarRangeId']) . '"';
+                                            }
+                                            if (!empty($occupantData['calendarContinuesLeft'])) {
+                                                $actionAttributes .= ' data-calendar-continues-left="1"';
+                                            }
+                                            if (!empty($occupantData['calendarContinuesRight'])) {
+                                                $actionAttributes .= ' data-calendar-continues-right="1"';
+                                            }
                                         }
                                       ?>
                                       <div class="<?= $classAttr ?>"<?= $actionAttributes ?><?= $styleAttr ?>><?= htmlspecialchars($occupantLabel) ?></div>
@@ -10212,8 +10301,28 @@ if ($activeSection === 'reservations') {
                                         $entryStyleAttr = sprintf(' style="--occupancy-bg:%s;--occupancy-color:%s;"', htmlspecialchars($entryStatusColor, ENT_QUOTES, 'UTF-8'), htmlspecialchars($entryStatusTextColor, ENT_QUOTES, 'UTF-8'));
                                         $entryClasses[] = 'status-colored';
                                     }
+                                    $entryContinuesLeft = !empty($entry['calendarContinuesLeft']);
+                                    $entryContinuesRight = !empty($entry['calendarContinuesRight']);
+                                    if ($entryContinuesLeft || $entryContinuesRight) {
+                                        $entryClasses[] = 'occupancy-entry-range';
+                                        if ($entryContinuesLeft) {
+                                            $entryClasses[] = 'occupancy-entry-range-continue-left';
+                                        }
+                                        if ($entryContinuesRight) {
+                                            $entryClasses[] = 'occupancy-entry-range-continue-right';
+                                        }
+                                    }
                                     $entryClassAttr = htmlspecialchars(implode(' ', $entryClasses));
                                     $entryActionAttributes = sprintf(' role="button" tabindex="0" data-reservation=\'%s\'%s', $entryDataAttr, $entryAttributes);
+                                    if (!empty($entry['calendarRangeId'])) {
+                                        $entryActionAttributes .= ' data-calendar-range="' . htmlspecialchars((string) $entry['calendarRangeId']) . '"';
+                                    }
+                                    if ($entryContinuesLeft) {
+                                        $entryActionAttributes .= ' data-calendar-continues-left="1"';
+                                    }
+                                    if ($entryContinuesRight) {
+                                        $entryActionAttributes .= ' data-calendar-continues-right="1"';
+                                    }
                                   ?>
                                   <div class="<?= $entryClassAttr ?>"<?= $entryActionAttributes ?><?= $entryStyleAttr ?>><?= htmlspecialchars($entryLabel) ?></div>
                                 <?php endforeach; ?>

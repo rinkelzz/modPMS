@@ -359,6 +359,8 @@ body {
     height: 60px;
     background-color: #f8fafc;
     transition: background-color 0.2s ease;
+    position: relative;
+    overflow: visible;
 }
 
 .room-calendar-cell.empty {
@@ -446,6 +448,50 @@ body {
 
 .room-calendar-cell .occupancy-entry-action:focus {
     outline: none;
+}
+
+.room-calendar-cell .occupancy-entry-range {
+    position: relative;
+    z-index: 1;
+    border-radius: 0.75rem;
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-left {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    margin-left: -0.5rem;
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-right {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    margin-right: -0.5rem;
+}
+
+.room-calendar-cell .occupancy-entry-range::before,
+.room-calendar-cell .occupancy-entry-range::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0.5rem;
+    background-color: inherit;
+    display: none;
+    z-index: -1;
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-left::before {
+    display: block;
+    left: -0.5rem;
+    border-top-left-radius: inherit;
+    border-bottom-left-radius: inherit;
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-right::after {
+    display: block;
+    right: -0.5rem;
+    border-top-right-radius: inherit;
+    border-bottom-right-radius: inherit;
 }
 
 .room-calendar-cell .occupancy-entry + .occupancy-entry {
