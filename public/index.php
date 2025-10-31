@@ -15308,6 +15308,67 @@ if ($activeSection === 'reservations') {
           };
         }
 
+        function setIsoForPair(pair, iso) {
+          if (!pair) {
+            return '';
+          }
+
+          var normalized = normalizeDateString(typeof iso === 'string' ? iso : '');
+
+          if (pair.hidden) {
+            pair.hidden.value = normalized;
+          }
+
+          if (pair.display) {
+            pair.display.value = normalized ? formatDateDisplay(normalized) : '';
+          }
+
+          if (pair.picker) {
+            pair.picker.value = normalized;
+          }
+
+          return normalized;
+        }
+
+        function getIsoFromPair(pair) {
+          if (!pair) {
+            return '';
+          }
+
+          var displayValue = pair.display && typeof pair.display.value === 'string'
+            ? pair.display.value.trim()
+            : '';
+          var hiddenValue = pair.hidden && typeof pair.hidden.value === 'string'
+            ? pair.hidden.value.trim()
+            : '';
+          var pickerValue = pair.picker && typeof pair.picker.value === 'string'
+            ? pair.picker.value.trim()
+            : '';
+
+          var iso = '';
+          if (displayValue !== '') {
+            iso = normalizeDateString(displayValue);
+          } else if (pickerValue !== '') {
+            iso = normalizeDateString(pickerValue);
+          } else if (hiddenValue !== '') {
+            iso = normalizeDateString(hiddenValue);
+          }
+
+          if (pair.hidden) {
+            pair.hidden.value = iso;
+          }
+
+          if (pair.display) {
+            pair.display.value = iso ? formatDateDisplay(iso) : '';
+          }
+
+          if (pair.picker) {
+            pair.picker.value = iso;
+          }
+
+          return iso;
+        }
+
         function formatDateDisplay(value) {
           if (typeof value !== 'string') {
             return '';
@@ -15388,6 +15449,47 @@ if ($activeSection === 'reservations') {
           }
 
           return first.getTime() <= second.getTime();
+        }
+
+        function clampArrivalIso(iso) {
+          var normalized = normalizeDateString(typeof iso === 'string' ? iso : '');
+          if (!normalized) {
+            return '';
+          }
+
+          var dateObj = parseISODate(normalized);
+          if (!(dateObj instanceof Date)) {
+            return '';
+          }
+
+          return normalized;
+        }
+
+        function ensureDepartureAfter(arrivalIso, departureIso) {
+          var normalizedArrival = normalizeDateString(typeof arrivalIso === 'string' ? arrivalIso : '');
+          var normalizedDeparture = normalizeDateString(typeof departureIso === 'string' ? departureIso : '');
+
+          if (!normalizedArrival) {
+            return normalizedDeparture;
+          }
+
+          var arrivalDate = parseISODate(normalizedArrival);
+          if (!(arrivalDate instanceof Date)) {
+            return normalizedDeparture;
+          }
+
+          if (!normalizedDeparture) {
+            var minimumDeparture = addDays(arrivalDate, 1);
+            return minimumDeparture instanceof Date ? formatISODate(minimumDeparture) : '';
+          }
+
+          var departureDate = parseISODate(normalizedDeparture);
+          if (!(departureDate instanceof Date) || !isBefore(arrivalDate, departureDate)) {
+            var nextDay = addDays(arrivalDate, 1);
+            return nextDay instanceof Date ? formatISODate(nextDay) : '';
+          }
+
+          return normalizedDeparture;
         }
 
         var now = new Date();
@@ -15579,108 +15681,6 @@ if ($activeSection === 'reservations') {
             }
 
             return value.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-          }
-
-          function setIsoForPair(pair, iso) {
-            if (!pair) {
-              return '';
-            }
-
-            var normalized = normalizeDateString(typeof iso === 'string' ? iso : '');
-
-            if (pair.hidden) {
-              pair.hidden.value = normalized;
-            }
-
-            if (pair.display) {
-              pair.display.value = normalized ? formatDateDisplay(normalized) : '';
-            }
-
-            if (pair.picker) {
-              pair.picker.value = normalized;
-            }
-
-            return normalized;
-          }
-
-          function getIsoFromPair(pair) {
-            if (!pair) {
-              return '';
-            }
-
-            var displayValue = pair.display && typeof pair.display.value === 'string'
-              ? pair.display.value.trim()
-              : '';
-            var hiddenValue = pair.hidden && typeof pair.hidden.value === 'string'
-              ? pair.hidden.value.trim()
-              : '';
-            var pickerValue = pair.picker && typeof pair.picker.value === 'string'
-              ? pair.picker.value.trim()
-              : '';
-
-            var iso = '';
-            if (displayValue !== '') {
-              iso = normalizeDateString(displayValue);
-            } else if (pickerValue !== '') {
-              iso = normalizeDateString(pickerValue);
-            } else if (hiddenValue !== '') {
-              iso = normalizeDateString(hiddenValue);
-            }
-
-            if (pair.hidden) {
-              pair.hidden.value = iso;
-            }
-
-            if (pair.display) {
-              pair.display.value = iso ? formatDateDisplay(iso) : '';
-            }
-
-            if (pair.picker) {
-              pair.picker.value = iso;
-            }
-
-            return iso;
-          }
-
-          function clampArrivalIso(iso) {
-            var normalized = normalizeDateString(typeof iso === 'string' ? iso : '');
-            if (!normalized) {
-              return '';
-            }
-
-            var dateObj = parseISODate(normalized);
-            if (!(dateObj instanceof Date)) {
-              return '';
-            }
-
-            return normalized;
-          }
-
-          function ensureDepartureAfter(arrivalIso, departureIso) {
-            var normalizedArrival = normalizeDateString(typeof arrivalIso === 'string' ? arrivalIso : '');
-            var normalizedDeparture = normalizeDateString(typeof departureIso === 'string' ? departureIso : '');
-
-            if (!normalizedArrival) {
-              return normalizedDeparture;
-            }
-
-            var arrivalDate = parseISODate(normalizedArrival);
-            if (!(arrivalDate instanceof Date)) {
-              return normalizedDeparture;
-            }
-
-            if (!normalizedDeparture) {
-              var minimumDeparture = addDays(arrivalDate, 1);
-              return minimumDeparture instanceof Date ? formatISODate(minimumDeparture) : '';
-            }
-
-            var departureDate = parseISODate(normalizedDeparture);
-            if (!(departureDate instanceof Date) || !isBefore(arrivalDate, departureDate)) {
-              var nextDay = addDays(arrivalDate, 1);
-              return nextDay instanceof Date ? formatISODate(nextDay) : '';
-            }
-
-            return normalizedDeparture;
           }
 
           function triggerGrandTotalUpdate() {
