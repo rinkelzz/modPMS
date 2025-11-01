@@ -16,6 +16,7 @@ use ModPMS\ReservationManager;
 use ModPMS\ReportManager;
 use ModPMS\ReportPdfRenderer;
 use ModPMS\SumUpClient;
+use ModPMS\SaltoSpaceClient;
 use ModPMS\TaxCategoryManager;
 use ModPMS\SettingManager;
 use ModPMS\RoomCategoryManager;
@@ -45,6 +46,7 @@ require_once __DIR__ . '/../src/EmailLogManager.php';
 require_once __DIR__ . '/../src/MeldescheinManager.php';
 require_once __DIR__ . '/../src/MeldescheinPdfRenderer.php';
 require_once __DIR__ . '/../src/SumUpClient.php';
+require_once __DIR__ . '/../src/SaltoSpaceClient.php';
 
 session_start();
 
@@ -351,6 +353,16 @@ $sumupMerchantCode = '';
 $sumupDefaultTerminal = '';
 $sumupApplicationId = '';
 $sumupAffiliateKey = '';
+$saltoApiUrl = '';
+$saltoTenantId = '';
+$saltoSiteId = '';
+$saltoApiToken = '';
+$saltoTimeoutSeconds = 15;
+$saltoApiUrlFormValue = '';
+$saltoTenantIdFormValue = '';
+$saltoSiteIdFormValue = '';
+$saltoApiTokenFormValue = '';
+$saltoTimeoutFormValue = (string) $saltoTimeoutSeconds;
 $reservationFormDefaults = $reservationFormData;
 $reservationFormMode = 'create';
 $isEditingReservation = false;
@@ -1111,6 +1123,46 @@ if ($settingsManager instanceof SettingManager) {
     if (isset($sumupSettings['sumup_affiliate_key'])) {
         $sumupAffiliateKey = trim((string) $sumupSettings['sumup_affiliate_key']);
     }
+
+    $saltoSettings = $settingsManager->getMany([
+        'salto_api_url',
+        'salto_tenant_id',
+        'salto_site_id',
+        'salto_api_token',
+        'salto_timeout',
+    ]);
+
+    if (isset($saltoSettings['salto_api_url'])) {
+        $candidate = trim((string) $saltoSettings['salto_api_url']);
+        if ($candidate !== '') {
+            $saltoApiUrl = rtrim($candidate, '/');
+        }
+    }
+
+    if (isset($saltoSettings['salto_tenant_id'])) {
+        $saltoTenantId = trim((string) $saltoSettings['salto_tenant_id']);
+    }
+
+    if (isset($saltoSettings['salto_site_id'])) {
+        $saltoSiteId = trim((string) $saltoSettings['salto_site_id']);
+    }
+
+    if (isset($saltoSettings['salto_api_token'])) {
+        $saltoApiToken = trim((string) $saltoSettings['salto_api_token']);
+    }
+
+    if (isset($saltoSettings['salto_timeout'])) {
+        $timeoutCandidate = (int) $saltoSettings['salto_timeout'];
+        if ($timeoutCandidate > 0) {
+            $saltoTimeoutSeconds = max(5, min($timeoutCandidate, 120));
+        }
+    }
+
+    $saltoApiUrlFormValue = $saltoApiUrl;
+    $saltoTenantIdFormValue = $saltoTenantId;
+    $saltoSiteIdFormValue = $saltoSiteId;
+    $saltoApiTokenFormValue = $saltoApiToken;
+    $saltoTimeoutFormValue = (string) $saltoTimeoutSeconds;
 }
 
 $mailFromAddressFormValue = $mailFromAddress;
@@ -2302,6 +2354,80 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             ];
 
             header('Location: index.php?section=settings#payment-settings');
+            exit;
+
+        case 'settings_salto_space':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Salto Space-Einstellungen können ohne Datenbankverbindung nicht gespeichert werden.',
+                ];
+                break;
+            }
+
+            $apiUrlInput = trim((string) ($_POST['salto_api_url'] ?? ''));
+            $tenantIdInput = trim((string) ($_POST['salto_tenant_id'] ?? ''));
+            $siteIdInput = trim((string) ($_POST['salto_site_id'] ?? ''));
+            $tokenInput = trim((string) ($_POST['salto_api_token'] ?? ''));
+            $timeoutInput = isset($_POST['salto_timeout']) ? (int) $_POST['salto_timeout'] : $saltoTimeoutSeconds;
+
+            $saltoApiUrlFormValue = $apiUrlInput;
+            $saltoTenantIdFormValue = $tenantIdInput;
+            $saltoSiteIdFormValue = $siteIdInput;
+            $saltoApiTokenFormValue = $tokenInput;
+            $saltoTimeoutFormValue = (string) $timeoutInput;
+
+            $hasConfig = $apiUrlInput !== '' || $tenantIdInput !== '' || $siteIdInput !== '' || $tokenInput !== '';
+
+            if ($apiUrlInput !== '' && filter_var($apiUrlInput, FILTER_VALIDATE_URL) === false) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Bitte geben Sie eine gültige API-URL für Salto Space an.',
+                ];
+                break;
+            }
+
+            if ($hasConfig && ($apiUrlInput === '' || $tenantIdInput === '' || $tokenInput === '')) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Für die Salto Space-Integration werden API-URL, Mandanten-ID und API-Token benötigt.',
+                ];
+                break;
+            }
+
+            $timeoutNormalized = max(5, min((int) $timeoutInput, 120));
+            $saltoTimeoutFormValue = (string) $timeoutNormalized;
+
+            $settingsManager->set('salto_api_url', $apiUrlInput);
+            $settingsManager->set('salto_tenant_id', $tenantIdInput);
+            $settingsManager->set('salto_site_id', $siteIdInput);
+            $settingsManager->set('salto_api_token', $tokenInput);
+            $settingsManager->set('salto_timeout', (string) $timeoutNormalized);
+
+            $saltoApiUrl = $apiUrlInput !== '' ? rtrim($apiUrlInput, '/') : '';
+            $saltoTenantId = $tenantIdInput;
+            $saltoSiteId = $siteIdInput;
+            $saltoApiToken = $tokenInput;
+            $saltoTimeoutSeconds = $timeoutNormalized;
+
+            $saltoApiUrlFormValue = $saltoApiUrl;
+            $saltoTenantIdFormValue = $saltoTenantId;
+            $saltoSiteIdFormValue = $saltoSiteId;
+            $saltoApiTokenFormValue = $saltoApiToken;
+            $saltoTimeoutFormValue = (string) $saltoTimeoutSeconds;
+
+            $message = $hasConfig
+                ? 'Salto Space-Einstellungen wurden gespeichert.'
+                : 'Salto Space-Integration wurde deaktiviert.';
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => $message,
+            ];
+
+            header('Location: index.php?section=settings#salto-settings');
             exit;
 
         case 'settings_document_company':
@@ -6760,9 +6886,210 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             $reservationManager->updateStatus($reservationId, $statusInput, $currentUserId);
             $_SESSION['redirect_reservation'] = $reservationId;
+
+            $alertType = 'success';
+            $alertMessages = ['Reservierungsstatus wurde aktualisiert.'];
+
+            if ($statusInput === 'eingecheckt') {
+                $apiUrl = $saltoApiUrl;
+                $tenantId = $saltoTenantId;
+                $siteId = $saltoSiteId;
+                $apiToken = $saltoApiToken;
+                $timeoutSeconds = $saltoTimeoutSeconds > 0 ? $saltoTimeoutSeconds : 15;
+
+                if ($apiUrl === '' || $tenantId === '' || $apiToken === '') {
+                    $alertType = $alertType === 'success' ? 'warning' : $alertType;
+                    $alertMessages[] = 'Hinweis: Salto Space ist nicht vollständig konfiguriert.';
+                } else {
+                    $reservationNumber = isset($reservation['reservation_number'])
+                        ? (string) $reservation['reservation_number']
+                        : '';
+                    if ($reservationNumber === '') {
+                        $reservationNumber = 'reservation-' . $reservationId;
+                    }
+
+                    $guestFirstName = isset($reservation['guest_first_name'])
+                        ? trim((string) $reservation['guest_first_name'])
+                        : '';
+                    $guestLastName = isset($reservation['guest_last_name'])
+                        ? trim((string) $reservation['guest_last_name'])
+                        : '';
+                    $guestEmail = '';
+                    $guestPhone = '';
+                    $primaryGuestId = null;
+                    $roomNumber = null;
+                    $validFrom = null;
+                    $validUntil = null;
+
+                    if (isset($reservation['items']) && is_array($reservation['items'])) {
+                        foreach ($reservation['items'] as $item) {
+                            if (!is_array($item)) {
+                                continue;
+                            }
+
+                            if ($validFrom === null || $validUntil === null) {
+                                $itemArrival = isset($item['arrival_date']) ? (string) $item['arrival_date'] : '';
+                                $itemDeparture = isset($item['departure_date']) ? (string) $item['departure_date'] : '';
+
+                                if ($itemArrival !== '' && $itemDeparture !== '') {
+                                    $arrivalDate = DateTimeImmutable::createFromFormat('Y-m-d', $itemArrival) ?: null;
+                                    $departureDate = DateTimeImmutable::createFromFormat('Y-m-d', $itemDeparture) ?: null;
+
+                                    if ($arrivalDate instanceof DateTimeImmutable && $departureDate instanceof DateTimeImmutable) {
+                                        $validFrom = $arrivalDate->setTime(0, 0);
+                                        $validUntil = $departureDate->setTime(23, 59, 59);
+                                    }
+                                }
+                            }
+
+                            if ($roomNumber === null && isset($item['room_number']) && $item['room_number'] !== '') {
+                                $roomNumber = (string) $item['room_number'];
+                            } elseif ($roomNumber === null && isset($item['room_id']) && $item['room_id'] !== null && $roomManager instanceof RoomManager) {
+                                $candidateRoomId = (int) $item['room_id'];
+                                if ($candidateRoomId > 0) {
+                                    try {
+                                        $roomRecord = $roomManager->find($candidateRoomId);
+                                    } catch (Throwable $exception) {
+                                        $roomRecord = null;
+                                    }
+
+                                    if (is_array($roomRecord) && isset($roomRecord['room_number']) && $roomRecord['room_number'] !== '') {
+                                        $roomNumber = (string) $roomRecord['room_number'];
+                                    }
+                                }
+                            }
+
+                            if ($primaryGuestId === null && isset($item['primary_guest_id'])) {
+                                $candidateGuestId = (int) $item['primary_guest_id'];
+                                if ($candidateGuestId > 0) {
+                                    $primaryGuestId = $candidateGuestId;
+                                }
+                            }
+
+                            if (($guestFirstName === '' || $guestLastName === '') && isset($item['primary_guest_first_name'])) {
+                                if ($guestFirstName === '' && isset($item['primary_guest_first_name'])) {
+                                    $guestFirstName = trim((string) $item['primary_guest_first_name']);
+                                }
+                                if ($guestLastName === '' && isset($item['primary_guest_last_name'])) {
+                                    $guestLastName = trim((string) $item['primary_guest_last_name']);
+                                }
+                            }
+                        }
+                    }
+
+                    if ($validFrom === null || $validUntil === null) {
+                        $reservationArrival = isset($reservation['arrival_date']) ? (string) $reservation['arrival_date'] : '';
+                        $reservationDeparture = isset($reservation['departure_date']) ? (string) $reservation['departure_date'] : '';
+
+                        if ($reservationArrival !== '' && $reservationDeparture !== '') {
+                            $arrivalDate = DateTimeImmutable::createFromFormat('Y-m-d', $reservationArrival) ?: null;
+                            $departureDate = DateTimeImmutable::createFromFormat('Y-m-d', $reservationDeparture) ?: null;
+
+                            if ($arrivalDate instanceof DateTimeImmutable && $departureDate instanceof DateTimeImmutable) {
+                                $validFrom = $arrivalDate->setTime(0, 0);
+                                $validUntil = $departureDate->setTime(23, 59, 59);
+                            }
+                        }
+                    }
+
+                    $fallbackGuestId = isset($reservation['guest_id']) ? (int) $reservation['guest_id'] : 0;
+                    if ($primaryGuestId === null && $fallbackGuestId > 0) {
+                        $primaryGuestId = $fallbackGuestId;
+                    }
+
+                    if ($guestManager instanceof GuestManager && $primaryGuestId !== null && $primaryGuestId > 0) {
+                        try {
+                            $guestRecord = $guestManager->find($primaryGuestId);
+                        } catch (Throwable $exception) {
+                            $guestRecord = null;
+                        }
+
+                        if (is_array($guestRecord)) {
+                            if ($guestFirstName === '' && isset($guestRecord['first_name'])) {
+                                $guestFirstName = trim((string) $guestRecord['first_name']);
+                            }
+
+                            if ($guestLastName === '' && isset($guestRecord['last_name'])) {
+                                $guestLastName = trim((string) $guestRecord['last_name']);
+                            }
+
+                            if (isset($guestRecord['email'])) {
+                                $guestEmail = trim((string) $guestRecord['email']);
+                            }
+
+                            if (isset($guestRecord['phone'])) {
+                                $guestPhone = trim((string) $guestRecord['phone']);
+                            }
+                        }
+                    }
+
+                    if ($guestFirstName === '' && $guestLastName === '') {
+                        $guestLastName = 'Gast';
+                    }
+
+                    if (!$validFrom instanceof DateTimeImmutable || !$validUntil instanceof DateTimeImmutable) {
+                        $alertType = $alertType === 'success' ? 'warning' : $alertType;
+                        $alertMessages[] = 'Hinweis: Salto Space konnte nicht ausgelöst werden, da kein gültiger Aufenthaltszeitraum vorliegt.';
+                    } elseif ($validUntil <= $validFrom) {
+                        $alertType = $alertType === 'success' ? 'warning' : $alertType;
+                        $alertMessages[] = 'Hinweis: Salto Space konnte nicht ausgelöst werden, da das Abreisedatum vor dem Anreisedatum liegt.';
+                    } else {
+                        try {
+                            $metadata = [
+                                'source' => 'modPMS',
+                                'reservationId' => (string) $reservationId,
+                            ];
+
+                            if ($currentUserId > 0) {
+                                $metadata['updatedBy'] = (string) $currentUserId;
+                            }
+
+                            $metadata = array_filter(
+                                $metadata,
+                                static fn ($value): bool => $value !== null && $value !== ''
+                            );
+
+                            $client = new SaltoSpaceClient(
+                                $apiUrl,
+                                $tenantId,
+                                $siteId !== '' ? $siteId : null,
+                                $apiToken,
+                                null,
+                                $timeoutSeconds
+                            );
+
+                            $result = $client->issueMobileKey(
+                                $reservationNumber,
+                                $guestFirstName,
+                                $guestLastName,
+                                $validFrom,
+                                $validUntil,
+                                $roomNumber,
+                                $guestEmail,
+                                $guestPhone,
+                                $metadata !== [] ? $metadata : null
+                            );
+
+                            if (!empty($result['success'])) {
+                                $alertMessages[] = 'Elektronischer Schlüssel wurde in Salto Space erstellt.';
+                            } else {
+                                $statusCode = isset($result['status']) ? (int) $result['status'] : 0;
+                                $alertType = $statusCode >= 500 || $statusCode === 0 ? 'danger' : 'warning';
+                                $message = isset($result['message']) ? (string) $result['message'] : 'Unbekannte Antwort der Salto Space API.';
+                                $alertMessages[] = 'Salto Space konnte den Schlüssel nicht erstellen: ' . $message;
+                            }
+                        } catch (Throwable $exception) {
+                            $alertType = 'danger';
+                            $alertMessages[] = 'Salto Space-Anfrage fehlgeschlagen: ' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8');
+                            error_log('Salto Space check-in error: ' . $exception->getMessage());
+                        }
+                    }
+                }
+            }
+
             $_SESSION['alert'] = [
-                'type' => 'success',
-                'message' => 'Reservierungsstatus wurde aktualisiert.',
+                'type' => $alertType,
+                'message' => implode(' ', $alertMessages),
             ];
 
             header('Location: ' . $redirectUrl);
@@ -13181,6 +13508,52 @@ if ($activeSection === 'reservations') {
                   <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mt-4">
                     <button type="button" class="btn btn-outline-secondary btn-sm" data-add-payment-method>Zahlungsart hinzufügen</button>
                     <button type="submit" class="btn btn-outline-primary">Zahlungsarten speichern</button>
+                  </div>
+                </form>
+              <?php endif; ?>
+            </div>
+          </div>
+          <div class="card module-card mt-4" id="salto-settings">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+              <div>
+                <h2 class="h5 mb-1">Salto Space</h2>
+                <p class="text-muted mb-0">Elektronische Schlüsselaufträge automatisch an die Zutrittsanlage übergeben.</p>
+              </div>
+              <span class="badge text-bg-dark">Integration</span>
+            </div>
+            <div class="card-body">
+              <?php if (!$settingsAvailable): ?>
+                <p class="text-muted mb-0">Die Salto Space-Anbindung steht zur Verfügung, sobald eine Datenbankverbindung besteht.</p>
+              <?php else: ?>
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="settings_salto_space">
+                  <div class="col-md-6">
+                    <label for="salto-api-url" class="form-label">API-URL</label>
+                    <input type="url" class="form-control" id="salto-api-url" name="salto_api_url" value="<?= htmlspecialchars($saltoApiUrlFormValue) ?>" placeholder="https://example.saltocloud.com/api">
+                    <div class="form-text">Basis-Endpunkt der Salto Space REST-API.</div>
+                  </div>
+                  <div class="col-md-3">
+                    <label for="salto-tenant-id" class="form-label">Mandanten-ID</label>
+                    <input type="text" class="form-control" id="salto-tenant-id" name="salto_tenant_id" value="<?= htmlspecialchars($saltoTenantIdFormValue) ?>" autocomplete="off">
+                    <div class="form-text">Eindeutiger Mandant in Salto Space.</div>
+                  </div>
+                  <div class="col-md-3">
+                    <label for="salto-site-id" class="form-label">Standort-ID (optional)</label>
+                    <input type="text" class="form-control" id="salto-site-id" name="salto_site_id" value="<?= htmlspecialchars($saltoSiteIdFormValue) ?>" autocomplete="off">
+                    <div class="form-text">Nur erforderlich, wenn mehrere Standorte gepflegt werden.</div>
+                  </div>
+                  <div class="col-12">
+                    <label for="salto-api-token" class="form-label">API-Token</label>
+                    <textarea class="form-control" id="salto-api-token" name="salto_api_token" rows="2" placeholder="z. B. eyJhbGciOi..." autocomplete="off"><?= htmlspecialchars($saltoApiTokenFormValue) ?></textarea>
+                    <div class="form-text">Service-Token mit Schreibrechten für Reservierungen und Schlüssel.</div>
+                  </div>
+                  <div class="col-md-3">
+                    <label for="salto-timeout" class="form-label">Timeout (Sekunden)</label>
+                    <input type="number" class="form-control" id="salto-timeout" name="salto_timeout" min="5" max="120" value="<?= htmlspecialchars($saltoTimeoutFormValue) ?>">
+                    <div class="form-text">Maximale Wartezeit auf eine Antwort der API.</div>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end">
+                    <button type="submit" class="btn btn-outline-primary">Einstellungen speichern</button>
                   </div>
                 </form>
               <?php endif; ?>
