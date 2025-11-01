@@ -10429,6 +10429,24 @@ if ($activeSection === 'reservations') {
                               $overbookingLabels = isset($overbookingCell['labels']) && is_array($overbookingCell['labels']) ? $overbookingCell['labels'] : [];
                               $overbookingEntries = isset($overbookingCell['entries']) && is_array($overbookingCell['entries']) ? $overbookingCell['entries'] : [];
                               $overbookingQuantity = isset($overbookingCell['quantity']) ? (int) $overbookingCell['quantity'] : 0;
+                              $overbookingStackStyleAttr = '';
+                              if ($overbookingEntries !== []) {
+                                  $overbookingMaxSlotIndex = -1;
+                                  foreach ($overbookingEntries as $overbookingEntryData) {
+                                      if (!isset($overbookingEntryData['calendarSlot'])) {
+                                          continue;
+                                      }
+
+                                      $overbookingEntrySlot = (int) $overbookingEntryData['calendarSlot'];
+                                      if ($overbookingEntrySlot > $overbookingMaxSlotIndex) {
+                                          $overbookingMaxSlotIndex = $overbookingEntrySlot;
+                                      }
+                                  }
+
+                                  if ($overbookingMaxSlotIndex >= 0) {
+                                      $overbookingStackStyleAttr = sprintf(' style="--calendar-slot-count:%d;"', $overbookingMaxSlotIndex + 1);
+                                  }
+                              }
                               $cellClasses = ['room-calendar-cell', 'overbooking'];
                               if ($day['isToday']) {
                                   $cellClasses[] = 'today';
@@ -10442,7 +10460,7 @@ if ($activeSection === 'reservations') {
                               <?php if ($overbookingQuantity > 0): ?>
                                 <div class="overbooking-quantity badge text-bg-danger">+<?= $overbookingQuantity ?></div>
                                 <?php if ($overbookingEntries !== [] || $overbookingLabels !== []): ?>
-                                  <div class="overbooking-entry-stack">
+                                  <div class="overbooking-entry-stack"<?= $overbookingStackStyleAttr ?>>
                                 <?php endif; ?>
                                 <?php foreach ($overbookingEntries as $entry): ?>
                                   <?php

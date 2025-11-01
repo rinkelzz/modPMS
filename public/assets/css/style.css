@@ -410,20 +410,25 @@ body {
 }
 
 .room-calendar-cell.overbooking .overbooking-entry-stack {
-    display: grid;
-    grid-auto-rows: minmax(var(--occupancy-entry-min-height), auto);
-    align-content: start;
-    gap: 0.35rem;
+    --calendar-slot-count: 1;
+    --overbooking-slot-gap: 0.35rem;
+    position: relative;
+    display: block;
+    min-height: calc(
+        var(--occupancy-entry-min-height) * var(--calendar-slot-count)
+        + var(--overbooking-slot-gap) * (var(--calendar-slot-count) - 1)
+    );
 }
 
 .room-calendar-cell.overbooking .overbooking-entry-stack .occupancy-entry {
     margin-top: 0;
-    grid-column: 1;
-    grid-row: var(--calendar-slot-row, auto);
 }
 
-.room-calendar-cell.overbooking .overbooking-entry-stack .occupancy-entry + .occupancy-entry {
-    margin-top: 0;
+.room-calendar-cell.overbooking .overbooking-entry-stack .occupancy-entry[data-calendar-slot] {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc((var(--calendar-slot-row, 1) - 1) * (var(--occupancy-entry-min-height) + var(--overbooking-slot-gap)));
 }
 
 .room-calendar-cell.overbooking.overbooking-empty {
