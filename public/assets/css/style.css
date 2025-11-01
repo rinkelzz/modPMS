@@ -172,6 +172,8 @@ body {
     border-spacing: 0;
     --category-column-width: clamp(180px, 16vw, 240px);
     --room-column-width: clamp(200px, 18vw, 260px);
+    --calendar-border-width: 1px;
+    --occupancy-entry-min-height: 1.55rem;
 }
 
 .room-calendar th,
@@ -355,10 +357,15 @@ body {
 }
 
 .room-calendar-cell {
+    --calendar-cell-padding-x: 0.75rem;
+    --calendar-cell-padding-y: 0.35rem;
     min-width: 64px;
     height: 60px;
     background-color: #f8fafc;
     transition: background-color 0.2s ease;
+    position: relative;
+    overflow: visible;
+    padding: var(--calendar-cell-padding-y) var(--calendar-cell-padding-x);
 }
 
 .room-calendar-cell.empty {
@@ -402,6 +409,28 @@ body {
     color: inherit;
 }
 
+.room-calendar-cell.overbooking .overbooking-entry-stack {
+    --calendar-slot-count: 1;
+    --overbooking-slot-gap: 0.35rem;
+    position: relative;
+    display: block;
+    min-height: calc(
+        var(--occupancy-entry-min-height) * var(--calendar-slot-count)
+        + var(--overbooking-slot-gap) * (var(--calendar-slot-count) - 1)
+    );
+}
+
+.room-calendar-cell.overbooking .overbooking-entry-stack .occupancy-entry {
+    margin-top: 0;
+}
+
+.room-calendar-cell.overbooking .overbooking-entry-stack .occupancy-entry[data-calendar-slot] {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc((var(--calendar-slot-row, 1) - 1) * (var(--occupancy-entry-min-height) + var(--overbooking-slot-gap)));
+}
+
 .room-calendar-cell.overbooking.overbooking-empty {
     background-color: #fff7ed;
     color: #a16207;
@@ -412,15 +441,26 @@ body {
     background-color: #e0f2fe;
 }
 
+
 .room-calendar-cell .occupancy-entry {
     font-weight: 600;
     font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    white-space: nowrap;
+    width: 100%;
+    min-height: var(--occupancy-entry-min-height);
 }
 
 .room-calendar-cell .occupancy-entry-action {
-    display: block;
+    --occupancy-entry-padding-x: 0.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     border-radius: 0.5rem;
-    padding: 0.25rem 0.5rem;
+    padding: 0.25rem var(--occupancy-entry-padding-x);
     background-color: rgba(37, 99, 235, 0.12);
     color: #0f172a;
     cursor: pointer;
@@ -446,6 +486,61 @@ body {
 
 .room-calendar-cell .occupancy-entry-action:focus {
     outline: none;
+}
+
+.room-calendar-cell .occupancy-entry-range {
+    position: relative;
+    z-index: 1;
+    border-radius: 0.75rem;
+    overflow: visible;
+}
+
+.room-calendar-cell .occupancy-entry-range::before {
+    content: "";
+    position: absolute;
+    top: calc(-1 * var(--calendar-border-width));
+    bottom: calc(-1 * var(--calendar-border-width));
+    left: 0;
+    right: 0;
+    border-radius: inherit;
+    background-color: inherit;
+    z-index: -1;
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-left {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-left::before {
+    left: calc(-1 * (var(--calendar-cell-padding-x) + var(--calendar-border-width)));
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-right {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-right::before {
+    right: calc(-1 * (var(--calendar-cell-padding-x) + var(--calendar-border-width)));
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-left::before {
+    border-top-left-radius: inherit;
+    border-bottom-left-radius: inherit;
+}
+
+.room-calendar-cell .occupancy-entry-range-continue-right::before {
+    border-top-right-radius: inherit;
+    border-bottom-right-radius: inherit;
+}
+
+.room-calendar-cell .occupancy-entry-label-hidden {
+    color: transparent !important;
+}
+
+.room-calendar-cell .occupancy-entry-label-hidden::selection {
+    background: transparent;
 }
 
 .room-calendar-cell .occupancy-entry + .occupancy-entry {
