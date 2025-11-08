@@ -16,6 +16,7 @@ use ModPMS\ReservationManager;
 use ModPMS\ReportManager;
 use ModPMS\ReportPdfRenderer;
 use ModPMS\SumUpClient;
+use ModPMS\FiskalyClient;
 use ModPMS\TaxCategoryManager;
 use ModPMS\SettingManager;
 use ModPMS\RoomCategoryManager;
@@ -45,6 +46,7 @@ require_once __DIR__ . '/../src/EmailLogManager.php';
 require_once __DIR__ . '/../src/MeldescheinManager.php';
 require_once __DIR__ . '/../src/MeldescheinPdfRenderer.php';
 require_once __DIR__ . '/../src/SumUpClient.php';
+require_once __DIR__ . '/../src/FiskalyClient.php';
 
 session_start();
 
@@ -284,6 +286,11 @@ $documentFormData = [
     'type_label' => DocumentManager::TYPE_LABELS[DocumentManager::TYPE_INVOICE],
     'correction_of_id' => null,
     'correction_number' => null,
+    'fiskaly_receipt_id' => '',
+    'fiskaly_receipt_status' => '',
+    'fiskaly_receipt_url' => '',
+    'fiskaly_receipt_sent_at' => '',
+    'fiskaly_receipt' => [],
 ];
 $documentFormData['items'] = array_fill(0, 5, [
     'description' => '',
@@ -1076,6 +1083,15 @@ if ($settingsManager instanceof SettingManager) {
         ];
     }, $paymentMethods);
 
+    $fiskalyApiKey = '';
+    $fiskalyApiSecret = '';
+    $fiskalyOrganizationId = '';
+    $fiskalyCashRegisterId = '';
+    $fiskalyTemplateId = '';
+    $fiskalyApiBaseUrl = FiskalyClient::DEFAULT_API_BASE_URL;
+    $fiskalyAuthUrl = FiskalyClient::DEFAULT_AUTH_URL;
+    $fiskalySendReceiptsDefault = false;
+
     $sumupSettings = $settingsManager->getMany([
         'sumup_auth_method',
         'sumup_credential',
@@ -1111,6 +1127,54 @@ if ($settingsManager instanceof SettingManager) {
     if (isset($sumupSettings['sumup_affiliate_key'])) {
         $sumupAffiliateKey = trim((string) $sumupSettings['sumup_affiliate_key']);
     }
+
+    $fiskalySettings = $settingsManager->getMany([
+        'fiskaly_api_key',
+        'fiskaly_api_secret',
+        'fiskaly_organisation_id',
+        'fiskaly_cash_register_id',
+        'fiskaly_template_id',
+        'fiskaly_api_base_url',
+        'fiskaly_auth_url',
+        'fiskaly_receipt_auto_send',
+    ]);
+
+    if (isset($fiskalySettings['fiskaly_api_key'])) {
+        $fiskalyApiKey = trim((string) $fiskalySettings['fiskaly_api_key']);
+    }
+
+    if (isset($fiskalySettings['fiskaly_api_secret'])) {
+        $fiskalyApiSecret = trim((string) $fiskalySettings['fiskaly_api_secret']);
+    }
+
+    if (isset($fiskalySettings['fiskaly_organisation_id'])) {
+        $fiskalyOrganizationId = trim((string) $fiskalySettings['fiskaly_organisation_id']);
+    }
+
+    if (isset($fiskalySettings['fiskaly_cash_register_id'])) {
+        $fiskalyCashRegisterId = trim((string) $fiskalySettings['fiskaly_cash_register_id']);
+    }
+
+    if (isset($fiskalySettings['fiskaly_template_id'])) {
+        $fiskalyTemplateId = trim((string) $fiskalySettings['fiskaly_template_id']);
+    }
+
+    if (isset($fiskalySettings['fiskaly_api_base_url']) && trim((string) $fiskalySettings['fiskaly_api_base_url']) !== '') {
+        $fiskalyApiBaseUrl = trim((string) $fiskalySettings['fiskaly_api_base_url']);
+    }
+
+    if (isset($fiskalySettings['fiskaly_auth_url']) && trim((string) $fiskalySettings['fiskaly_auth_url']) !== '') {
+        $fiskalyAuthUrl = trim((string) $fiskalySettings['fiskaly_auth_url']);
+    }
+
+    if (isset($fiskalySettings['fiskaly_receipt_auto_send'])) {
+        $fiskalySendReceiptsDefault = (bool) (int) $fiskalySettings['fiskaly_receipt_auto_send'];
+    }
+
+    $fiskalyIntegrationAvailable = $fiskalyApiKey !== ''
+        && $fiskalyApiSecret !== ''
+        && $fiskalyCashRegisterId !== ''
+        && $fiskalyTemplateId !== '';
 }
 
 $mailFromAddressFormValue = $mailFromAddress;
@@ -2276,6 +2340,24 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $settingsManager->set('sumup_application_id', $sumupApplicationIdInput);
             $settingsManager->set('sumup_affiliate_key', $sumupAffiliateKeyInput);
 
+            $fiskalyApiKeyInput = trim((string) ($_POST['fiskaly_api_key'] ?? ''));
+            $fiskalyApiSecretInput = trim((string) ($_POST['fiskaly_api_secret'] ?? ''));
+            $fiskalyOrganizationIdInput = trim((string) ($_POST['fiskaly_organisation_id'] ?? ''));
+            $fiskalyCashRegisterIdInput = trim((string) ($_POST['fiskaly_cash_register_id'] ?? ''));
+            $fiskalyTemplateIdInput = trim((string) ($_POST['fiskaly_template_id'] ?? ''));
+            $fiskalyApiBaseUrlInput = trim((string) ($_POST['fiskaly_api_base_url'] ?? ''));
+            $fiskalyAuthUrlInput = trim((string) ($_POST['fiskaly_auth_url'] ?? ''));
+            $fiskalyAutoSendInput = isset($_POST['fiskaly_receipt_auto_send']) ? '1' : '0';
+
+            $settingsManager->set('fiskaly_api_key', $fiskalyApiKeyInput);
+            $settingsManager->set('fiskaly_api_secret', $fiskalyApiSecretInput);
+            $settingsManager->set('fiskaly_organisation_id', $fiskalyOrganizationIdInput);
+            $settingsManager->set('fiskaly_cash_register_id', $fiskalyCashRegisterIdInput);
+            $settingsManager->set('fiskaly_template_id', $fiskalyTemplateIdInput);
+            $settingsManager->set('fiskaly_api_base_url', $fiskalyApiBaseUrlInput);
+            $settingsManager->set('fiskaly_auth_url', $fiskalyAuthUrlInput);
+            $settingsManager->set('fiskaly_receipt_auto_send', $fiskalyAutoSendInput);
+
             $paymentMethods = $normalizedMethods;
             $paymentMethodLookup = [];
             foreach ($paymentMethods as $method) {
@@ -2296,9 +2378,22 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             $sumupApplicationId = $sumupApplicationIdInput;
             $sumupAffiliateKey = $sumupAffiliateKeyInput;
 
+            $fiskalyApiKey = $fiskalyApiKeyInput;
+            $fiskalyApiSecret = $fiskalyApiSecretInput;
+            $fiskalyOrganizationId = $fiskalyOrganizationIdInput;
+            $fiskalyCashRegisterId = $fiskalyCashRegisterIdInput;
+            $fiskalyTemplateId = $fiskalyTemplateIdInput;
+            $fiskalyApiBaseUrl = $fiskalyApiBaseUrlInput !== '' ? $fiskalyApiBaseUrlInput : FiskalyClient::DEFAULT_API_BASE_URL;
+            $fiskalyAuthUrl = $fiskalyAuthUrlInput !== '' ? $fiskalyAuthUrlInput : FiskalyClient::DEFAULT_AUTH_URL;
+            $fiskalySendReceiptsDefault = $fiskalyAutoSendInput === '1';
+            $fiskalyIntegrationAvailable = $fiskalyApiKey !== ''
+                && $fiskalyApiSecret !== ''
+                && $fiskalyCashRegisterId !== ''
+                && $fiskalyTemplateId !== '';
+
             $_SESSION['alert'] = [
                 'type' => 'success',
-                'message' => 'Zahlungsarten und SumUp-Einstellungen wurden gespeichert.',
+                'message' => 'Zahlungsarten sowie SumUp- und Fiskaly-Einstellungen wurden gespeichert.',
             ];
 
             header('Location: index.php?section=settings#payment-settings');
@@ -4045,6 +4140,29 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                 $paymentReference = null;
                 $paymentDetails = null;
 
+                $fiskalySendReceipt = false;
+                $fiskalyCustomerEmail = '';
+                $fiskalyCustomerPhone = '';
+                $fiskalyReceiptMessage = '';
+                $fiskalyReceiptRecord = null;
+
+                $documentAllowsFiskaly = isset($document['type'])
+                    && (string) $document['type'] === DocumentManager::TYPE_INVOICE
+                    && $fiskalyIntegrationAvailable;
+
+                if ($documentAllowsFiskaly) {
+                    $fiskalySendReceipt = isset($_POST['fiskaly_send_receipt']) && (string) $_POST['fiskaly_send_receipt'] === '1';
+                    $fiskalyCustomerEmail = trim((string) ($_POST['fiskaly_receipt_email'] ?? ''));
+                    $fiskalyCustomerPhone = trim((string) ($_POST['fiskaly_receipt_phone'] ?? ''));
+                    $fiskalyReceiptMessage = trim((string) ($_POST['fiskaly_receipt_message'] ?? ''));
+
+                    if ($fiskalySendReceipt && $fiskalyCustomerEmail === '' && $fiskalyCustomerPhone === '') {
+                        throw new RuntimeException('Bitte geben Sie eine E-Mail-Adresse oder Telefonnummer für den Fiskaly-Beleg an.');
+                    }
+                } elseif (isset($_POST['fiskaly_send_receipt']) && (string) $_POST['fiskaly_send_receipt'] === '1') {
+                    throw new RuntimeException('Für den Versand von Fiskaly-E-Belegen fehlen die Zugangsdaten in den Einstellungen.');
+                }
+
                 if ($paymentMethodData !== null && ($paymentMethodData['type'] ?? 'other') === 'sumup') {
                     if ($sumupCredential === '') {
                         throw new RuntimeException('Bitte hinterlegen Sie Ihren SumUp-API-Schlüssel oder ein Access Token in den Einstellungen.');
@@ -4168,6 +4286,167 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     }
                 }
 
+                if ($fiskalySendReceipt) {
+                    $documentItemsForReceipt = isset($document['items']) && is_array($document['items']) ? $document['items'] : [];
+
+                    $calculateReceiptTotals = static function (array $items): array {
+                        $net = 0.0;
+                        $vat = 0.0;
+                        $gross = 0.0;
+
+                        foreach ($items as $item) {
+                            if (!is_array($item)) {
+                                continue;
+                            }
+
+                            $net += (float) ($item['total_net'] ?? 0.0);
+                            $vat += (float) ($item['total_vat'] ?? 0.0);
+                            $gross += (float) ($item['total_gross'] ?? 0.0);
+                        }
+
+                        return [
+                            'net' => round($net, 2),
+                            'vat' => round($vat, 2),
+                            'gross' => round($gross, 2),
+                        ];
+                    };
+
+                    $documentTotalsForReceipt = $calculateReceiptTotals($documentItemsForReceipt);
+                    $documentCurrency = isset($document['currency']) && (string) $document['currency'] !== ''
+                        ? (string) $document['currency']
+                        : 'EUR';
+
+                    $documentForReceipt = [
+                        'id' => $documentId,
+                        'document_number' => $document['document_number'] ?? null,
+                        'currency' => $documentCurrency,
+                        'issue_date' => $document['issue_date'] ?? null,
+                        'type' => $document['type'] ?? null,
+                        'recipient_name' => $document['recipient_name'] ?? null,
+                        'recipient_address' => $document['recipient_address'] ?? null,
+                        'payment_method' => $selectedPaymentMethod !== '' ? $selectedPaymentMethod : null,
+                        'payment_reference' => $paymentReference,
+                        'total_net' => $documentTotalsForReceipt['net'],
+                        'total_vat' => $documentTotalsForReceipt['vat'],
+                        'total_gross' => $documentTotalsForReceipt['gross'],
+                    ];
+
+                    $customerPayload = [];
+                    if (isset($document['recipient_name']) && $document['recipient_name'] !== '') {
+                        $customerPayload['name'] = (string) $document['recipient_name'];
+                    }
+                    if (isset($document['recipient_address']) && $document['recipient_address'] !== '') {
+                        $customerPayload['address'] = (string) $document['recipient_address'];
+                    }
+                    if ($fiskalyCustomerEmail !== '') {
+                        $customerPayload['email'] = $fiskalyCustomerEmail;
+                    }
+                    if ($fiskalyCustomerPhone !== '') {
+                        $customerPayload['phone_number'] = $fiskalyCustomerPhone;
+                    }
+
+                    $metadataPayload = [
+                        'reservation_id' => isset($document['reservation_id']) && $document['reservation_id'] !== null
+                            ? (string) $document['reservation_id']
+                            : null,
+                        'reservation_number' => isset($document['reservation_number']) && $document['reservation_number'] !== null
+                            ? (string) $document['reservation_number']
+                            : null,
+                        'note' => $fiskalyReceiptMessage !== '' ? $fiskalyReceiptMessage : null,
+                        'seller_name' => $documentCompanyName !== '' ? $documentCompanyName : null,
+                        'seller_address' => $documentCompanyAddress !== '' ? $documentCompanyAddress : null,
+                        'seller_vat_id' => $documentCompanyVatId !== '' ? $documentCompanyVatId : null,
+                        'source' => 'modpms',
+                    ];
+
+                    $metadataPayload = array_filter($metadataPayload, static function ($value) {
+                        return $value !== null && $value !== '';
+                    });
+
+                    $fiskalyClient = new FiskalyClient(
+                        $fiskalyApiKey,
+                        $fiskalyApiSecret,
+                        $fiskalyCashRegisterId,
+                        $fiskalyTemplateId,
+                        $fiskalyOrganizationId !== '' ? $fiskalyOrganizationId : null,
+                        $fiskalyApiBaseUrl,
+                        $fiskalyAuthUrl
+                    );
+
+                    $response = $fiskalyClient->createReceipt($documentForReceipt, $documentItemsForReceipt, $customerPayload, $metadataPayload);
+
+                    if ($response['status'] < 200 || $response['status'] >= 300) {
+                        $errorMessage = 'Fiskaly-E-Beleg konnte nicht erstellt werden.';
+                        $errorDetails = [];
+
+                        if (isset($response['error_message']) && is_string($response['error_message']) && $response['error_message'] !== '') {
+                            $errorDetails[] = trim($response['error_message']);
+                        }
+
+                        $responseBody = $response['body'] ?? [];
+                        if (is_array($responseBody)) {
+                            foreach (['message', 'error', 'detail'] as $key) {
+                                if (isset($responseBody[$key]) && $responseBody[$key] !== '') {
+                                    $errorDetails[] = trim((string) $responseBody[$key]);
+                                }
+                            }
+                        }
+
+                        if ($errorDetails !== []) {
+                            $errorDetails = array_values(array_unique(array_filter($errorDetails, static function ($value): bool {
+                                return is_string($value) && trim($value) !== '';
+                            })));
+
+                            if ($errorDetails !== []) {
+                                $errorMessage .= ' ' . implode(' ', $errorDetails);
+                            }
+                        }
+
+                        $statusCode = (int) $response['status'];
+                        $attempts = 1;
+                        if (isset($response['request']) && is_array($response['request']) && isset($response['request']['attempts'])) {
+                            $attempts = max(1, (int) $response['request']['attempts']);
+                        }
+
+                        $suffixParts = [sprintf('HTTP %d', $statusCode)];
+                        if ($attempts > 1) {
+                            $suffixParts[] = sprintf('Versuche: %d', $attempts);
+                        }
+                        $errorMessage .= ' (' . implode(', ', $suffixParts) . ')';
+
+                        $errorClass = isset($response['error_class']) && $response['error_class'] !== null
+                            ? (string) $response['error_class']
+                            : null;
+
+                        if ($errorClass === 'network' || $errorClass === 'transient') {
+                            $errorMessage .= ' Bitte versuchen Sie es später erneut oder prüfen Sie die Verbindung zu Fiskaly.';
+                        } elseif ($errorClass === 'client') {
+                            $errorMessage .= ' Bitte prüfen Sie die Fiskaly-Einstellungen und die Belegdaten.';
+                        }
+
+                        throw new RuntimeException($errorMessage);
+                    }
+
+                    $receiptBody = is_array($response['body']) ? $response['body'] : [];
+
+                    $fiskalyReceiptRecord = [
+                        'id' => isset($receiptBody['id']) ? (string) $receiptBody['id'] : null,
+                        'status' => isset($receiptBody['status']) ? (string) $receiptBody['status'] : null,
+                        'short_link' => isset($receiptBody['short_link'])
+                            ? (string) $receiptBody['short_link']
+                            : (isset($receiptBody['url']) ? (string) $receiptBody['url'] : null),
+                        'sent_at' => isset($receiptBody['created_at']) && $receiptBody['created_at'] !== ''
+                            ? (string) $receiptBody['created_at']
+                            : date('c'),
+                        'customer' => $customerPayload,
+                        'metadata' => $metadataPayload,
+                        'response' => $receiptBody,
+                        'raw_response' => $response['raw'] ?? null,
+                        'request' => $response['request'] ?? null,
+                        'http_status' => $response['status'],
+                    ];
+                }
+
                 $renderer = new DocumentPdfRenderer();
                 $logoPath = $invoiceLogoPath !== '' ? $invoiceLogoPath : null;
 
@@ -4180,6 +4459,19 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     $paymentReference,
                     $paymentDetails
                 );
+
+                if ($fiskalyReceiptRecord !== null) {
+                    $receiptStoragePayload = $fiskalyReceiptRecord;
+                    if (!isset($receiptStoragePayload['metadata']) || !is_array($receiptStoragePayload['metadata'])) {
+                        $receiptStoragePayload['metadata'] = [];
+                    }
+
+                    if (isset($document['pdf_path']) && $document['pdf_path'] !== '') {
+                        $receiptStoragePayload['metadata']['pdf_path'] = (string) $document['pdf_path'];
+                    }
+
+                    $document = $documentManager->updateFiskalyReceipt($documentId, $receiptStoragePayload);
+                }
 
                 $documentNumber = isset($document['document_number']) ? (string) $document['document_number'] : ('#' . $documentId);
                 $typeLabel = $documentTypeLabels[$document['type']] ?? 'Dokument';
@@ -4198,13 +4490,19 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
                     }
                 }
 
+                $receiptSuffix = '';
+                if ($fiskalyReceiptRecord !== null) {
+                    $receiptSuffix = ' Digitaler E-Beleg wurde erstellt.';
+                }
+
                 $_SESSION['alert'] = [
                     'type' => 'success',
                     'message' => sprintf(
-                        '%s %s wurde finalisiert.%s',
+                        '%s %s wurde finalisiert.%s%s',
                         $typeLabel,
                         htmlspecialchars($documentNumber, ENT_QUOTES, 'UTF-8'),
-                        $paymentSuffix
+                        $paymentSuffix,
+                        $receiptSuffix
                     ),
                 ];
 
@@ -8889,6 +9187,21 @@ if ($pdo !== null && isset($_GET['editDocument']) && $documentFormData['id'] ===
                 'type_label' => $documentTypeLabels[$documentToEdit['type'] ?? DocumentManager::TYPE_INVOICE] ?? 'Dokument',
                 'correction_of_id' => isset($documentToEdit['correction_of_id']) ? $documentToEdit['correction_of_id'] : null,
                 'correction_number' => isset($documentToEdit['correction_number']) ? $documentToEdit['correction_number'] : null,
+                'fiskaly_receipt_id' => isset($documentToEdit['fiskaly_receipt_id']) && $documentToEdit['fiskaly_receipt_id'] !== null
+                    ? (string) $documentToEdit['fiskaly_receipt_id']
+                    : '',
+                'fiskaly_receipt_status' => isset($documentToEdit['fiskaly_receipt_status']) && $documentToEdit['fiskaly_receipt_status'] !== null
+                    ? (string) $documentToEdit['fiskaly_receipt_status']
+                    : '',
+                'fiskaly_receipt_url' => isset($documentToEdit['fiskaly_receipt_url']) && $documentToEdit['fiskaly_receipt_url'] !== null
+                    ? (string) $documentToEdit['fiskaly_receipt_url']
+                    : '',
+                'fiskaly_receipt_sent_at' => isset($documentToEdit['fiskaly_receipt_sent_at']) && $documentToEdit['fiskaly_receipt_sent_at'] !== null
+                    ? (string) $documentToEdit['fiskaly_receipt_sent_at']
+                    : '',
+                'fiskaly_receipt' => isset($documentToEdit['fiskaly_receipt']) && is_array($documentToEdit['fiskaly_receipt'])
+                    ? $documentToEdit['fiskaly_receipt']
+                    : [],
             ];
 
             if ($documentFormData['currency'] === '') {
@@ -11347,6 +11660,26 @@ if ($activeSection === 'reservations') {
                             if (isset($document['correction_number']) && $document['correction_number'] !== null) {
                                 $correctionNumberLabel = (int) $document['correction_number'];
                             }
+
+                            $documentFiskalyReceipt = isset($document['fiskaly_receipt']) && is_array($document['fiskaly_receipt'])
+                                ? $document['fiskaly_receipt']
+                                : [];
+                            $documentFiskalyEmail = '';
+                            $documentFiskalyPhone = '';
+                            $documentFiskalyNote = '';
+                            if (isset($documentFiskalyReceipt['customer']) && is_array($documentFiskalyReceipt['customer'])) {
+                                $documentFiskalyEmail = (string) ($documentFiskalyReceipt['customer']['email'] ?? '');
+                                $documentFiskalyPhone = (string) (
+                                    $documentFiskalyReceipt['customer']['phone_number']
+                                        ?? ($documentFiskalyReceipt['customer']['phone'] ?? '')
+                                );
+                            }
+                            if (isset($documentFiskalyReceipt['metadata']) && is_array($documentFiskalyReceipt['metadata'])) {
+                                $documentFiskalyNote = (string) ($documentFiskalyReceipt['metadata']['note'] ?? '');
+                            }
+                            $documentFiskalySendDefault = $fiskalySendReceiptsDefault
+                                && $documentType === DocumentManager::TYPE_INVOICE
+                                && $fiskalyIntegrationAvailable;
                           ?>
                           <tr>
                             <td>
@@ -11372,6 +11705,11 @@ if ($activeSection === 'reservations') {
                             <td class="text-end"><?= htmlspecialchars($documentTotalGrossDisplay) ?></td>
                             <td>
                               <span class="badge <?= htmlspecialchars($documentStatusBadge) ?>"><?= htmlspecialchars($documentStatusLabel) ?></span>
+                              <?php if (isset($document['fiskaly_receipt_status']) && $document['fiskaly_receipt_status'] !== null && $document['fiskaly_receipt_status'] !== ''): ?>
+                                <div class="small text-muted mt-1">E-Beleg: <?= htmlspecialchars((string) $document['fiskaly_receipt_status']) ?></div>
+                              <?php elseif ($documentStatus === DocumentManager::STATUS_FINALIZED && $documentType === DocumentManager::TYPE_INVOICE && $fiskalyIntegrationAvailable): ?>
+                                <div class="small text-muted mt-1">E-Beleg offen</div>
+                              <?php endif; ?>
                             </td>
                             <td><?= htmlspecialchars($documentIssueDateLabel) ?></td>
                             <td class="text-end">
@@ -11380,25 +11718,81 @@ if ($activeSection === 'reservations') {
                                 <?php if ($documentPdfPath !== ''): ?>
                                   <a class="btn btn-outline-primary btn-sm" href="index.php?section=documents&amp;downloadDocument=<?= $documentId ?>">PDF</a>
                                 <?php endif; ?>
+                                <?php if (isset($document['fiskaly_receipt_url']) && $document['fiskaly_receipt_url'] !== null && $document['fiskaly_receipt_url'] !== ''): ?>
+                                  <a class="btn btn-outline-success btn-sm" href="<?= htmlspecialchars((string) $document['fiskaly_receipt_url']) ?>" target="_blank" rel="noopener">E-Beleg</a>
+                                <?php endif; ?>
                                 <?php if ($documentCanFinalize): ?>
                                   <form method="post" class="d-inline" data-document-finalize-form>
                                     <input type="hidden" name="form" value="document_finalize">
                                     <input type="hidden" name="id" value="<?= $documentId ?>">
-                                    <div class="input-group input-group-sm">
-                                      <select
-                                        class="form-select form-select-sm"
-                                        name="payment_method"
-                                        required
-                                        data-finalize-payment-select
-                                        aria-label="Zahlungsart auswählen"
-                                        style="min-width: 160px;"
-                                      >
-                                        <option value="">Zahlungsart wählen</option>
-                                        <?php foreach ($paymentMethods as $methodOption): ?>
-                                          <option value="<?= htmlspecialchars((string) ($methodOption['id'] ?? '')) ?>"><?= htmlspecialchars((string) ($methodOption['label'] ?? '')) ?></option>
-                                        <?php endforeach; ?>
-                                      </select>
-                                      <button type="submit" class="btn btn-success btn-sm">Finalisieren</button>
+                                    <div class="d-flex flex-column gap-2 align-items-stretch">
+                                      <div class="input-group input-group-sm">
+                                        <select
+                                          class="form-select form-select-sm"
+                                          name="payment_method"
+                                          required
+                                          data-finalize-payment-select
+                                          aria-label="Zahlungsart auswählen"
+                                          style="min-width: 160px;"
+                                        >
+                                          <option value="">Zahlungsart wählen</option>
+                                          <?php foreach ($paymentMethods as $methodOption): ?>
+                                            <option value="<?= htmlspecialchars((string) ($methodOption['id'] ?? '')) ?>"><?= htmlspecialchars((string) ($methodOption['label'] ?? '')) ?></option>
+                                          <?php endforeach; ?>
+                                        </select>
+                                        <button type="submit" class="btn btn-success btn-sm">Finalisieren</button>
+                                      </div>
+                                      <?php if ($documentType === DocumentManager::TYPE_INVOICE && $fiskalyIntegrationAvailable): ?>
+                                        <div class="bg-light border rounded p-2" data-fiskaly-options>
+                                          <div class="form-check form-switch mb-2">
+                                            <input
+                                              class="form-check-input"
+                                              type="checkbox"
+                                              id="fiskaly-send-<?= $documentId ?>"
+                                              name="fiskaly_send_receipt"
+                                              value="1"
+                                              <?= $documentFiskalySendDefault ? 'checked' : '' ?>
+                                              data-fiskaly-toggle
+                                            >
+                                            <label class="form-check-label" for="fiskaly-send-<?= $documentId ?>">Fiskaly-E-Beleg versenden</label>
+                                          </div>
+                                          <div class="row g-2" data-fiskaly-fields <?= $documentFiskalySendDefault ? '' : 'hidden' ?>>
+                                            <div class="col-12 col-sm-6">
+                                              <input
+                                                type="email"
+                                                class="form-control form-control-sm"
+                                                name="fiskaly_receipt_email"
+                                                placeholder="E-Mail-Adresse"
+                                                value="<?= htmlspecialchars($documentFiskalyEmail) ?>"
+                                                <?= $documentFiskalySendDefault ? '' : 'disabled' ?>
+                                                data-fiskaly-email
+                                              >
+                                            </div>
+                                            <div class="col-12 col-sm-6">
+                                              <input
+                                                type="text"
+                                                class="form-control form-control-sm"
+                                                name="fiskaly_receipt_phone"
+                                                placeholder="Telefonnummer"
+                                                value="<?= htmlspecialchars($documentFiskalyPhone) ?>"
+                                                <?= $documentFiskalySendDefault ? '' : 'disabled' ?>
+                                                data-fiskaly-phone
+                                              >
+                                            </div>
+                                            <div class="col-12">
+                                              <textarea
+                                                class="form-control form-control-sm"
+                                                rows="2"
+                                                name="fiskaly_receipt_message"
+                                                placeholder="Nachricht (optional)"
+                                                <?= $documentFiskalySendDefault ? '' : 'disabled' ?>
+                                                data-fiskaly-message
+                                              ><?= htmlspecialchars($documentFiskalyNote) ?></textarea>
+                                              <div class="form-text">Mindestens E-Mail oder Telefonnummer angeben.</div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      <?php endif; ?>
                                     </div>
                                   </form>
                                 <?php endif; ?>
@@ -11428,6 +11822,59 @@ if ($activeSection === 'reservations') {
     </div>
   </div>
   <div class="col-12 col-xxl-5">
+    <?php if ($isDocumentEditing): ?>
+      <?php
+        $documentReceiptStatus = trim((string) ($documentFormData['fiskaly_receipt_status'] ?? ''));
+        $documentReceiptUrl = (string) ($documentFormData['fiskaly_receipt_url'] ?? '');
+        $documentReceiptSentAt = (string) ($documentFormData['fiskaly_receipt_sent_at'] ?? '');
+        $documentReceiptId = (string) ($documentFormData['fiskaly_receipt_id'] ?? '');
+        $documentReceiptData = [];
+        if (isset($documentFormData['fiskaly_receipt']) && is_array($documentFormData['fiskaly_receipt'])) {
+            $documentReceiptData = $documentFormData['fiskaly_receipt'];
+        }
+      ?>
+      <div class="card module-card mb-4">
+        <div class="card-header bg-transparent border-0">
+          <h3 class="h5 mb-0">Fiskaly E-Beleg</h3>
+        </div>
+        <div class="card-body">
+          <?php if ($documentReceiptStatus !== '' || $documentReceiptUrl !== '' || $documentReceiptId !== ''): ?>
+            <dl class="row mb-3">
+              <?php if ($documentReceiptId !== ''): ?>
+                <dt class="col-sm-4 col-lg-3">Beleg-ID</dt>
+                <dd class="col-sm-8 col-lg-9"><?= htmlspecialchars($documentReceiptId) ?></dd>
+              <?php endif; ?>
+              <?php if ($documentReceiptStatus !== ''): ?>
+                <dt class="col-sm-4 col-lg-3">Status</dt>
+                <dd class="col-sm-8 col-lg-9"><?= htmlspecialchars($documentReceiptStatus) ?></dd>
+              <?php endif; ?>
+              <?php if ($documentReceiptSentAt !== ''): ?>
+                <dt class="col-sm-4 col-lg-3">Versendet am</dt>
+                <dd class="col-sm-8 col-lg-9"><?= htmlspecialchars($documentReceiptSentAt) ?></dd>
+              <?php endif; ?>
+            </dl>
+            <div class="d-flex flex-wrap gap-2">
+              <?php if ($documentReceiptUrl !== ''): ?>
+                <a href="<?= htmlspecialchars($documentReceiptUrl) ?>" class="btn btn-outline-success btn-sm" target="_blank" rel="noopener">E-Beleg öffnen</a>
+              <?php endif; ?>
+            </div>
+            <?php if ($documentReceiptData !== []): ?>
+              <?php
+                $encodedReceiptDetails = json_encode($documentReceiptData, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+              ?>
+              <?php if ($encodedReceiptDetails !== false): ?>
+                <details class="mt-3">
+                  <summary class="small text-muted">Technische Details anzeigen</summary>
+                  <pre class="small bg-light border rounded p-3 mt-2 mb-0 overflow-auto" style="max-height: 240px;"><?= htmlspecialchars($encodedReceiptDetails) ?></pre>
+                </details>
+              <?php endif; ?>
+            <?php endif; ?>
+          <?php else: ?>
+            <p class="text-muted mb-0">Zu diesem Dokument wurde noch kein digitaler Beleg erzeugt.</p>
+          <?php endif; ?>
+        </div>
+      </div>
+    <?php endif; ?>
     <?php if ($isDocumentEditing && $documentFormData['pdf_path'] !== ''): ?>
       <?php
         $documentEmailFeedbackStatus = '';
@@ -13176,6 +13623,56 @@ if ($activeSection === 'reservations') {
                       <label for="sumup-affiliate-key" class="form-label">Affiliate-Key</label>
                       <input type="text" class="form-control" id="sumup-affiliate-key" name="sumup_affiliate_key" value="<?= htmlspecialchars($sumupAffiliateKey) ?>" placeholder="Affiliate-Key">
                       <div class="form-text">Optional: Wird für Partnerabrechnungen benötigt.</div>
+                    </div>
+                  </div>
+                  <hr class="my-4">
+                  <div>
+                    <h3 class="h6 mb-1">Fiskaly E-Belege</h3>
+                    <p class="text-muted mb-0">Digitale Belege automatisch per E-Mail oder SMS bereitstellen.</p>
+                  </div>
+                  <div class="row g-3 mt-1">
+                    <div class="col-md-6 col-lg-4">
+                      <label for="fiskaly-api-key" class="form-label">API-Key</label>
+                      <input type="text" class="form-control" id="fiskaly-api-key" name="fiskaly_api_key" value="<?= htmlspecialchars($fiskalyApiKey) ?>" autocomplete="off">
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                      <label for="fiskaly-api-secret" class="form-label">API-Secret</label>
+                      <input type="text" class="form-control" id="fiskaly-api-secret" name="fiskaly_api_secret" value="<?= htmlspecialchars($fiskalyApiSecret) ?>" autocomplete="off">
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                      <label for="fiskaly-organisation" class="form-label">Organisations-ID</label>
+                      <input type="text" class="form-control" id="fiskaly-organisation" name="fiskaly_organisation_id" value="<?= htmlspecialchars($fiskalyOrganizationId) ?>" placeholder="Optional">
+                      <div class="form-text">Optional für Installationen mit mehreren Organisationen.</div>
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                      <label for="fiskaly-cash-register" class="form-label">Kassen-ID</label>
+                      <input type="text" class="form-control" id="fiskaly-cash-register" name="fiskaly_cash_register_id" value="<?= htmlspecialchars($fiskalyCashRegisterId) ?>" required>
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                      <label for="fiskaly-template" class="form-label">Vorlagen-ID</label>
+                      <input type="text" class="form-control" id="fiskaly-template" name="fiskaly_template_id" value="<?= htmlspecialchars($fiskalyTemplateId) ?>" required>
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                      <label for="fiskaly-base-url" class="form-label">API-Basis-URL</label>
+                      <input type="url" class="form-control" id="fiskaly-base-url" name="fiskaly_api_base_url" value="<?= htmlspecialchars($fiskalyApiBaseUrl) ?>" placeholder="<?= htmlspecialchars(FiskalyClient::DEFAULT_API_BASE_URL) ?>">
+                      <div class="form-text">Optional. Ohne Angabe wird die Standard-API genutzt.</div>
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                      <label for="fiskaly-auth-url" class="form-label">Auth-URL</label>
+                      <input type="url" class="form-control" id="fiskaly-auth-url" name="fiskaly_auth_url" value="<?= htmlspecialchars($fiskalyAuthUrl) ?>" placeholder="<?= htmlspecialchars(FiskalyClient::DEFAULT_AUTH_URL) ?>">
+                    </div>
+                    <div class="col-12">
+                      <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="fiskaly-auto-send" name="fiskaly_receipt_auto_send" value="1" <?= $fiskalySendReceiptsDefault ? 'checked' : '' ?>>
+                        <label class="form-check-label" for="fiskaly-auto-send">Digitalen Beleg standardmäßig beim Finalisieren versenden</label>
+                      </div>
+                      <div class="form-text">Die Option kann bei jeder Rechnung individuell geändert werden.</div>
+                    </div>
+                    <div class="col-12">
+                      <p class="form-text mb-0">API-Key, Secret, Kassen-ID und Vorlagen-ID sind erforderlich, um E-Belege zu erstellen.</p>
+                      <?php if (!$fiskalyIntegrationAvailable): ?>
+                        <p class="text-muted small mb-0 mt-1">Aktuell sind nicht alle Pflichtangaben für den Fiskaly-Versand hinterlegt.</p>
+                      <?php endif; ?>
                     </div>
                   </div>
                   <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mt-4">
@@ -18364,6 +18861,33 @@ if ($activeSection === 'reservations') {
 
         function setupDocumentFinalizeForms() {
           document.querySelectorAll('[data-document-finalize-form]').forEach(function (form) {
+            var fiskalyToggle = form.querySelector('[data-fiskaly-toggle]');
+            var fiskalyFields = form.querySelector('[data-fiskaly-fields]');
+            var fiskalyInputs = fiskalyFields ? fiskalyFields.querySelectorAll('[data-fiskaly-email], [data-fiskaly-phone], [data-fiskaly-message]') : null;
+
+            function updateFiskalyState() {
+              if (!fiskalyFields || !fiskalyInputs) {
+                return;
+              }
+
+              if (fiskalyToggle && fiskalyToggle.checked) {
+                fiskalyFields.removeAttribute('hidden');
+                fiskalyInputs.forEach(function (input) {
+                  input.removeAttribute('disabled');
+                });
+              } else {
+                fiskalyFields.setAttribute('hidden', 'hidden');
+                fiskalyInputs.forEach(function (input) {
+                  input.setAttribute('disabled', 'disabled');
+                });
+              }
+            }
+
+            if (fiskalyToggle) {
+              updateFiskalyState();
+              fiskalyToggle.addEventListener('change', updateFiskalyState);
+            }
+
             form.addEventListener('submit', function (event) {
               var select = form.querySelector('[data-finalize-payment-select]');
               if (select && !select.value) {
@@ -18380,9 +18904,29 @@ if ($activeSection === 'reservations') {
                 }
               }
 
+              if (fiskalyToggle && fiskalyToggle.checked) {
+                var emailInput = form.querySelector('[data-fiskaly-email]');
+                var phoneInput = form.querySelector('[data-fiskaly-phone]');
+                var emailValue = emailInput ? emailInput.value.trim() : '';
+                var phoneValue = phoneInput ? phoneInput.value.trim() : '';
+
+                if (!emailValue && !phoneValue) {
+                  event.preventDefault();
+                  if (emailInput) {
+                    emailInput.focus();
+                  }
+                  window.alert('Bitte geben Sie eine E-Mail-Adresse oder Telefonnummer für den Fiskaly-Beleg an.');
+                  return;
+                }
+              }
+
               var message = 'Dokument finalisieren und PDF erzeugen?';
               if (label !== '') {
                 message += ' Zahlungsart: ' + label + '.';
+              }
+
+              if (fiskalyToggle && fiskalyToggle.checked) {
+                message += '\nEs wird ein digitaler Fiskaly-Beleg erzeugt.';
               }
 
               if (!window.confirm(message)) {

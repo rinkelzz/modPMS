@@ -103,6 +103,11 @@ class DocumentManager
         $this->ensureColumn('documents', 'payment_method', 'ALTER TABLE documents ADD COLUMN payment_method VARCHAR(64) NULL AFTER finalized_at');
         $this->ensureColumn('documents', 'payment_reference', 'ALTER TABLE documents ADD COLUMN payment_reference VARCHAR(191) NULL AFTER payment_method');
         $this->ensureColumn('documents', 'payment_details_json', 'ALTER TABLE documents ADD COLUMN payment_details_json LONGTEXT NULL AFTER payment_reference');
+        $this->ensureColumn('documents', 'fiskaly_receipt_id', 'ALTER TABLE documents ADD COLUMN fiskaly_receipt_id VARCHAR(191) NULL AFTER payment_details_json');
+        $this->ensureColumn('documents', 'fiskaly_receipt_status', 'ALTER TABLE documents ADD COLUMN fiskaly_receipt_status VARCHAR(64) NULL AFTER fiskaly_receipt_id');
+        $this->ensureColumn('documents', 'fiskaly_receipt_url', 'ALTER TABLE documents ADD COLUMN fiskaly_receipt_url VARCHAR(255) NULL AFTER fiskaly_receipt_status');
+        $this->ensureColumn('documents', 'fiskaly_receipt_json', 'ALTER TABLE documents ADD COLUMN fiskaly_receipt_json LONGTEXT NULL AFTER fiskaly_receipt_url');
+        $this->ensureColumn('documents', 'fiskaly_receipt_sent_at', 'ALTER TABLE documents ADD COLUMN fiskaly_receipt_sent_at TIMESTAMP NULL DEFAULT NULL AFTER fiskaly_receipt_json');
 
         try {
             $this->pdo->exec('ALTER TABLE documents ADD INDEX idx_documents_reservation (reservation_id)');
@@ -464,7 +469,7 @@ class DocumentManager
         }
 
         $stmt = $this->pdo->prepare(
-            'UPDATE documents SET status = :status, finalized_at = NOW(), pdf_path = :pdf_path, total_net = :total_net, total_vat = :total_vat, total_gross = :total_gross, items_json = :items_json, payment_method = :payment_method, payment_reference = :payment_reference, payment_details_json = :payment_details_json, updated_at = NOW() WHERE id = :id'
+            'UPDATE documents SET status = :status, finalized_at = NOW(), pdf_path = :pdf_path, total_net = :total_net, total_vat = :total_vat, total_gross = :total_gross, items_json = :items_json, payment_method = :payment_method, payment_reference = :payment_reference, payment_details_json = :payment_details_json, fiskaly_receipt_id = NULL, fiskaly_receipt_status = NULL, fiskaly_receipt_url = NULL, fiskaly_receipt_json = NULL, fiskaly_receipt_sent_at = NULL, updated_at = NOW() WHERE id = :id'
         );
         $stmt->execute([
             'id' => $id,
@@ -477,6 +482,54 @@ class DocumentManager
             'payment_method' => $normalizedPaymentMethod,
             'payment_reference' => $normalizedPaymentReference,
             'payment_details_json' => $paymentDetailsJson,
+        ]);
+
+        return $this->find($id);
+    }
+
+    public function updateFiskalyReceipt(int $id, ?array $receiptData): array
+    {
+        $document = $this->find($id);
+        if ($document === null) {
+            throw new RuntimeException('Dokument wurde nicht gefunden.');
+        }
+
+        $receiptId = null;
+        $receiptStatus = null;
+        $receiptUrl = null;
+        $receiptSentAt = null;
+        $receiptJson = null;
+
+        if ($receiptData !== null) {
+            $receiptId = isset($receiptData['id']) && $receiptData['id'] !== '' ? (string) $receiptData['id'] : null;
+            $receiptStatus = isset($receiptData['status']) && $receiptData['status'] !== '' ? (string) $receiptData['status'] : null;
+            if (isset($receiptData['short_link']) && $receiptData['short_link'] !== '') {
+                $receiptUrl = (string) $receiptData['short_link'];
+            } elseif (isset($receiptData['url']) && $receiptData['url'] !== '') {
+                $receiptUrl = (string) $receiptData['url'];
+            }
+            if (isset($receiptData['sent_at']) && $receiptData['sent_at'] !== '') {
+                $receiptSentAt = (string) $receiptData['sent_at'];
+            }
+
+            try {
+                $receiptJson = $this->encodeReceiptDetails($receiptData);
+            } catch (\JsonException $exception) {
+                throw new RuntimeException('Fiskaly-Belegdaten konnten nicht verarbeitet werden: ' . $exception->getMessage(), 0, $exception);
+            }
+        }
+
+        $stmt = $this->pdo->prepare(
+            'UPDATE documents SET fiskaly_receipt_id = :receipt_id, fiskaly_receipt_status = :receipt_status, fiskaly_receipt_url = :receipt_url, fiskaly_receipt_json = :receipt_json, fiskaly_receipt_sent_at = :receipt_sent_at, updated_at = NOW() WHERE id = :id'
+        );
+
+        $stmt->execute([
+            'id' => $id,
+            'receipt_id' => $receiptId,
+            'receipt_status' => $receiptStatus,
+            'receipt_url' => $receiptUrl,
+            'receipt_json' => $receiptJson,
+            'receipt_sent_at' => $receiptSentAt,
         ]);
 
         return $this->find($id);
@@ -662,6 +715,14 @@ class DocumentManager
     }
 
     /**
+     * @param array<string, mixed> $details
+     */
+    private function encodeReceiptDetails(array $details): string
+    {
+        return json_encode($details, JSON_THROW_ON_ERROR);
+    }
+
+    /**
      * @param array<int, array<string, mixed>> $items
      * @return array<int, array<string, mixed>>
      */
@@ -825,6 +886,33 @@ class DocumentManager
         }
 
         unset($record['payment_details_json']);
+
+        $record['fiskaly_receipt_id'] = isset($record['fiskaly_receipt_id']) && $record['fiskaly_receipt_id'] !== ''
+            ? (string) $record['fiskaly_receipt_id']
+            : null;
+        $record['fiskaly_receipt_status'] = isset($record['fiskaly_receipt_status']) && $record['fiskaly_receipt_status'] !== ''
+            ? (string) $record['fiskaly_receipt_status']
+            : null;
+        $record['fiskaly_receipt_url'] = isset($record['fiskaly_receipt_url']) && $record['fiskaly_receipt_url'] !== ''
+            ? (string) $record['fiskaly_receipt_url']
+            : null;
+        $record['fiskaly_receipt_sent_at'] = isset($record['fiskaly_receipt_sent_at']) && $record['fiskaly_receipt_sent_at'] !== null && $record['fiskaly_receipt_sent_at'] !== ''
+            ? (string) $record['fiskaly_receipt_sent_at']
+            : null;
+        $record['fiskaly_receipt'] = [];
+
+        if (isset($record['fiskaly_receipt_json']) && $record['fiskaly_receipt_json'] !== null && $record['fiskaly_receipt_json'] !== '') {
+            try {
+                $decodedReceipt = json_decode((string) $record['fiskaly_receipt_json'], true, 512, JSON_THROW_ON_ERROR);
+                if (is_array($decodedReceipt)) {
+                    $record['fiskaly_receipt'] = $decodedReceipt;
+                }
+            } catch (\JsonException $exception) {
+                $record['fiskaly_receipt'] = [];
+            }
+        }
+
+        unset($record['fiskaly_receipt_json']);
 
         return $record;
     }
