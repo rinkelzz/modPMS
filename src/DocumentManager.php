@@ -482,6 +482,42 @@ class DocumentManager
         return $this->find($id);
     }
 
+    /**
+     * @param array<string, mixed> $config
+     * @return array<int, array<string, mixed>>
+     */
+    public function splitInvoiceDraft(int $documentId, array $config): array
+    {
+        $document = $this->find($documentId);
+        if ($document === null) {
+            throw new RuntimeException('Dokument wurde nicht gefunden.');
+        }
+
+        if ($document['type'] !== self::TYPE_INVOICE) {
+            throw new RuntimeException('Nur Rechnungsentwürfe können geteilt werden.');
+        }
+
+        if ($document['status'] !== self::STATUS_DRAFT) {
+            throw new RuntimeException('Nur Entwürfe können geteilt werden.');
+        }
+
+        $items = $this->normalizeItems($document['items'] ?? []);
+        if ($items === []) {
+            throw new RuntimeException('Die Rechnung enthält keine Positionen.');
+        }
+
+        $mode = isset($config['mode']) ? (string) $config['mode'] : 'percentage';
+        $created = [];
+
+        if ($mode === 'items') {
+            $created = $this->splitByItems($document, $items, $config);
+        } else {
+            $created = $this->splitByPercentage($document, $items, $config);
+        }
+
+        return $created;
+    }
+
     public function createCorrection(int $documentId, callable $pdfGenerator): array
     {
         $original = $this->find($documentId);
@@ -643,6 +679,192 @@ class DocumentManager
             'vat' => round($vat, 2),
             'gross' => round($gross, 2),
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $document
+     * @param array<int, array<string, mixed>> $items
+     * @param array<string, mixed> $config
+     * @return array<int, array<string, mixed>>
+     */
+    private function splitByPercentage(array $document, array $items, array $config): array
+    {
+        $shares = isset($config['shares']) && is_array($config['shares']) ? $config['shares'] : [];
+        if (count($shares) < 2) {
+            throw new RuntimeException('Bitte mindestens zwei Anteile angeben.');
+        }
+
+        $normalizedShares = [];
+        $total = 0.0;
+
+        foreach ($shares as $share) {
+            if (!is_array($share)) {
+                continue;
+            }
+
+            $recipient = trim((string) ($share['recipient_name'] ?? ''));
+            if ($recipient === '') {
+                throw new RuntimeException('Bitte einen Empfängernamen für jede Teilrechnung angeben.');
+            }
+
+            $percentage = $this->normalizeFloat($share['percentage'] ?? 0.0);
+            if ($percentage <= 0) {
+                throw new RuntimeException('Alle Anteile müssen größer als 0 sein.');
+            }
+
+            $total += $percentage;
+
+            $normalizedShares[] = [
+                'recipient' => $recipient,
+                'percentage' => $percentage,
+            ];
+        }
+
+        if ($normalizedShares === []) {
+            throw new RuntimeException('Es wurden keine gültigen Anteile übergeben.');
+        }
+
+        if (abs($total - 100) > 0.01) {
+            throw new RuntimeException('Die angegebenen Anteile müssen insgesamt 100 % ergeben.');
+        }
+
+        $created = [];
+        $shareCount = count($normalizedShares);
+
+        foreach ($normalizedShares as $index => $share) {
+            $factor = $share['percentage'] / 100;
+            $shareItems = [];
+
+            foreach ($items as $item) {
+                $scaledItem = $item;
+                $scaledItem['quantity'] = round((float) ($item['quantity'] ?? 0.0) * $factor, 2);
+                if ($scaledItem['quantity'] <= 0) {
+                    continue;
+                }
+
+                $shareItems[] = $scaledItem;
+            }
+
+            if ($shareItems === []) {
+                throw new RuntimeException('Mindestens ein Anteil enthält keine Positionen. Bitte die Prozentwerte prüfen.');
+            }
+
+            $partLabel = sprintf('Teil %d/%d', $index + 1, $shareCount);
+            $note = sprintf('Teilrechnung über %.2f%%.', $share['percentage']);
+
+            $created[] = $this->createDocument([
+                'type' => self::TYPE_INVOICE,
+                'recipient_name' => $share['recipient'],
+                'recipient_address' => (string) ($document['recipient_address'] ?? ''),
+                'subject' => trim(((string) ($document['subject'] ?? '')) . ' ' . $partLabel),
+                'body_html' => trim(((string) ($document['body_html'] ?? '')) . "\n\n" . $note),
+                'issue_date' => $document['issue_date'] ?? null,
+                'due_date' => $document['due_date'] ?? null,
+                'currency' => $document['currency'] ?? 'EUR',
+                'template_id' => $document['template_id'] ?? null,
+                'reservation_id' => $document['reservation_id'] ?? null,
+                'items' => $shareItems,
+            ]);
+        }
+
+        return $created;
+    }
+
+    /**
+     * @param array<string, mixed> $document
+     * @param array<int, array<string, mixed>> $items
+     * @param array<string, mixed> $config
+     * @return array<int, array<string, mixed>>
+     */
+    private function splitByItems(array $document, array $items, array $config): array
+    {
+        $assignments = isset($config['item_assignments']) && is_array($config['item_assignments'])
+            ? $config['item_assignments']
+            : [];
+        if (count($assignments) < 2) {
+            throw new RuntimeException('Bitte mindestens zwei Empfänger für die Aufteilung angeben.');
+        }
+
+        $allIndexes = array_keys($items);
+        $usedIndexes = [];
+        $normalizedAssignments = [];
+
+        foreach ($assignments as $assignment) {
+            if (!is_array($assignment)) {
+                continue;
+            }
+
+            $recipient = trim((string) ($assignment['recipient_name'] ?? ''));
+            if ($recipient === '') {
+                throw new RuntimeException('Bitte Empfängernamen für alle Teilrechnungen hinterlegen.');
+            }
+
+            $indexes = isset($assignment['item_indexes']) && is_array($assignment['item_indexes'])
+                ? array_map('intval', $assignment['item_indexes'])
+                : [];
+            $indexes = array_values(array_unique(array_filter($indexes, static fn ($value) => $value >= 0)));
+
+            foreach ($indexes as $index) {
+                if (!in_array($index, $allIndexes, true)) {
+                    throw new RuntimeException('Eine ausgewählte Position existiert nicht mehr.');
+                }
+
+                if (in_array($index, $usedIndexes, true)) {
+                    throw new RuntimeException('Jede Position kann nur einer Teilrechnung zugeordnet werden.');
+                }
+
+                $usedIndexes[] = $index;
+            }
+
+            $normalizedAssignments[] = [
+                'recipient' => $recipient,
+                'indexes' => $indexes,
+            ];
+        }
+
+        sort($usedIndexes);
+        sort($allIndexes);
+
+        if ($normalizedAssignments === []) {
+            throw new RuntimeException('Es wurden keine gültigen Zuweisungen übergeben.');
+        }
+
+        if ($usedIndexes !== $allIndexes) {
+            throw new RuntimeException('Alle Positionen müssen genau einer Teilrechnung zugeordnet werden.');
+        }
+
+        $created = [];
+        $assignmentCount = count($normalizedAssignments);
+
+        foreach ($normalizedAssignments as $index => $assignment) {
+            $partItems = [];
+            foreach ($assignment['indexes'] as $itemIndex) {
+                $partItems[] = $items[$itemIndex];
+            }
+
+            if ($partItems === []) {
+                throw new RuntimeException('Eine Teilrechnung enthält keine Positionen.');
+            }
+
+            $partLabel = sprintf('Teil %d/%d', $index + 1, $assignmentCount);
+            $note = 'Teilrechnung mit zugeordneten Positionen.';
+
+            $created[] = $this->createDocument([
+                'type' => self::TYPE_INVOICE,
+                'recipient_name' => $assignment['recipient'],
+                'recipient_address' => (string) ($document['recipient_address'] ?? ''),
+                'subject' => trim(((string) ($document['subject'] ?? '')) . ' ' . $partLabel),
+                'body_html' => trim(((string) ($document['body_html'] ?? '')) . "\n\n" . $note),
+                'issue_date' => $document['issue_date'] ?? null,
+                'due_date' => $document['due_date'] ?? null,
+                'currency' => $document['currency'] ?? 'EUR',
+                'template_id' => $document['template_id'] ?? null,
+                'reservation_id' => $document['reservation_id'] ?? null,
+                'items' => $partItems,
+            ]);
+        }
+
+        return $created;
     }
 
     /**
