@@ -15316,12 +15316,12 @@ if ($activeSection === 'reservations') {
                             type="text"
                             class="form-control reservation-date-display reservation-item-arrival-display"
                             value="<?= htmlspecialchars($roomArrivalDisplay) ?>"
-                            placeholder="dd.mm.yyyy"
+                            placeholder="dd.mm.YYYY"
                             autocomplete="off"
                             inputmode="numeric"
                             pattern="\d{1,2}\.\d{1,2}\.\d{4}"
                             maxlength="10"
-                            title="Format: dd.mm.yyyy"
+                            title="Format: dd.mm.YYYY"
                             <?= $pdo === null ? 'disabled' : '' ?>
                           >
                           <input
@@ -15349,12 +15349,12 @@ if ($activeSection === 'reservations') {
                             type="text"
                             class="form-control reservation-date-display reservation-item-departure-display"
                             value="<?= htmlspecialchars($roomDepartureDisplay) ?>"
-                            placeholder="dd.mm.yyyy"
+                            placeholder="dd.mm.YYYY"
                             autocomplete="off"
                             inputmode="numeric"
                             pattern="\d{1,2}\.\d{1,2}\.\d{4}"
                             maxlength="10"
-                            title="Format: dd.mm.yyyy"
+                            title="Format: dd.mm.YYYY"
                             <?= $pdo === null ? 'disabled' : '' ?>
                           >
                           <input
@@ -15526,12 +15526,12 @@ if ($activeSection === 'reservations') {
                         type="text"
                         class="form-control reservation-date-display reservation-item-arrival-display"
                         value="<?= htmlspecialchars($defaultArrivalDisplay) ?>"
-                        placeholder="dd.mm.yyyy"
+                        placeholder="dd.mm.YYYY"
                         autocomplete="off"
                         inputmode="numeric"
                         pattern="\d{1,2}\.\d{1,2}\.\d{4}"
                         maxlength="10"
-                        title="Format: dd.mm.yyyy"
+                        title="Format: dd.mm.YYYY"
                         <?= $pdo === null ? 'disabled' : '' ?>
                       >
                       <input
@@ -15559,12 +15559,12 @@ if ($activeSection === 'reservations') {
                         type="text"
                         class="form-control reservation-date-display reservation-item-departure-display"
                         value="<?= htmlspecialchars($defaultDepartureDisplay) ?>"
-                        placeholder="dd.mm.yyyy"
+                        placeholder="dd.mm.YYYY"
                         autocomplete="off"
                         inputmode="numeric"
                         pattern="\d{1,2}\.\d{1,2}\.\d{4}"
                         maxlength="10"
-                        title="Format: dd.mm.yyyy"
+                        title="Format: dd.mm.YYYY"
                         <?= $pdo === null ? 'disabled' : '' ?>
                       >
                       <input
