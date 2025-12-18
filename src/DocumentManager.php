@@ -63,7 +63,7 @@ class DocumentManager
                 'CREATE TABLE IF NOT EXISTS documents (
                     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     type VARCHAR(32) NOT NULL,
-                    document_number VARCHAR(191) NOT NULL UNIQUE,
+                    document_number VARCHAR(191) NULL UNIQUE,
                     status VARCHAR(32) NOT NULL DEFAULT "draft",
                     recipient_name VARCHAR(191) NOT NULL,
                     recipient_address TEXT NULL,
@@ -103,6 +103,12 @@ class DocumentManager
         $this->ensureColumn('documents', 'payment_method', 'ALTER TABLE documents ADD COLUMN payment_method VARCHAR(64) NULL AFTER finalized_at');
         $this->ensureColumn('documents', 'payment_reference', 'ALTER TABLE documents ADD COLUMN payment_reference VARCHAR(191) NULL AFTER payment_method');
         $this->ensureColumn('documents', 'payment_details_json', 'ALTER TABLE documents ADD COLUMN payment_details_json LONGTEXT NULL AFTER payment_reference');
+
+        try {
+            $this->pdo->exec('ALTER TABLE documents MODIFY document_number VARCHAR(191) NULL UNIQUE');
+        } catch (PDOException $exception) {
+            error_log('DocumentManager: unable to relax document_number constraint: ' . $exception->getMessage());
+        }
 
         try {
             $this->pdo->exec('ALTER TABLE documents ADD INDEX idx_documents_reservation (reservation_id)');
@@ -307,7 +313,7 @@ class DocumentManager
             throw new RuntimeException('Bitte mindestens eine Position erfassen.');
         }
 
-        $documentNumber = $this->generateDocumentNumber($type);
+        $documentNumber = $type === self::TYPE_INVOICE ? null : $this->generateDocumentNumber($type);
 
         $recipientName = trim((string) ($data['recipient_name'] ?? ''));
         if ($recipientName === '') {
@@ -413,7 +419,12 @@ class DocumentManager
 
         $totals = $this->calculateTotals($items);
 
+        $documentNumber = isset($document['document_number']) && (string) $document['document_number'] !== ''
+            ? (string) $document['document_number']
+            : $this->generateDocumentNumber($document['type']);
+
         $documentForPdf = $document;
+        $documentForPdf['document_number'] = $documentNumber;
         $documentForPdf['items'] = $items;
         $documentForPdf['total_net'] = $totals['net'];
         $documentForPdf['total_vat'] = $totals['vat'];
@@ -464,10 +475,11 @@ class DocumentManager
         }
 
         $stmt = $this->pdo->prepare(
-            'UPDATE documents SET status = :status, finalized_at = NOW(), pdf_path = :pdf_path, total_net = :total_net, total_vat = :total_vat, total_gross = :total_gross, items_json = :items_json, payment_method = :payment_method, payment_reference = :payment_reference, payment_details_json = :payment_details_json, updated_at = NOW() WHERE id = :id'
+            'UPDATE documents SET document_number = :document_number, status = :status, finalized_at = NOW(), pdf_path = :pdf_path, total_net = :total_net, total_vat = :total_vat, total_gross = :total_gross, items_json = :items_json, payment_method = :payment_method, payment_reference = :payment_reference, payment_details_json = :payment_details_json, updated_at = NOW() WHERE id = :id'
         );
         $stmt->execute([
             'id' => $id,
+            'document_number' => $documentNumber,
             'status' => self::STATUS_FINALIZED,
             'pdf_path' => $pdfPath,
             'total_net' => $totals['net'],
@@ -509,10 +521,24 @@ class DocumentManager
         $mode = isset($config['mode']) ? (string) $config['mode'] : 'percentage';
         $created = [];
 
-        if ($mode === 'items') {
-            $created = $this->splitByItems($document, $items, $config);
-        } else {
-            $created = $this->splitByPercentage($document, $items, $config);
+        $this->pdo->beginTransaction();
+
+        try {
+            if ($mode === 'items') {
+                $created = $this->splitByItems($document, $items, $config);
+            } else {
+                $created = $this->splitByPercentage($document, $items, $config);
+            }
+
+            $this->deleteDraft($documentId);
+
+            $this->pdo->commit();
+        } catch (Throwable $exception) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+
+            throw $exception;
         }
 
         return $created;
@@ -558,7 +584,7 @@ class DocumentManager
         }
 
         $correctionNumber = $this->nextCorrectionIndex($documentId);
-        $documentNumber = $this->generateDocumentNumber(self::TYPE_CORRECTION);
+        $documentNumber = null;
 
         $subject = sprintf('Rechnungskorrektur zu %s', $original['document_number']);
         $body = "Gutschrift zur Rechnung " . $original['document_number'];
