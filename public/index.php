@@ -3990,6 +3990,112 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
 
             break;
 
+        case 'document_split':
+            $activeSection = 'documents';
+
+            if (!$documentManager instanceof DocumentManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Dokumentverwaltung ist derzeit nicht verfügbar.',
+                ];
+                break;
+            }
+
+            $documentId = (int) ($_POST['id'] ?? 0);
+            if ($documentId <= 0) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Ungültige Dokument-ID.',
+                ];
+                break;
+            }
+
+            $document = null;
+
+            try {
+                $document = $documentManager->find($documentId);
+                if ($document === null) {
+                    throw new RuntimeException('Dokument wurde nicht gefunden.');
+                }
+
+                $recipientA = trim((string) ($_POST['split_recipient_a'] ?? ($document['recipient_name'] ?? '')));
+                $recipientB = trim((string) ($_POST['split_recipient_b'] ?? ''));
+
+                if ($recipientA === '' || $recipientB === '') {
+                    throw new RuntimeException('Bitte Empfängernamen für beide Teilrechnungen angeben.');
+                }
+
+                $mode = (string) ($_POST['split_mode'] ?? 'percentage');
+                $createdDocuments = [];
+
+                if ($mode === 'items') {
+                    $originalItems = isset($document['items']) && is_array($document['items']) ? $document['items'] : [];
+                    $allIndexes = array_keys($originalItems);
+                    $selectedSecond = isset($_POST['split_items_second']) && is_array($_POST['split_items_second'])
+                        ? array_map('intval', $_POST['split_items_second'])
+                        : [];
+                    $selectedSecond = array_values(array_unique(array_filter($selectedSecond, static fn ($value) => $value >= 0)));
+                    $firstIndexes = array_values(array_diff($allIndexes, $selectedSecond));
+
+                    $createdDocuments = $documentManager->splitInvoiceDraft($documentId, [
+                        'mode' => 'items',
+                        'item_assignments' => [
+                            [
+                                'recipient_name' => $recipientA,
+                                'item_indexes' => $firstIndexes,
+                            ],
+                            [
+                                'recipient_name' => $recipientB,
+                                'item_indexes' => $selectedSecond,
+                            ],
+                        ],
+                    ]);
+                } else {
+                    $percentageA = isset($_POST['split_percentage_a']) ? (float) $_POST['split_percentage_a'] : 50.0;
+                    $percentageB = isset($_POST['split_percentage_b']) ? (float) $_POST['split_percentage_b'] : 50.0;
+
+                    $createdDocuments = $documentManager->splitInvoiceDraft($documentId, [
+                        'mode' => 'percentage',
+                        'shares' => [
+                            [
+                                'recipient_name' => $recipientA,
+                                'percentage' => $percentageA,
+                            ],
+                            [
+                                'recipient_name' => $recipientB,
+                                'percentage' => $percentageB,
+                            ],
+                        ],
+                    ]);
+                }
+
+                $documentNumbers = array_map(
+                    static fn ($doc) => isset($doc['document_number']) && $doc['document_number'] !== ''
+                        ? (string) $doc['document_number']
+                        : ('#' . ((int) ($doc['id'] ?? 0))),
+                    $createdDocuments
+                );
+
+                $_SESSION['alert'] = [
+                    'type' => 'success',
+                    'message' => 'Rechnung wurde geteilt. Neue Entwürfe: ' . htmlspecialchars(implode(', ', $documentNumbers), ENT_QUOTES, 'UTF-8'),
+                ];
+
+                header('Location: index.php?section=documents');
+                exit;
+            } catch (Throwable $exception) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8'),
+                ];
+
+                if (is_array($document) && $documentFormData['id'] === null) {
+                    $documentFormData = array_merge($documentFormData, $document);
+                }
+            }
+
+            break;
+
         case 'document_finalize':
             $activeSection = 'documents';
 
@@ -11208,6 +11314,36 @@ if ($activeSection === 'reservations') {
             'vat' => $formatCurrencyWithCode($documentFormData['total_vat'] ?? 0.0, $documentFormData['currency'] ?? 'EUR'),
             'gross' => $formatCurrencyWithCode($documentFormData['total_gross'] ?? 0.0, $documentFormData['currency'] ?? 'EUR'),
         ];
+
+        $splitRecipientA = trim((string) ($_POST['split_recipient_a'] ?? ($documentFormData['recipient_name'] ?? '')));
+        $splitRecipientB = trim((string) ($_POST['split_recipient_b'] ?? ''));
+        if ($splitRecipientB === '' && $splitRecipientA !== '') {
+            $splitRecipientB = $splitRecipientA . ' (Gast 2)';
+        } elseif ($splitRecipientB === '') {
+            $splitRecipientB = 'Gast 2';
+        }
+
+        $splitPercentageA = (string) ($_POST['split_percentage_a'] ?? '50');
+        $splitPercentageB = (string) ($_POST['split_percentage_b'] ?? '50');
+        $splitModeSelected = (string) ($_POST['split_mode'] ?? 'percentage');
+        $splitItemsSecond = isset($_POST['split_items_second']) && is_array($_POST['split_items_second'])
+            ? array_map('intval', $_POST['split_items_second'])
+            : [];
+
+        $splittableItems = array_values(array_filter(
+            $documentFormData['items'],
+            static function ($item): bool {
+                if (!is_array($item)) {
+                    return false;
+                }
+
+                $description = trim((string) ($item['description'] ?? ''));
+                $quantity = trim((string) ($item['quantity'] ?? ''));
+                $price = trim((string) ($item['unit_price'] ?? ''));
+
+                return $description !== '' || $quantity !== '' || $price !== '';
+            }
+        ));
       ?>
       <section id="documents" class="app-section active">
         <div class="row g-4">
@@ -11652,6 +11788,137 @@ if ($activeSection === 'reservations') {
                 </form>
               </div>
             </div>
+            <?php if ($isDocumentEditing && $documentFormData['type'] === DocumentManager::TYPE_INVOICE): ?>
+              <div class="card module-card mt-4">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-start flex-wrap gap-2">
+                  <div>
+                    <h3 class="h5 mb-1">Rechnung teilen</h3>
+                    <p class="text-muted mb-0">Erzeugt zwei neue Rechnungsentwürfe auf Basis der aktuellen Positionen.</p>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <?php if ($documentFormData['status'] !== DocumentManager::STATUS_DRAFT): ?>
+                    <p class="text-muted mb-0">Nur Rechnungsentwürfe können aufgeteilt werden.</p>
+                  <?php elseif ($splittableItems === []): ?>
+                    <p class="text-muted mb-0">Für diese Rechnung sind keine Positionen vorhanden.</p>
+                  <?php else: ?>
+                    <form method="post" id="invoice-split-form">
+                      <input type="hidden" name="form" value="document_split">
+                      <input type="hidden" name="id" value="<?= (int) $documentFormData['id'] ?>">
+                      <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                          <label for="split-recipient-a" class="form-label">Empfänger Teilrechnung A</label>
+                          <input type="text" class="form-control" id="split-recipient-a" name="split_recipient_a" value="<?= htmlspecialchars($splitRecipientA) ?>" required>
+                        </div>
+                        <div class="col-md-6">
+                          <label for="split-recipient-b" class="form-label">Empfänger Teilrechnung B</label>
+                          <input type="text" class="form-control" id="split-recipient-b" name="split_recipient_b" value="<?= htmlspecialchars($splitRecipientB) ?>" required>
+                        </div>
+                      </div>
+                      <div class="mb-3">
+                        <label class="form-label">Aufteilungsmodus</label>
+                        <div class="form-check">
+                          <input class="form-check-input" type="radio" name="split_mode" id="split-mode-percentage" value="percentage" <?= $splitModeSelected === 'items' ? '' : 'checked' ?>>
+                          <label class="form-check-label" for="split-mode-percentage">Nach Prozent verteilen</label>
+                        </div>
+                        <div class="form-check">
+                          <input class="form-check-input" type="radio" name="split_mode" id="split-mode-items" value="items" <?= $splitModeSelected === 'items' ? 'checked' : '' ?>>
+                          <label class="form-check-label" for="split-mode-items">Nach Positionen trennen</label>
+                        </div>
+                      </div>
+                      <div class="row g-3 mb-3 split-mode-percentage<?= $splitModeSelected === 'items' ? ' d-none' : '' ?>">
+                        <div class="col-md-6">
+                          <label for="split-percentage-a" class="form-label">Anteil Rechnung A (%)</label>
+                          <input type="number" class="form-control" id="split-percentage-a" name="split_percentage_a" value="<?= htmlspecialchars($splitPercentageA) ?>" min="1" max="100" step="0.01">
+                        </div>
+                        <div class="col-md-6">
+                          <label for="split-percentage-b" class="form-label">Anteil Rechnung B (%)</label>
+                          <input type="number" class="form-control" id="split-percentage-b" name="split_percentage_b" value="<?= htmlspecialchars($splitPercentageB) ?>" min="1" max="100" step="0.01">
+                          <div class="form-text">Die Anteile müssen zusammen 100&nbsp;% ergeben.</div>
+                        </div>
+                      </div>
+                      <div class="split-mode-items<?= $splitModeSelected === 'items' ? '' : ' d-none' ?>">
+                        <div class="table-responsive mb-2">
+                          <table class="table table-sm align-middle mb-0">
+                            <thead class="table-light">
+                              <tr>
+                                <th>Beschreibung</th>
+                                <th style="width: 18%;">Menge</th>
+                                <th style="width: 18%;">Einzelpreis</th>
+                                <th style="width: 14%;">MwSt. %</th>
+                                <th style="width: 14%;" class="text-center">Rechnung B</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <?php foreach ($splittableItems as $itemIndex => $itemRow): ?>
+                                <tr>
+                                  <td><?= htmlspecialchars((string) ($itemRow['description'] ?? 'Position')) ?></td>
+                                  <td><?= htmlspecialchars((string) ($itemRow['quantity'] ?? '')) ?></td>
+                                  <td><?= htmlspecialchars((string) ($itemRow['unit_price'] ?? '')) ?></td>
+                                  <td><?= htmlspecialchars((string) ($itemRow['tax_rate'] ?? '')) ?></td>
+                                  <td class="text-center">
+                                    <input class="form-check-input" type="checkbox" name="split_items_second[]" value="<?= (int) $itemIndex ?>" <?= in_array($itemIndex, $splitItemsSecond, true) ? 'checked' : '' ?> aria-label="Position <?= $itemIndex + 1 ?> zu Rechnung B zuweisen">
+                                  </td>
+                                </tr>
+                              <?php endforeach; ?>
+                            </tbody>
+                          </table>
+                        </div>
+                        <div class="form-text">Markierte Positionen werden Rechnung B zugeordnet; alle anderen bleiben in Rechnung A.</div>
+                      </div>
+                      <div class="d-flex gap-2 mt-3">
+                        <button type="submit" class="btn btn-outline-primary">Teilrechnungen erzeugen</button>
+                        <a href="index.php?section=documents&amp;editDocument=<?= (int) $documentFormData['id'] ?>" class="btn btn-link">Abbrechen</a>
+                      </div>
+                    </form>
+                  <?php endif; ?>
+                </div>
+              </div>
+              <script>
+                document.addEventListener('DOMContentLoaded', function () {
+                  var modeInputs = document.querySelectorAll('input[name="split_mode"]');
+                  var percentageSection = document.querySelector('.split-mode-percentage');
+                  var itemsSection = document.querySelector('.split-mode-items');
+                  var percentageAInput = document.getElementById('split-percentage-a');
+                  var percentageBInput = document.getElementById('split-percentage-b');
+
+                  var updateVisibility = function () {
+                    var selected = document.querySelector('input[name="split_mode"]:checked');
+                    var useItems = selected && selected.value === 'items';
+
+                    if (percentageSection) {
+                        percentageSection.classList.toggle('d-none', useItems);
+                    }
+
+                    if (itemsSection) {
+                        itemsSection.classList.toggle('d-none', !useItems);
+                    }
+                  };
+
+                  modeInputs.forEach(function (input) {
+                    input.addEventListener('change', updateVisibility);
+                  });
+
+                  if (percentageAInput && percentageBInput) {
+                    percentageAInput.addEventListener('input', function () {
+                      var value = parseFloat(percentageAInput.value.replace(',', '.'));
+                      if (!Number.isNaN(value)) {
+                        var remaining = Math.max(0, 100 - value);
+                        if (!percentageBInput.dataset.manualEdit) {
+                          percentageBInput.value = remaining.toFixed(2).replace(/\.00$/, '');
+                        }
+                      }
+                    });
+
+                    percentageBInput.addEventListener('input', function () {
+                      percentageBInput.dataset.manualEdit = '1';
+                    });
+                  }
+
+                  updateVisibility();
+                });
+              </script>
+            <?php endif; ?>
           </div>
           <div class="col-12">
             <div class="card module-card" id="template-management">
