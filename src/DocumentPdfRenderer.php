@@ -100,6 +100,7 @@ class DocumentPdfRenderer
         $this->renderRecipient($pdf, $document);
         $this->renderMeta($pdf, $document);
         $this->renderItems($pdf, $document);
+        $this->renderTse($pdf, $document);
         $this->renderBody($pdf, $document);
 
         $pdf->Output('F', $targetPath);
@@ -270,6 +271,39 @@ class DocumentPdfRenderer
         $pdf->Cell(35, 8, $this->convertText($this->formatMoney((float) ($document['total_vat'] ?? 0.0), $currency)), 1, 1, 'R');
         $pdf->Cell(150, 8, $this->convertText('Brutto'), 1, 0, 'R');
         $pdf->Cell(35, 8, $this->convertText($this->formatMoney((float) ($document['total_gross'] ?? 0.0), $currency)), 1, 1, 'R');
+
+        $pdf->Ln(4);
+    }
+
+    private function renderTse(\FPDF $pdf, array $document): void
+    {
+        $heading = trim((string) ($document['tse_heading'] ?? ''));
+        $content = trim((string) ($document['tse_content'] ?? ''));
+
+        $lines = [];
+        if ($content !== '') {
+            $lines = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', $content) ?: []), static fn ($line) => $line !== ''));
+        }
+
+        if ($heading === '' && $lines === []) {
+            return;
+        }
+
+        $pdf->SetFont('Arial', 'B', 11);
+
+        if ($heading !== '') {
+            $pdf->MultiCell(0, 6, $this->convertText($heading));
+            if ($lines !== []) {
+                $pdf->Ln(1);
+            }
+        }
+
+        if ($lines !== []) {
+            $pdf->SetFont('Arial', '', 10);
+            foreach ($lines as $line) {
+                $pdf->MultiCell(0, 5, $this->convertText($line));
+            }
+        }
 
         $pdf->Ln(4);
     }

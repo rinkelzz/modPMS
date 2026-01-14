@@ -309,6 +309,14 @@ $documentCompanyName = '';
 $documentCompanyAddress = '';
 $documentCompanyVatId = '';
 $documentCompanyBankDetails = '';
+$documentTseHeading = 'TSE-Informationen (fiskaly Cloud TSE)';
+$documentTseContent = '';
+$fiskalyApiKey = '';
+$fiskalyApiSecret = '';
+$fiskalyOrganizationId = '';
+$fiskalyTssId = '';
+$fiskalyClientId = '';
+$fiskalyCashRegisterId = '';
 $mailFromAddress = '';
 $mailReplyToAddress = '';
 $mailFromAddressFormValue = '';
@@ -1016,6 +1024,49 @@ if ($settingsManager instanceof SettingManager) {
 
     if (isset($documentSettings['document_company_bank_details'])) {
         $documentCompanyBankDetails = (string) $documentSettings['document_company_bank_details'];
+    }
+
+    $tseSettings = $settingsManager->getMany([
+        'document_tse_heading',
+        'document_tse_content',
+        'fiskaly_api_key',
+        'fiskaly_api_secret',
+        'fiskaly_organization_id',
+        'fiskaly_tss_id',
+        'fiskaly_client_id',
+        'fiskaly_cash_register_id',
+    ]);
+
+    if (isset($tseSettings['document_tse_heading']) && $tseSettings['document_tse_heading'] !== '') {
+        $documentTseHeading = (string) $tseSettings['document_tse_heading'];
+    }
+
+    if (isset($tseSettings['document_tse_content'])) {
+        $documentTseContent = (string) $tseSettings['document_tse_content'];
+    }
+
+    if (isset($tseSettings['fiskaly_api_key'])) {
+        $fiskalyApiKey = (string) $tseSettings['fiskaly_api_key'];
+    }
+
+    if (isset($tseSettings['fiskaly_api_secret'])) {
+        $fiskalyApiSecret = (string) $tseSettings['fiskaly_api_secret'];
+    }
+
+    if (isset($tseSettings['fiskaly_organization_id'])) {
+        $fiskalyOrganizationId = (string) $tseSettings['fiskaly_organization_id'];
+    }
+
+    if (isset($tseSettings['fiskaly_tss_id'])) {
+        $fiskalyTssId = (string) $tseSettings['fiskaly_tss_id'];
+    }
+
+    if (isset($tseSettings['fiskaly_client_id'])) {
+        $fiskalyClientId = (string) $tseSettings['fiskaly_client_id'];
+    }
+
+    if (isset($tseSettings['fiskaly_cash_register_id'])) {
+        $fiskalyCashRegisterId = (string) $tseSettings['fiskaly_cash_register_id'];
     }
 
     $storedPaymentMethods = $parsePaymentMethods($settingsManager->get('payment_methods', ''));
@@ -2362,6 +2413,103 @@ if ($pdo !== null && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['form
             ];
 
             header('Location: index.php?section=settings#document-settings');
+            exit;
+
+        case 'settings_document_tse':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Einstellungen konnte nicht hergestellt werden.',
+                ];
+                break;
+            }
+
+            $truncate = static function (string $value, int $length): string {
+                if ($length <= 0) {
+                    return '';
+                }
+
+                if (function_exists('mb_substr')) {
+                    return mb_substr($value, 0, $length);
+                }
+
+                return substr($value, 0, $length);
+            };
+
+            $headingInput = isset($_POST['document_tse_heading']) ? trim((string) $_POST['document_tse_heading']) : '';
+            $contentInput = isset($_POST['document_tse_content']) ? (string) $_POST['document_tse_content'] : '';
+
+            $headingSanitized = $truncate($headingInput, 191);
+            $contentNormalized = str_replace(["\r\n", "\r"], "\n", $contentInput);
+            $contentNormalized = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', (string) $contentNormalized);
+            $contentSanitized = $truncate(trim((string) $contentNormalized), 2000);
+
+            $settingsManager->set('document_tse_heading', $headingSanitized);
+            $settingsManager->set('document_tse_content', $contentSanitized);
+
+            $documentTseHeading = $headingSanitized;
+            $documentTseContent = $contentSanitized;
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'TSE-Angaben für Dokumente wurden gespeichert.',
+            ];
+
+            header('Location: index.php?section=settings#document-settings');
+            exit;
+
+        case 'settings_fiskaly':
+            $activeSection = 'settings';
+
+            if (!$settingsAvailable || !$settingsManager instanceof SettingManager) {
+                $alert = [
+                    'type' => 'danger',
+                    'message' => 'Die Datenbankverbindung für Einstellungen konnte nicht hergestellt werden.',
+                ];
+                break;
+            }
+
+            $truncate = static function (string $value, int $length): string {
+                if ($length <= 0) {
+                    return '';
+                }
+
+                if (function_exists('mb_substr')) {
+                    return mb_substr($value, 0, $length);
+                }
+
+                return substr($value, 0, $length);
+            };
+
+            $apiKeyInput = isset($_POST['fiskaly_api_key']) ? trim((string) $_POST['fiskaly_api_key']) : '';
+            $apiSecretInput = isset($_POST['fiskaly_api_secret']) ? trim((string) $_POST['fiskaly_api_secret']) : '';
+            $organizationIdInput = isset($_POST['fiskaly_organization_id']) ? trim((string) $_POST['fiskaly_organization_id']) : '';
+            $tssIdInput = isset($_POST['fiskaly_tss_id']) ? trim((string) $_POST['fiskaly_tss_id']) : '';
+            $clientIdInput = isset($_POST['fiskaly_client_id']) ? trim((string) $_POST['fiskaly_client_id']) : '';
+            $cashRegisterIdInput = isset($_POST['fiskaly_cash_register_id']) ? trim((string) $_POST['fiskaly_cash_register_id']) : '';
+
+            $fiskalyApiKey = $truncate($apiKeyInput, 191);
+            $fiskalyApiSecret = $truncate($apiSecretInput, 512);
+            $fiskalyOrganizationId = $truncate($organizationIdInput, 191);
+            $fiskalyTssId = $truncate($tssIdInput, 191);
+            $fiskalyClientId = $truncate($clientIdInput, 191);
+            $fiskalyCashRegisterId = $truncate($cashRegisterIdInput, 191);
+
+            $settingsManager->set('fiskaly_api_key', $fiskalyApiKey);
+            $settingsManager->set('fiskaly_api_secret', $fiskalyApiSecret);
+            $settingsManager->set('fiskaly_organization_id', $fiskalyOrganizationId);
+            $settingsManager->set('fiskaly_tss_id', $fiskalyTssId);
+            $settingsManager->set('fiskaly_client_id', $fiskalyClientId);
+            $settingsManager->set('fiskaly_cash_register_id', $fiskalyCashRegisterId);
+
+            $_SESSION['alert'] = [
+                'type' => 'success',
+                'message' => 'fiskaly Cloud TSE Einstellungen wurden gespeichert.',
+            ];
+
+            header('Location: index.php?section=settings#fiskaly-settings');
             exit;
 
         case 'settings_invoice_logo':
@@ -13546,6 +13694,126 @@ if ($activeSection === 'reservations') {
                   </div>
                   <div class="col-12 d-flex justify-content-end">
                     <button type="submit" class="btn btn-outline-primary">Firmendaten speichern</button>
+                  </div>
+                </form>
+                <hr class="my-4">
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="settings_document_tse">
+                  <div class="col-12">
+                    <label for="document-tse-heading" class="form-label">TSE-Überschrift</label>
+                    <input
+                      type="text"
+                      class="form-control"
+                      id="document-tse-heading"
+                      name="document_tse_heading"
+                      value="<?= htmlspecialchars($documentTseHeading) ?>"
+                      placeholder="TSE-Informationen (fiskaly Cloud TSE)"
+                    >
+                    <div class="form-text">Leer lassen, wenn keine Überschrift angezeigt werden soll.</div>
+                  </div>
+                  <div class="col-12">
+                    <label for="document-tse-content" class="form-label">TSE-Angaben</label>
+                    <textarea
+                      class="form-control"
+                      id="document-tse-content"
+                      name="document_tse_content"
+                      rows="4"
+                      placeholder="Seriennummer: ...&#10;Vorgangsnummer: ...&#10;Signatur: ..."
+                    ><?= htmlspecialchars($documentTseContent) ?></textarea>
+                    <div class="form-text">Ein Eintrag pro Zeile, z. B. Seriennummer, Vorgangszeitraum oder Signaturwert der fiskaly Cloud TSE.</div>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end">
+                    <button type="submit" class="btn btn-outline-primary">TSE-Angaben speichern</button>
+                  </div>
+                </form>
+              <?php endif; ?>
+            </div>
+          </div>
+          <div class="card module-card mt-4" id="fiskaly-settings">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+              <div>
+                <h2 class="h5 mb-1">fiskaly Cloud TSE</h2>
+                <p class="text-muted mb-0">Zugangsdaten für die fiskaly-Schnittstelle hinterlegen.</p>
+              </div>
+              <span class="badge text-bg-warning text-dark">Kassensicherheit</span>
+            </div>
+            <div class="card-body">
+              <?php if (!$settingsAvailable): ?>
+                <p class="text-muted mb-0">Die Einstellungen stehen nach erfolgreicher Datenbankverbindung zur Verfügung.</p>
+              <?php else: ?>
+                <form method="post" class="row g-3">
+                  <input type="hidden" name="form" value="settings_fiskaly">
+                  <div class="col-12 col-lg-6">
+                    <label for="fiskaly-api-key" class="form-label">API Key</label>
+                    <input
+                      type="text"
+                      class="form-control"
+                      id="fiskaly-api-key"
+                      name="fiskaly_api_key"
+                      value="<?= htmlspecialchars($fiskalyApiKey) ?>"
+                      placeholder="z. B. sk_..."
+                    >
+                    <div class="form-text">Aus dem fiskaly-Dashboard generierter API-Schlüssel.</div>
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="fiskaly-api-secret" class="form-label">API Secret</label>
+                    <input
+                      type="text"
+                      class="form-control"
+                      id="fiskaly-api-secret"
+                      name="fiskaly_api_secret"
+                      value="<?= htmlspecialchars($fiskalyApiSecret) ?>"
+                      placeholder="geheimer Schlüssel"
+                    >
+                    <div class="form-text">Passendes Secret zum API Key.</div>
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="fiskaly-organization" class="form-label">Organisations-ID</label>
+                    <input
+                      type="text"
+                      class="form-control"
+                      id="fiskaly-organization"
+                      name="fiskaly_organization_id"
+                      value="<?= htmlspecialchars($fiskalyOrganizationId) ?>"
+                      placeholder="org_..."
+                    >
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="fiskaly-tss-id" class="form-label">TSE-ID</label>
+                    <input
+                      type="text"
+                      class="form-control"
+                      id="fiskaly-tss-id"
+                      name="fiskaly_tss_id"
+                      value="<?= htmlspecialchars($fiskalyTssId) ?>"
+                      placeholder="tss_..."
+                    >
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="fiskaly-client-id" class="form-label">Client-ID</label>
+                    <input
+                      type="text"
+                      class="form-control"
+                      id="fiskaly-client-id"
+                      name="fiskaly_client_id"
+                      value="<?= htmlspecialchars($fiskalyClientId) ?>"
+                      placeholder="client_..."
+                    >
+                  </div>
+                  <div class="col-12 col-lg-6">
+                    <label for="fiskaly-cash-register" class="form-label">Kassen-ID</label>
+                    <input
+                      type="text"
+                      class="form-control"
+                      id="fiskaly-cash-register"
+                      name="fiskaly_cash_register_id"
+                      value="<?= htmlspecialchars($fiskalyCashRegisterId) ?>"
+                      placeholder="cashpoint_..."
+                    >
+                    <div class="form-text">Identifier der angebundenen Kasse oder Queue.</div>
+                  </div>
+                  <div class="col-12 d-flex justify-content-end">
+                    <button type="submit" class="btn btn-outline-primary">fiskaly-Einstellungen speichern</button>
                   </div>
                 </form>
               <?php endif; ?>

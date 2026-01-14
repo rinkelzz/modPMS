@@ -450,6 +450,18 @@ class DocumentManager
             ? trim((string) $companySettings['document_company_bank_details'])
             : '';
 
+        $tseSettings = $this->settingsManager->getMany([
+            'document_tse_heading',
+            'document_tse_content',
+        ]);
+
+        $documentForPdf['tse_heading'] = isset($tseSettings['document_tse_heading'])
+            ? trim((string) $tseSettings['document_tse_heading'])
+            : '';
+        $documentForPdf['tse_content'] = isset($tseSettings['document_tse_content'])
+            ? trim((string) $tseSettings['document_tse_content'])
+            : '';
+
         $pdfPath = $pdfGenerator($documentForPdf);
         if (!is_string($pdfPath) || $pdfPath === '') {
             throw new RuntimeException('PDF konnte nicht erzeugt werden.');
